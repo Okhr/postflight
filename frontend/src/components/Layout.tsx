@@ -26,12 +26,21 @@ export function Layout() {
   });
 
   const caps = status?.capabilities;
-  // Two independent paths: VAAPI for proxy decoding, OpenCL for Gyroflow's
+  // Two independent paths: ffmpeg for proxy decoding, OpenCL for Gyroflow's
   // warping. One can be on the GPU while the other is not, so say which is which
   // rather than showing a single "CPU" that reads as "nothing is accelerated".
-  const decode = caps?.hwaccel === "vaapi" ? "GPU" : "CPU";
-  const opencl = (caps?.opencl_icds?.length ?? 0) > 0 && (caps?.dri_devices?.length ?? 0) > 0;
-  const stabilize = opencl ? "GPU" : "CPU";
+  //
+  // Both come from a probe that ran the thing, never from a driver being present.
+  // Counting ICD files was the old test, and it lied: a machine with three ICDs
+  // installed and no usable GPU read as "stabilize GPU" while Gyroflow warped on
+  // the CPU.
+  const backend = caps?.decode_backend ?? "cpu";
+  const decode = backend === "cpu" ? "CPU" : backend.toUpperCase();
+  const gpu = caps?.opencl_gpu ?? null;
+  const stabilize = gpu ? "GPU" : "CPU";
+  // Candidates that were tried and refused, so a CPU fallback can be explained
+  // rather than merely announced.
+  const refused = Object.entries(caps?.decode_probes ?? {}).filter(([, why]) => why);
 
   return (
     <TooltipProvider>
@@ -81,16 +90,26 @@ export function Layout() {
                   <TooltipContent className="max-w-xs">
                     <p>
                       Proxy decoding:{" "}
-                      {decode === "GPU"
-                        ? "VAAPI"
-                        : "CPU (about 1.6x slower — VAAPI can wedge AMD iGPU drivers)"}
+                      {backend === "cuda"
+                        ? "NVDEC, probed on a real HEVC 10-bit sample"
+                        : backend === "vaapi"
+                          ? `VAAPI on ${caps?.decode_device ?? "the render node"}`
+                          : "CPU (about 1.6x slower than a working hardware decoder)"}
                     </p>
                     <p>
                       Stabilization:{" "}
-                      {opencl
-                        ? "OpenCL (about 3x faster than CPU)"
-                        : "CPU only, no OpenCL device available"}
+                      {gpu
+                        ? `OpenCL on ${gpu} (about 3x faster than CPU)`
+                        : "CPU only, no OpenCL GPU device"}
                     </p>
+                    {refused.length > 0 && (
+                      <p className="mt-1">
+                        Hardware decoding tried and refused:{" "}
+                        {refused
+                          .map(([name, why]) => `${name} (${why.split("\n")[0].slice(0, 90)})`)
+                          .join("; ")}
+                      </p>
+                    )}
                     {caps?.notes?.map((note) => (
                       <p key={note} className="mt-1 text-amber-400">
                         {note}

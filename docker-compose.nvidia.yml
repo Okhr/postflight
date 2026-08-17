@@ -1,0 +1,36 @@
+# Override to apply when the host has an NVIDIA GPU.
+#
+# An NVIDIA card is not reached the way an AMD or Intel one is. Mapping /dev/dri
+# gains nothing: the render node there belongs to the `nvidia` kernel driver, libva
+# has no Mesa driver able to talk to it, and the compute libraries are not in the
+# image at all. They are bind-mounted by nvidia-container-toolkit, which has to be
+# installed on the host and has to be selected as the runtime here, and Docker will not
+# pick it on its own. That is why this stays an operator decision instead of
+# something the application detects.
+#
+# Requires on the host: nvidia-container-toolkit (check with `nvidia-ctk --version`).
+#
+# The three capabilities are each needed by a different part of the pipeline:
+#   compute → OpenCL, which is what Gyroflow warps with
+#   video   → NVDEC, which is what ffmpeg decodes proxies with
+#   utility → nvidia-smi, which is what makes a broken driver diagnosable
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d
+#
+# Applying this on a machine whose NVIDIA stack turns out to be broken costs nothing
+# but the probe: capabilities.detect() decodes a real HEVC 10-bit sample before
+# trusting NVDEC, and Gyroflow falls back to pocl when OpenCL exposes no GPU. The
+# UI then says so instead of claiming a GPU it never got.
+
+services:
+  api:
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+
+  worker:
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility

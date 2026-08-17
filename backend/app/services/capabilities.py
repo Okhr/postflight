@@ -1,18 +1,34 @@
 """Hardware capability detection, run when the worker starts.
 
-The stack has to run both on a machine with no GPU and on a host with `/dev/dri`
-mapped in. Rather than trusting an environment variable, we probe for real: build
-a small HEVC 10-bit sample and try to decode it through VAAPI. The result drives
-the ffmpeg command lines and is surfaced in the UI.
+One image has to run well on whatever machine it lands on: an AMD iGPU, an NVIDIA
+card, an Intel iGPU, or nothing at all. So nothing here is assumed from an
+environment variable or from the presence of a driver file: every accelerated path
+is **probed by running it**, and whatever fails is simply not used.
 
-Gyroflow fends for itself: it tries OpenCL, then wgpu, then falls back to the CPU.
-Measured in-container on a 3840x2880 → 1080p rush: **23 fps** with `/dev/dri`
-(rusticl), **~8.7 fps** on the CPU alone. So we never force it — we just read its
-render logs to see what it picked.
+That is not caution for its own sake. Measured on 2026-08-17 on the dev machine of
+the day (i7-7700K + RTX 3090, driver 535.261.03): kernel module and userspace at
+the same version, `/dev/nvidia*` present and world-writable, no NVRM error in the
+kernel log, `nvidia-smi` perfectly happy, and `cuInit(0)` returning
+`CUDA_ERROR_UNKNOWN`, on the host, outside any container. Every static check said
+"GPU ready"; only running a decode caught it.
+
+Two independent paths, detected separately because one can work while the other
+does not:
+
+- **ffmpeg decode** for proxies: `cuda` (NVDEC), then `vaapi` (AMD radeonsi and
+  Intel iHD/i965), then the CPU. NVDEC first because a discrete card beats an
+  iGPU on the machines that have both.
+- **Gyroflow's OpenCL warp**: we do not drive it. Gyroflow tries OpenCL, then
+  wgpu, then the CPU on its own, and `render()` reads back from its log what it
+  picked. What we do here is answer the question the UI needs *before* a render:
+  is there a real OpenCL **GPU** device, or only a CPU one? Counting the installed
+  ICD files answers that wrong: this machine ships three of them (mesa, rusticl,
+  pocl) and exposes exactly one device, the CPU.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -27,6 +43,31 @@ log = logging.getLogger(__name__)
 
 _OPENCL_ICD_DIR = Path("/etc/OpenCL/vendors")
 _DRI_DIR = Path("/dev/dri")
+_NVIDIA_DEV = Path("/dev/nvidia0")
+
+# Decode backends, in the order they are tried when `VS_HWACCEL=auto`.
+DECODE_BACKENDS = ("cuda", "vaapi")
+
+# The probe sample: HEVC 10-bit, because that is what the rushes are and because
+# 10-bit is exactly where hardware support gets patchy (a decoder that handles
+# 8-bit HEVC may refuse Main10). 640x480 rather than something smaller: NVDEC has
+# a minimum frame size, and a probe that failed only for being tiny would disable
+# a working GPU.
+_SAMPLE_SIZE = "640x480"
+
+
+@dataclass
+class OpenCLDevice:
+    platform: str
+    name: str
+    kind: str  # "GPU" | "CPU" | "ACCELERATOR" | "other"
+
+    @property
+    def is_gpu(self) -> bool:
+        return self.kind == "GPU"
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.platform})"
 
 
 @dataclass
@@ -34,21 +75,44 @@ class Capabilities:
     ffmpeg_version: str = ""
     gyroflow_version: str = ""
     mp4_merge_available: bool = False
+
     dri_devices: list[str] = field(default_factory=list)
+    nvidia_present: bool = False
+
+    # What the decode probe settled on, and the device it needs (VAAPI only).
+    decode_backend: str = "cpu"
+    decode_device: str | None = None
+    # Why each candidate was refused, kept so the UI can explain a CPU fallback
+    # instead of merely announcing it. Empty string = that backend works.
+    decode_probes: dict[str, str] = field(default_factory=dict)
+
     opencl_icds: list[str] = field(default_factory=list)
-    vaapi_decode: bool = False
-    vaapi_device: str | None = None
+    opencl_devices: list[OpenCLDevice] = field(default_factory=list)
+
     notes: list[str] = field(default_factory=list)
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def hwaccel(self) -> str:
-        return "vaapi" if self.vaapi_decode else "cpu"
+        """Backend used for decoding: `cuda`, `vaapi` or `cpu`."""
+        return self.decode_backend
+
+    @property
+    def opencl_gpu(self) -> OpenCLDevice | None:
+        """The OpenCL GPU Gyroflow will most likely pick, if there is one."""
+        return next((d for d in self.opencl_devices if d.is_gpu), None)
+
+    @property
+    def stabilize_device(self) -> str:
+        gpu = self.opencl_gpu
+        return str(gpu) if gpu else "CPU"
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["detected_at"] = self.detected_at.isoformat()
         data["hwaccel"] = self.hwaccel
+        data["stabilize_device"] = self.stabilize_device
+        data["opencl_gpu"] = str(self.opencl_gpu) if self.opencl_gpu else None
         return data
 
 
@@ -72,47 +136,202 @@ def _tool_version(binary: str, args: list[str], pattern: str) -> str:
     return ""
 
 
-def _probe_vaapi(device: str) -> tuple[bool, str]:
-    """Build a HEVC 10-bit sample and try to decode it through VAAPI.
+# --------------------------------------------------------------------------- #
+# OpenCL: what devices actually exist
+# --------------------------------------------------------------------------- #
 
-    Probing for real is necessary: on some setups (AMD iGPU + Mesa) VAAPI
-    *decoding* works while `scale_vaapi`/`h264_vaapi` hang. So the GPU is only
-    ever used to decode, never to scale or encode.
+def parse_clinfo(payload: str) -> list[OpenCLDevice]:
+    """Read `clinfo --json` into a flat list of devices.
 
-    Even then, decoding a real 3840x2880 HEVC 10-bit stream has been seen to wedge
-    the amdgpu driver, which this small sample does not catch — `VS_HWACCEL=cpu`
-    stays the safe choice on that hardware.
+    Schema, checked against clinfo 3.0.25 rather than guessed: `platforms` and
+    `devices` are two **parallel** lists, and each entry of `devices` is
+    `{"online": [ …device… ]}`, and devices are not nested inside their platform.
+    A platform that exposes nothing (rusticl and Clover with no supported GPU)
+    still gets an entry, with an empty or missing list.
+
+    Anything unreadable yields an empty list: a chart of the hardware is a nicety,
+    and must never be the reason the worker refuses to start.
     """
-    if not Path(device).exists():
-        return False, f"{device} is missing"
+    try:
+        data = json.loads(payload)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, dict):
+        return []
 
+    platforms = data.get("platforms") or []
+    groups = data.get("devices") or []
+    devices: list[OpenCLDevice] = []
+
+    for index, group in enumerate(groups):
+        if not isinstance(group, dict):
+            continue
+        platform = ""
+        if index < len(platforms) and isinstance(platforms[index], dict):
+            platform = platforms[index].get("CL_PLATFORM_NAME") or ""
+        for entry in group.get("online") or []:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("CL_DEVICE_NAME") or ""
+            if not name:
+                continue
+            devices.append(
+                OpenCLDevice(platform=platform, name=name, kind=_device_kind(entry))
+            )
+    return devices
+
+
+def _device_kind(entry: dict) -> str:
+    """`CL_DEVICE_TYPE` is `{"raw": 2, "type": ["CL_DEVICE_TYPE_CPU"]}`."""
+    raw = entry.get("CL_DEVICE_TYPE")
+    names: list[str] = []
+    if isinstance(raw, dict):
+        names = [str(n) for n in (raw.get("type") or [])]
+    elif isinstance(raw, str):
+        names = [raw]
+    for name in names:
+        for kind in ("GPU", "CPU", "ACCELERATOR"):
+            if name.endswith(kind):
+                return kind
+    return "other"
+
+
+def _opencl_devices() -> list[OpenCLDevice]:
+    if not shutil.which("clinfo"):
+        return []
+    try:
+        proc = _run(["clinfo", "--json"], timeout=60)
+    except (subprocess.SubprocessError, OSError) as exc:
+        log.warning("clinfo unusable: %s", exc)
+        return []
+    # clinfo exits non-zero when a platform reports no device, which is not an
+    # error for us: the output is still valid JSON describing what does exist.
+    return parse_clinfo(proc.stdout)
+
+
+# --------------------------------------------------------------------------- #
+# Decode: probe each backend by actually decoding
+# --------------------------------------------------------------------------- #
+
+def _build_sample() -> Path | None:
     sample = settings.tmp_dir / "caps_probe_hevc10.mp4"
     try:
         settings.tmp_dir.mkdir(parents=True, exist_ok=True)
-        make = _run([
-            settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-t", "0.5",
-            "-c:v", "libx265", "-pix_fmt", "yuv420p10le",
-            "-x265-params", "log-level=none", str(sample),
-        ], timeout=120)
-        if make.returncode != 0 or not sample.exists():
-            return False, "could not build the HEVC 10-bit test sample"
+        made = _run(
+            [
+                settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", f"testsrc2=size={_SAMPLE_SIZE}:rate=30", "-t", "0.5",
+                "-c:v", "libx265", "-pix_fmt", "yuv420p10le",
+                "-x265-params", "log-level=none", str(sample),
+            ],
+            timeout=180,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        log.warning("HEVC 10-bit probe sample not built: %s", exc)
+        return None
+    if made.returncode != 0 or not sample.exists():
+        return None
+    return sample
 
-        decode = _run([
-            settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostats",
-            "-hwaccel", "vaapi", "-hwaccel_device", device,
-            "-i", str(sample), "-f", "null", "-",
-        ], timeout=120)
-        if decode.returncode == 0:
-            return True, ""
-        return False, f"VAAPI decoding refused: {decode.stderr.strip()[:200]}"
+
+def _try_decode(sample: Path, flags: list[str]) -> tuple[bool, str]:
+    """Decode the sample with `flags`, and say why if it did not work.
+
+    ffmpeg refuses outright when a requested hwaccel cannot create its device, so
+    a zero exit code here means the frames really went through that path.
+    """
+    try:
+        proc = _run(
+            [
+                settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostats",
+                *flags, "-i", str(sample), "-f", "null", "-",
+            ],
+            timeout=120,
+        )
     except subprocess.TimeoutExpired:
-        return False, "VAAPI decoding hung (timeout) → falling back to CPU"
+        # A hung decode is worse than a slow one: it wedged this machine's GPU
+        # once already. Treat it as unusable.
+        return False, "the decode hung (timeout)"
     except OSError as exc:
-        return False, f"VAAPI probe failed: {exc}"
+        return False, f"probe failed: {exc}"
+    if proc.returncode == 0:
+        return True, ""
+    return False, (proc.stderr or proc.stdout or "").strip()[:300]
+
+
+def _vaapi_device(caps: Capabilities) -> str:
+    """The render node to probe. Not necessarily renderD128: on a machine with two
+    GPUs the first one exposed may be renderD129."""
+    configured = settings.vaapi_device
+    if Path(configured).exists():
+        return configured
+    fallback = str(_DRI_DIR / caps.dri_devices[0])
+    caps.notes.append(f"{configured} is missing, probing {fallback} instead")
+    return fallback
+
+
+def _probe_backend(name: str, sample: Path, caps: Capabilities) -> tuple[bool, str]:
+    if name == "cuda":
+        if not caps.nvidia_present:
+            return False, "no /dev/nvidia0: no NVIDIA GPU in this container"
+        return _try_decode(sample, ["-hwaccel", "cuda"])
+    if name == "vaapi":
+        if not caps.dri_devices:
+            return False, "no render node in /dev/dri"
+        device = _vaapi_device(caps)
+        ok, why = _try_decode(sample, ["-hwaccel", "vaapi", "-hwaccel_device", device])
+        if ok:
+            caps.decode_device = device
+        return ok, why
+    return False, f"unknown backend {name}"
+
+
+def backends_to_probe(mode: str) -> tuple[list[str], str]:
+    """Turn a `VS_HWACCEL` value into the candidates worth probing, plus a note.
+
+    Split out from the probing itself so the policy is testable without a GPU, an
+    ffmpeg, or any particular machine: everything below this function needs
+    hardware to say anything, this one does not.
+    """
+    mode = (mode or "auto").strip().lower()
+    if mode == "cpu":
+        return [], "decoding pinned to the CPU by configuration"
+    if mode == "auto":
+        return list(DECODE_BACKENDS), ""
+    if mode in DECODE_BACKENDS:
+        return [mode], ""
+    return [], f"unknown VS_HWACCEL value ({mode}) → CPU decoding"
+
+
+def _detect_decode(caps: Capabilities) -> None:
+    """Settle on a decode backend, probing only what is worth probing."""
+    wanted, note = backends_to_probe(settings.hwaccel)
+    if note:
+        caps.notes.append(note)
+    if not wanted:
+        return
+
+    sample = _build_sample()
+    if sample is None:
+        caps.notes.append("HEVC 10-bit probe sample could not be built → CPU decoding")
+        return
+
+    try:
+        for name in wanted:
+            ok, why = _probe_backend(name, sample, caps)
+            caps.decode_probes[name] = "" if ok else why
+            if ok:
+                caps.decode_backend = name
+                return
+            log.info("Decode backend %s unusable: %s", name, why.replace("\n", " ")[:160])
     finally:
         sample.unlink(missing_ok=True)
 
+    if len(wanted) == 1:
+        caps.notes.append(f"{wanted[0]} requested but unusable → CPU decoding")
+
+
+# --------------------------------------------------------------------------- #
 
 def detect(force: bool = False) -> Capabilities:
     global _cache
@@ -128,50 +347,37 @@ def detect(force: bool = False) -> Capabilities:
         caps.dri_devices = sorted(p.name for p in _DRI_DIR.iterdir() if p.name.startswith("render"))
     if _OPENCL_ICD_DIR.is_dir():
         caps.opencl_icds = sorted(p.name for p in _OPENCL_ICD_DIR.glob("*.icd"))
+    caps.nvidia_present = _NVIDIA_DEV.exists()
 
-    # With no render node, neither VAAPI nor rusticl has any hardware to talk to:
-    # probing is pointless, and the message should say what to do rather than
-    # report a missing file.
-    if not caps.dri_devices:
+    _detect_decode(caps)
+    caps.opencl_devices = _opencl_devices()
+
+    if not caps.dri_devices and not caps.nvidia_present:
         caps.notes.append(
             "no GPU mapped into the container: decoding and stabilization run on "
-            "the CPU (about 3x slower). If the host has /dev/dri, restart with "
-            "-f docker-compose.yml -f docker-compose.gpu.yml."
+            "the CPU. If the host has one, restart with the matching override: "
+            "docker-compose.gpu.yml for AMD/Intel, docker-compose.nvidia.yml for NVIDIA."
         )
-
-    mode = settings.hwaccel.lower()
-    if mode == "cpu":
-        caps.notes.append("hwaccel pinned to CPU by configuration")
-    elif mode not in {"auto", "vaapi"}:
-        caps.notes.append(f"unknown hwaccel value ({settings.hwaccel}) → falling back to CPU")
-    elif not caps.dri_devices:
-        if mode == "vaapi":
-            caps.notes.append("VAAPI requested but no GPU mapped in → falling back to CPU")
-    else:
-        device = settings.vaapi_device
-        if not Path(device).exists():
-            # The render node is not necessarily called renderD128: on a machine
-            # with two GPUs, the first one exposed may be renderD129.
-            device = str(_DRI_DIR / caps.dri_devices[0])
-            caps.notes.append(f"{settings.vaapi_device} is missing, probing {device} instead")
-        ok, note = _probe_vaapi(device)
-        caps.vaapi_decode = ok
-        caps.vaapi_device = device if ok else None
-        if note:
-            caps.notes.append(note)
-        if mode == "vaapi" and not ok:
-            caps.notes.append("VAAPI requested but unavailable → falling back to CPU")
-
     if not caps.mp4_merge_available:
         caps.notes.append(
             "mp4_merge is missing: cannot join split rushes without losing the gyro"
         )
-    if not caps.opencl_icds:
-        caps.notes.append("no OpenCL ICD: Gyroflow will render on the CPU (~3x slower)")
+    if caps.opencl_gpu is None:
+        # The interesting half of the message is *why*, and the ICD list is what
+        # says whether the vendor's driver ever made it into the container.
+        caps.notes.append(
+            "no OpenCL GPU device: Gyroflow will warp on the CPU (about 3x slower). "
+            f"ICDs installed: {', '.join(caps.opencl_icds) or 'none'}."
+        )
 
     log.info(
-        "Capabilities: hwaccel=%s dri=%s opencl=%s gyroflow=%s",
-        caps.hwaccel, caps.dri_devices or "-", caps.opencl_icds or "-", caps.gyroflow_version or "?",
+        "Capabilities: decode=%s%s stabilize=%s dri=%s nvidia=%s gyroflow=%s",
+        caps.decode_backend,
+        f" ({caps.decode_device})" if caps.decode_device else "",
+        caps.stabilize_device,
+        caps.dri_devices or "-",
+        caps.nvidia_present,
+        caps.gyroflow_version or "?",
     )
     for note in caps.notes:
         log.warning("Capabilities: %s", note)

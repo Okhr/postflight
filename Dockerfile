@@ -26,11 +26,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl \
       python3 python3-venv python3-pip \
       ffmpeg \
-      # OpenCL: rusticl/Mesa when /dev/dri is present, pocl as the CPU fallback.
-      # This is what lets the stack run with or without a GPU.
-      ocl-icd-libopencl1 mesa-opencl-icd pocl-opencl-icd clinfo \
-      # VAAPI decoding (decode only, see services/proxy.py)
-      mesa-va-drivers libva2 libva-drm2 \
+      # OpenCL, for Gyroflow's warping: rusticl/Mesa on AMD, NEO on Intel, pocl as
+      # the CPU fallback. NVIDIA cannot be shipped (its driver is injected by the
+      # container runtime), but the ICD pointing at it is created below.
+      ocl-icd-libopencl1 mesa-opencl-icd intel-opencl-icd pocl-opencl-icd clinfo \
+      # VAAPI decoding (decode only, see services/proxy.py). One image has to cover
+      # every vendor: mesa-va-drivers is AMD radeonsi, intel-media-va-driver is
+      # Intel Gen9+ (iHD) and i965 the older parts. Without the Intel ones, an
+      # Intel host fails exactly the way an NVIDIA host does: libva resolves the
+      # DRM driver name, looks for `iHD_drv_video.so`, and finds nothing.
+      # `vainfo` earns its 3 MB the same way `clinfo` does: on a new machine, it
+      # is the difference between a diagnosis and an afternoon.
+      mesa-va-drivers intel-media-va-driver i965-va-driver libva2 libva-drm2 vainfo \
       # Runtime dependencies of the Gyroflow binary (Qt6 is bundled, libc++ is not)
       libc++1 libc++abi1 \
       libgl1 libegl1 libgbm1 libdrm2 libglx0 libopengl0 \
@@ -39,6 +46,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxkbcommon0 libx11-6 libxcb1 \
       libkrb5-3 libgssapi-krb5-2 libpcre2-8-0 libbrotli1 \
     && rm -rf /var/lib/apt/lists/*
+
+# NVIDIA OpenCL, for Gyroflow on an NVIDIA host. The library itself is never in the
+# image (it is bind-mounted by the container runtime, hence the compose override),
+# but the ICD naming it has to exist, and no package provides it here.
+#
+# Measured 2026-08-17: this dangling ICD is harmless on a machine with no NVIDIA
+# driver. The loader cannot dlopen the soname, skips the vendor, and `clinfo` still
+# exits 0 listing the platforms that do work. So it ships unconditionally rather
+# than being an image variant.
+RUN mkdir -p /etc/OpenCL/vendors \
+ && echo "libnvidia-opencl.so.1" > /etc/OpenCL/vendors/nvidia.icd
 
 # Gyroflow: the tarball ships lib/, plugins/, qml/ and camera_presets/
 RUN curl -fsSL "https://github.com/gyroflow/gyroflow/releases/download/v${GYROFLOW_VERSION}/Gyroflow-linux64.tar.gz" \

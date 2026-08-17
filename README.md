@@ -40,21 +40,38 @@ cp .env.example .env      # ajuster VS_DATA_PATH, VS_PORT
 docker compose up -d --build
 ```
 
-Avec un GPU sur l'hôte (recommandé, environ 3x plus rapide sur la
-stabilisation) :
+### Le GPU, selon la machine
 
-```bash
-getent group render       # relever le GID, à mettre dans VS_RENDER_GID
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
-```
+Une seule image porte les pilotes des trois fabricants. Ce qu'elle ne peut pas
+deviner, c'est **la façon dont Docker donne accès au GPU** : ça se décide au
+niveau du démon, pas dans l'application. D'où un override à choisir une fois :
 
-Sans GPU la stack tourne telle quelle : Gyroflow retombe sur pocl/CPU et ffmpeg
-décode au CPU. L'interface affiche en haut à droite ce qui a réellement été
-détecté.
+| hôte | commande | ce que ça apporte |
+|---|---|---|
+| pas de GPU | rien à ajouter | tout en CPU, la stack tourne |
+| **AMD / Intel** | `-f docker-compose.yml -f docker-compose.gpu.yml` | `/dev/dri` mappé (renseigner `VS_RENDER_GID` avec `getent group render`) |
+| **NVIDIA** | `-f docker-compose.yml -f docker-compose.nvidia.yml` | runtime nvidia, exige `nvidia-container-toolkit` sur l'hôte |
 
-**Portainer** : coller le contenu de `docker-compose.yml` en stack (y ajouter les
-sections `devices`/`group_add` de `docker-compose.gpu.yml` si l'hôte a un GPU),
-et renseigner les variables d'environnement de `.env.example`.
+Le plus simple est de mettre la ligne `COMPOSE_FILE` correspondante dans le
+`.env` : les `docker compose up` suivants l'appliquent tout seuls, et on évite le
+classique « up sans les `-f` » qui recrée les conteneurs sans GPU.
+
+Se tromper n'est jamais fatal, seulement lent. Aucun chemin accéléré n'est pris
+sur parole : au démarrage, le worker **décode réellement** un échantillon HEVC
+10 bits en NVDEC puis en VAAPI et garde le premier qui marche, et il énumère les
+vrais devices OpenCL au lieu de compter les pilotes installés. Ce qui échoue
+n'est pas utilisé, et l'en-tête de l'interface affiche ce qui a été retenu, avec
+la raison du repli quand il y en a un.
+
+Cette prudence est chèrement acquise : sur une machine dont le module noyau et
+l'espace utilisateur NVIDIA étaient à la même version, avec `/dev/nvidia*`
+présents et `nvidia-smi` parfaitement fonctionnel, `cuInit()` renvoyait
+`CUDA_ERROR_UNKNOWN`, sur l'hôte, hors conteneur. Tous les indices statiques
+disaient « GPU prêt ».
+
+**Portainer** : coller le contenu de `docker-compose.yml` en stack, y ajouter la
+section de l'override correspondant au matériel, et renseigner les variables
+d'environnement de `.env.example`.
 
 Interface sur `http://<hôte>:8080`.
 

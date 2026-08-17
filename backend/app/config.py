@@ -47,7 +47,9 @@ class Settings(BaseSettings):
     gyroflow_bin: str = "gyroflow"
     mp4_merge_bin: str = "mp4_merge"
 
-    # auto | vaapi | cpu — `auto` really probes the decoder at startup.
+    # auto | cuda | vaapi | cpu. `auto` probes each backend by really decoding an
+    # HEVC 10-bit sample, NVDEC first (a discrete card beats an iGPU on a machine
+    # that has both). Anything that fails or hangs is simply not used.
     hwaccel: str = "auto"
     vaapi_device: str = "/dev/dri/renderD128"
 

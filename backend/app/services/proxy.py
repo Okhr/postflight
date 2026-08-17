@@ -3,11 +3,16 @@
 The master is HEVC 10-bit 3840x2880, which no browser can play. Derushing
 therefore happens on an 8-bit H.264 proxy: smaller, and steppable frame by frame.
 
-The measurements that dictate the command line:
+The measurements that dictate the command line, on an AMD iGPU (Radeon 890M):
 - **VAAPI** decode + CPU scale + x264 veryfast: 0.79x realtime
 - CPU-only decode: 0.53x
 - a full VAAPI chain (`scale_vaapi`, `h264_vaapi`): **hangs or segfaults** on
   AMD iGPU + Mesa. So the GPU is used for decoding only.
+
+The backend is not fixed: `capabilities.detect()` probes NVDEC (`cuda`) and VAAPI
+by really decoding, and this module just spends whatever it was handed. Only the
+decoding is ever accelerated: scale and encode stay on the CPU on every vendor,
+which is the lesson of the `scale_vaapi` hang above.
 
 Beware: even VAAPI *decoding* wedged the amdgpu driver on a real 3840x2880
 HEVC 10-bit stream (unkillable ffmpeg, GPU stuck). Hence `VS_HWACCEL=cpu` as the
@@ -43,8 +48,16 @@ class ProxyResult:
 
 
 def _decode_flags(caps: Capabilities) -> list[str]:
-    if caps.vaapi_decode and caps.vaapi_device:
-        return ["-hwaccel", "vaapi", "-hwaccel_device", caps.vaapi_device]
+    """Flags for whichever backend the probe settled on.
+
+    Nothing is checked here: `capabilities.detect()` has already decoded an HEVC
+    10-bit sample through this exact path on this exact machine. Scaling and
+    encoding stay on the CPU whatever the backend, for the reasons above.
+    """
+    if caps.decode_backend == "cuda":
+        return ["-hwaccel", "cuda"]
+    if caps.decode_backend == "vaapi" and caps.decode_device:
+        return ["-hwaccel", "vaapi", "-hwaccel_device", caps.decode_device]
     return []
 
 

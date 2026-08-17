@@ -29,8 +29,11 @@ réponses en conversation restent **en français**.
    `output_height` suffit à changer de format (un 1080x1920 demandé sur une
    source 3840x2880 fait dériver un crop 1620x2880 tout seul).
 
-4. **Le warping de Gyroflow passe par OpenCL, pas Vulkan.** L'image embarque
-   rusticl/Mesa (GPU si `/dev/dri` est mappé) et pocl (repli CPU).
+4. **Le warping de Gyroflow passe par OpenCL, pas Vulkan.** L'image embarque les
+   ICD des trois fabricants : rusticl/Mesa (AMD), NEO (Intel), un `nvidia.icd`
+   pointant sur la lib que le runtime injecte, plus pocl en repli CPU. Attention :
+   **un ICD installé n'est pas un device**. Sur une machine à trois ICD et zéro GPU
+   utilisable, le seul device énuméré est le CPU. Voir la section matériel.
 
 ## Perfs mesurées (Ryzen AI 9 HX 370 / Radeon 890M, source 3840x2880 HEVC 10-bit 60p)
 
@@ -74,6 +77,51 @@ noyau. Risque résiduel : un crash de ffmpeg emprunte le même chemin de teardow
 warping passe par les rings de calcul via OpenCL, et l'encodage est en CPU
 (`use_gpu: false`). Or les fences de compute sont précisément ce que la pile DKMS
 d'AMD est faite pour valider ; le décodage vidéo en est le coin négligé.
+
+## Matériel : sonder, jamais croire
+
+**La machine de dev n'est pas fixe.** Les perfs ci-dessus viennent d'un portable
+AMD ; le poste du 2026-08-17 est tout autre, et toute phrase « le GPU fait X » doit
+donc nommer la machine :
+
+| | machine AMD (perfs ci-dessus) | poste 2026-08-17 |
+|---|---|---|
+| CPU | Ryzen AI 9 HX 370 | Intel i7-7700K |
+| GPU | Radeon 890M (amdgpu-dkms) | GeForce RTX 3090 (nvidia 535.261.03) |
+| décodage | VAAPI | aucun |
+| OpenCL | rusticl | aucun device |
+
+**Sur NVIDIA, mapper `/dev/dri` ne sert à rien.** Le nœud render appartient au
+pilote `nvidia` : libva y lit le nom du pilote DRM, cherche `nvidia_drv_video.so`
+(absent de l'image, et de toute façon la voie NVIDIA passe par le shim
+`nvidia-vaapi-driver`), et renvoie `unknown libva error`. Un GPU NVIDIA se donne
+au conteneur par `runtime: nvidia` + `NVIDIA_DRIVER_CAPABILITIES=compute,video,
+utility`, ce que Docker ne peut pas décider seul, d'où `docker-compose.nvidia.yml`.
+
+**Un pilote installé n'est pas un pilote qui marche.** Mesuré sur le RTX 3090 :
+module noyau et espace utilisateur tous deux en 535.261.03, `/dev/nvidia*` présents
+en `rw-rw-rw-`, aucune erreur NVRM au journal, `nvidia-smi` nominal, et
+`cuInit(0)` qui renvoie `CUDA_ERROR_UNKNOWN`, **sur l'hôte, hors de tout
+conteneur**. OpenCL n'a énuméré le 3090 qu'une fois sur quatre essais. Ce poste est
+donc CPU-only tant que la pile CUDA n'est pas réparée (un reboot est le remède
+habituel), et *aucune* vérification statique ne l'aurait vu.
+
+D'où le modèle de `services/capabilities.py` : **on sonde en exécutant**.
+
+- **décodage** : NVDEC puis VAAPI, chacun essayé en décodant réellement un
+  échantillon HEVC 10 bits : le codec des rushes, et précisément là où le support
+  matériel se dégrade (une puce qui décode le HEVC 8 bits peut refuser le Main10).
+  Le premier qui sort en 0 gagne ; `VS_HWACCEL` peut en épingler un. Un timeout
+  compte comme un échec : un décodage qui pend est pire qu'un décodage lent.
+- **OpenCL** : `clinfo --json`, en cherchant un device de **type GPU**. Compter les
+  fichiers ICD était le test d'avant, et il mentait.
+- **schéma de `clinfo --json`** (vérifié sur 3.0.25, pas deviné) : `platforms` et
+  `devices` sont deux listes **parallèles**, et les devices d'une plateforme pendent
+  d'une clé `online` au lieu d'être imbriqués dans la plateforme.
+- un **`nvidia.icd` orphelin est inoffensif** : le loader n'arrive pas à ouvrir la
+  lib, saute le vendeur, et `clinfo` sort quand même en 0. C'est ce qui permet de le
+  livrer inconditionnellement dans l'image plutôt que d'avoir une variante par
+  fabricant.
 
 ## Visualisation du gyro : passer par Gyroflow, pas par le fichier
 
@@ -186,6 +234,10 @@ La nôtre (`services/grouping.py`) :
 - Un job planté ne doit jamais tuer le worker : `process_next_job` isole.
 - Front : shadcn/ui de base uniquement, composants copiés dans
   `frontend/src/components/ui/`.
+- **Fin de tâche = commit puis push sur `master`.** Ni branche ni PR sur ce projet :
+  dès qu'une tâche est terminée *et vérifiée* (tests passés, build ou service
+  relancé quand c'est pertinent), committer et pousser directement. L'autorisation
+  est donnée une fois pour toutes, inutile de la redemander à chaque fois.
 
 ## Développement
 

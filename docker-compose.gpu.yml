@@ -1,6 +1,10 @@
-# Override to apply when the host has a usable GPU.
+# Override to apply when the host has an **AMD or Intel** GPU.
 #
-# Measured on a 1080p render from a 3840x2880 source:
+# Those two are reached by mapping the DRM render node, and the image carries their
+# drivers (Mesa radeonsi / rusticl, Intel iHD / NEO). An NVIDIA card works nothing
+# like this; see docker-compose.nvidia.yml.
+#
+# Measured on a 1080p render from a 3840x2880 source, on a Radeon 890M:
 #   with /dev/dri (OpenCL rusticl): 23 fps
 #   on the CPU alone (pocl)        : ~8.7 fps
 #

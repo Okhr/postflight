@@ -161,15 +161,32 @@ export interface Template {
   height: number;
 }
 
+export interface OpenCLDevice {
+  platform: string;
+  name: string;
+  /** "GPU" | "CPU" | "ACCELERATOR" | "other" */
+  kind: string;
+}
+
 export interface Status {
   capabilities: {
+    /** Same as decode_backend, under the name the header has always used. */
     hwaccel: string;
+    /** What the probe settled on: "cuda", "vaapi" or "cpu". */
+    decode_backend: string;
+    decode_device: string | null;
+    /** Backend → why it was refused. An empty string means it works. */
+    decode_probes: Record<string, string>;
     ffmpeg_version: string;
     gyroflow_version: string;
     mp4_merge_available: boolean;
     dri_devices: string[];
+    nvidia_present: boolean;
     opencl_icds: string[];
-    vaapi_decode: boolean;
+    opencl_devices: OpenCLDevice[];
+    /** The OpenCL GPU Gyroflow will warp on, null when there is only a CPU one. */
+    opencl_gpu: string | null;
+    stabilize_device: string;
     notes: string[];
   };
   counts: Record<string, number>;
