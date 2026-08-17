@@ -4,6 +4,7 @@ from app.services.capabilities import (
     Capabilities,
     OpenCLDevice,
     backends_to_probe,
+    hardware_confirmed,
     parse_clinfo,
     parse_vulkaninfo,
 )
@@ -178,6 +179,20 @@ def test_neither_path_means_cpu():
     )
     assert caps.stabilize_device == "CPU"
     assert not caps.stabilize_on_gpu
+
+
+def test_nvdec_is_only_believed_when_its_log_proves_it():
+    """Measured on ffmpeg 7.1.1: `-hwaccel cuda` on a codec the chip cannot handle
+    exits 0 and quietly decodes in software, and `-hwaccel_output_format` does not
+    change that. The verbose log is the only witness."""
+    assert hardware_confirmed("cuda", "[hevc @ 0x1] NVDEC capabilities:\n  max size 8192")
+    assert not hardware_confirmed("cuda", "[ffv1 @ 0x1] decoding as usual\n")
+
+
+def test_a_backend_without_a_known_marker_keeps_the_exit_code():
+    """VAAPI has no marker we measured, so its probe stays as strict as it was: no
+    invented regex, no pretend measurement."""
+    assert hardware_confirmed("vaapi", "")
 
 
 def test_auto_probes_nvdec_before_vaapi():

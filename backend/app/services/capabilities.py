@@ -57,6 +57,26 @@ DECODE_BACKENDS = ("cuda", "vaapi")
 # a working GPU.
 _SAMPLE_SIZE = "640x480"
 
+# What proves the hardware really did the decoding, per backend.
+#
+# The exit code is not enough, measured on ffmpeg 7.1.1: asking for `-hwaccel cuda`
+# on a codec the chip cannot handle exits **0** and decodes in software, and adding
+# `-hwaccel_output_format cuda` does not change that. A card too old for HEVC Main10
+# would therefore be labelled CUDA while every proxy ran on the CPU, which is
+# exactly the lie this module exists to prevent. Verbose output does tell the truth:
+# `NVDEC capabilities:` appears when NVDEC runs and is absent when it does not.
+#
+# Only cuda is listed, because only cuda was measured. VAAPI keeps the exit code as
+# its single signal rather than a marker invented from memory, and its device
+# creation failing is what this machine proved the exit code does catch.
+_HARDWARE_PROOF = {"cuda": re.compile(r"NVDEC capabilities", re.I)}
+
+
+def hardware_confirmed(backend: str, log: str) -> bool:
+    """Whether `log` proves the hardware ran, for backends where we know the marker."""
+    proof = _HARDWARE_PROOF.get(backend)
+    return proof is None or bool(proof.search(log))
+
 
 @dataclass
 class OpenCLDevice:
@@ -306,29 +326,47 @@ def _build_sample() -> Path | None:
     return sample
 
 
-def _try_decode(sample: Path, flags: list[str]) -> tuple[bool, str]:
-    """Decode the sample with `flags`, and say why if it did not work.
+def _complaints(log: str) -> str:
+    """The lines worth showing out of a verbose ffmpeg log."""
+    lines = [
+        line.strip()
+        for line in log.splitlines()
+        if re.search(r"error|failed|unknown|cannot|no device", line, re.I)
+    ]
+    return "\n".join(lines[-4:])[:300] or log.strip()[-300:]
 
-    ffmpeg refuses outright when a requested hwaccel cannot create its device, so
-    a zero exit code here means the frames really went through that path.
+
+def _try_decode(sample: Path, backend: str, flags: list[str]) -> tuple[bool, str]:
+    """Decode the sample through `flags`, and say why if the hardware did not run.
+
+    Verbose on purpose: the exit code catches a device that cannot be created, and
+    the log is the only thing that catches a flag ffmpeg accepted and then ignored.
+    See `_HARDWARE_PROOF`.
     """
     try:
         proc = _run(
             [
-                settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostats",
+                settings.ffmpeg_bin, "-hide_banner", "-loglevel", "verbose", "-nostats",
                 *flags, "-i", str(sample), "-f", "null", "-",
             ],
             timeout=120,
         )
     except subprocess.TimeoutExpired:
-        # A hung decode is worse than a slow one: it wedged this machine's GPU
+        # A hung decode is worse than a slow one: it wedged a GPU on this project
         # once already. Treat it as unusable.
         return False, "the decode hung (timeout)"
     except OSError as exc:
         return False, f"probe failed: {exc}"
-    if proc.returncode == 0:
-        return True, ""
-    return False, (proc.stderr or proc.stdout or "").strip()[:300]
+
+    log = f"{proc.stderr}\n{proc.stdout}"
+    if proc.returncode != 0:
+        return False, _complaints(log)
+    if not hardware_confirmed(backend, log):
+        return False, (
+            "ffmpeg accepted the flag and then decoded in software: this chip does "
+            "not handle HEVC 10-bit"
+        )
+    return True, ""
 
 
 def _vaapi_device(caps: Capabilities) -> str:
@@ -346,12 +384,12 @@ def _probe_backend(name: str, sample: Path, caps: Capabilities) -> tuple[bool, s
     if name == "cuda":
         if not caps.nvidia_present:
             return False, "no /dev/nvidia0: no NVIDIA GPU in this container"
-        return _try_decode(sample, ["-hwaccel", "cuda"])
+        return _try_decode(sample, name, ["-hwaccel", "cuda"])
     if name == "vaapi":
         if not caps.dri_devices:
             return False, "no render node in /dev/dri"
         device = _vaapi_device(caps)
-        ok, why = _try_decode(sample, ["-hwaccel", "vaapi", "-hwaccel_device", device])
+        ok, why = _try_decode(sample, name, ["-hwaccel", "vaapi", "-hwaccel_device", device])
         if ok:
             caps.decode_device = device
         return ok, why

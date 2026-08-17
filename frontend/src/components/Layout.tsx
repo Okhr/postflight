@@ -31,8 +31,8 @@ export function Layout() {
   // rather than showing a single "CPU" that reads as "nothing is accelerated".
   //
   // Both come from a probe that ran the thing, never from a driver being present.
-  // Counting ICD files was the old test, and it lied: a machine with three ICDs
-  // installed and no usable GPU read as "stabilize GPU" while Gyroflow warped on
+  // Counting ICD files was the old test, and it lied: a machine carrying every
+  // vendor's ICD and no usable GPU read as "stabilize GPU" while Gyroflow warped on
   // the CPU.
   const backend = caps?.decode_backend ?? "cpu";
   const decode = backend === "cpu" ? "CPU" : backend.toUpperCase();

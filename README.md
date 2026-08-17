@@ -56,6 +56,12 @@ Le plus simple est de mettre la ligne `COMPOSE_FILE` correspondante dans le
 `.env` : les `docker compose up` suivants l'appliquent tout seuls, et on évite le
 classique « up sans les `-f` » qui recrée les conteneurs sans GPU.
 
+Ça vaut la peine : mesuré sur un RTX 3090, sur une source 3840x2880 HEVC 10 bits à
+haut débit, le décodage passe de 0.33x à **1.40x** temps réel en NVDEC, et la passe
+proxy complète de 0.31x à **1.37x**. Le gain grandit avec le débit de la source,
+parce que c'est le décodage qui domine : accéléré, il devient si rapide que
+l'encodage du proxy ne coûte presque plus rien à côté.
+
 Se tromper n'est jamais fatal, seulement lent. Aucun chemin accéléré n'est pris
 sur parole : au démarrage, le worker **décode réellement** un échantillon HEVC
 10 bits en NVDEC puis en VAAPI et garde le premier qui marche, et il énumère les
