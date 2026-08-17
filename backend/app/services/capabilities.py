@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -281,7 +282,11 @@ def _opencl_devices() -> list[OpenCLDevice]:
 # --------------------------------------------------------------------------- #
 
 def _build_sample() -> Path | None:
-    sample = settings.tmp_dir / "caps_probe_hevc10.mp4"
+    # Named after the process: the API and the worker are started together by
+    # compose and both probe, so a shared filename means one of them deleting the
+    # sample while the other is still decoding it, and a hardware path reported
+    # broken for no reason.
+    sample = settings.tmp_dir / f"caps_probe_hevc10_{os.getpid()}.mp4"
     try:
         settings.tmp_dir.mkdir(parents=True, exist_ok=True)
         made = _run(

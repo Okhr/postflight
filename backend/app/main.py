@@ -12,6 +12,7 @@ from .api.routes import router
 from .config import settings
 from .db import init_db
 from .services import gyroflow as gyroflow_service
+from .services.capabilities import detect
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,10 @@ async def lifespan(_app: FastAPI):
     settings.ensure_dirs()
     init_db()
     gyroflow_service.seed_templates()
+    # Probe here rather than on the first /api/status: the probe really decodes an
+    # HEVC 10-bit sample, which is a few seconds, and the header of the very first
+    # page load is what would have paid for it.
+    detect()
     log.info("API ready, data_dir=%s", settings.data_dir)
     yield
 
