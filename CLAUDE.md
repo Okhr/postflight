@@ -29,11 +29,13 @@ réponses en conversation restent **en français**.
    `output_height` suffit à changer de format (un 1080x1920 demandé sur une
    source 3840x2880 fait dériver un crop 1620x2880 tout seul).
 
-4. **Le warping de Gyroflow passe par OpenCL, pas Vulkan.** L'image embarque les
-   ICD des trois fabricants : rusticl/Mesa (AMD), NEO (Intel), un `nvidia.icd`
-   pointant sur la lib que le runtime injecte, plus pocl en repli CPU. Attention :
-   **un ICD installé n'est pas un device**. Sur une machine à trois ICD et zéro GPU
-   utilisable, le seul device énuméré est le CPU. Voir la section matériel.
+4. **Le warping de Gyroflow prend OpenCL d'abord, wgpu (Vulkan) ensuite, le CPU en
+   dernier**, et il choisit seul : `render()` lit dans son log ce qu'il a pris.
+   L'image embarque les ICD OpenCL des trois fabricants (rusticl/Mesa pour AMD, NEO
+   pour Intel, un `nvidia.icd` pointant sur la lib que le runtime injecte, pocl en
+   repli CPU) et les pilotes Vulkan de Mesa. Attention : **un ICD installé n'est pas
+   un device**. Sur une machine à cinq ICD et zéro GPU utilisable, le seul device
+   énuméré est le CPU. Voir la section matériel.
 
 ## Perfs mesurées (Ryzen AI 9 HX 370 / Radeon 890M, source 3840x2880 HEVC 10-bit 60p)
 
@@ -88,8 +90,9 @@ donc nommer la machine :
 |---|---|---|
 | CPU | Ryzen AI 9 HX 370 | Intel i7-7700K |
 | GPU | Radeon 890M (amdgpu-dkms) | GeForce RTX 3090 (nvidia 535.261.03) |
-| décodage | VAAPI | aucun |
-| OpenCL | rusticl | aucun device |
+| décodage retenu | VAAPI | **NVDEC (`cuda`)** |
+| OpenCL | rusticl | **la plateforme NVIDIA, via le `nvidia.icd` de l'image** |
+| accès conteneur | `/dev/dri` mappé | `runtime: nvidia` |
 
 **Sur NVIDIA, mapper `/dev/dri` ne sert à rien.** Le nœud render appartient au
 pilote `nvidia` : libva y lit le nom du pilote DRM, cherche `nvidia_drv_video.so`
@@ -98,13 +101,44 @@ pilote `nvidia` : libva y lit le nom du pilote DRM, cherche `nvidia_drv_video.so
 au conteneur par `runtime: nvidia` + `NVIDIA_DRIVER_CAPABILITIES=compute,video,
 utility`, ce que Docker ne peut pas décider seul, d'où `docker-compose.nvidia.yml`.
 
-**Un pilote installé n'est pas un pilote qui marche.** Mesuré sur le RTX 3090 :
-module noyau et espace utilisateur tous deux en 535.261.03, `/dev/nvidia*` présents
-en `rw-rw-rw-`, aucune erreur NVRM au journal, `nvidia-smi` nominal, et
-`cuInit(0)` qui renvoie `CUDA_ERROR_UNKNOWN`, **sur l'hôte, hors de tout
-conteneur**. OpenCL n'a énuméré le 3090 qu'une fois sur quatre essais. Ce poste est
-donc CPU-only tant que la pile CUDA n'est pas réparée (un reboot est le remède
-habituel), et *aucune* vérification statique ne l'aurait vu.
+**`nvidia-smi` peut mentir sur l'état du GPU.** Diagnostic complet du 2026-08-17,
+qui a coûté une soirée et qu'il ne faut pas refaire. Symptôme : `cuInit(0)` renvoie
+`CUDA_ERROR_UNKNOWN`, **sur l'hôte, hors de tout conteneur**, alors que module noyau
+et espace utilisateur sont tous deux en 535.261.03, que `/dev/nvidia*` sont présents
+en `rw-rw-rw-`, que le journal noyau ne montre aucune erreur NVRM et que
+`nvidia-smi` répond parfaitement. OpenCL n'énumérait le 3090 qu'une fois sur quatre.
+
+Cause : **un processus d'inférence tué avait laissé un contexte CUDA fuité.**
+`nvidia_uvm` gardait un refcount de 2 sans utilisateur nommé, ce qui bloquait à la
+fois `rmmod nvidia_uvm` (« Module is in use ») et tout nouveau `cuInit`. Ce qui a
+mis sur la piste : ce même `nvidia-smi` listait un processus python en train
+d'utiliser 3358 Mio, preuve que CUDA fonctionnait pour lui. **Redémarrage, et tout
+remarche du premier coup.**
+
+Deux leçons. `nvidia-smi` interroge la couche de gestion, pas la pile de calcul :
+son silence ne vaut rien comme diagnostic. Et le vrai signal utile était le
+refcount du module, pas les versions ni les permissions.
+
+Après reboot, mesuré dans le conteneur (source 3840x2880 HEVC 10 bits 60p) :
+
+| source | décodage NVDEC | décodage CPU | gain |
+|---|---|---|---|
+| synthétique 16 Mb/s | 3.29x | 2.84x | 1.16x |
+| synthétique 814 Mb/s | 1.40x | 0.33x | **4.3x** |
+
+Passe proxy complète sur la source lourde : **1.37x contre 0.31x**. Le gain grandit
+avec le débit, parce que le décodage domine : en NVDEC, la passe entière (2.19 s) ne
+coûte presque rien de plus que le décodage seul (2.15 s). Un vrai rush est à ~135
+Mb/s, donc entre les deux lignes du tableau. **Ne pas comparer ces chiffres à ceux
+de la machine AMD** : le contenu synthétique encadre, il ne prédit pas.
+
+**Deux impasses vérifiées, pour ne pas les réexplorer.** VDPAU décode bien (4,3x le
+CPU sur l'hôte) mais exige une session X11 : `Cannot open the X11 display` dans un
+conteneur, donc inutilisable pour un service headless. Et sur un pilote empaqueté
+par Debian (bibliothèques dans `/usr/lib/x86_64-linux-gnu/nvidia/current`), le
+runtime injecte l'ICD Vulkan mais **pas** le `libnvidia-glsi` dont il dépend, même
+avec `NVIDIA_DRIVER_CAPABILITIES=all` : Vulkan reste indisponible dans le conteneur
+sur cette machine, alors qu'il marche sur l'hôte.
 
 D'où le modèle de `services/capabilities.py` : **on sonde en exécutant**.
 
@@ -114,7 +148,12 @@ D'où le modèle de `services/capabilities.py` : **on sonde en exécutant**.
   Le premier qui sort en 0 gagne ; `VS_HWACCEL` peut en épingler un. Un timeout
   compte comme un échec : un décodage qui pend est pire qu'un décodage lent.
 - **OpenCL** : `clinfo --json`, en cherchant un device de **type GPU**. Compter les
-  fichiers ICD était le test d'avant, et il mentait.
+  fichiers ICD était le test d'avant, et il mentait : l'image en livre cinq, et sur
+  une machine dont la pile était coincée ils énuméraient le seul CPU.
+- **Vulkan** : `vulkaninfo --summary`, même question, parce que Gyroflow essaie
+  OpenCL *puis* wgpu. Filtrer sur `deviceType` est indispensable, sinon le
+  rastériseur logiciel (`llvmpipe`, `lavapipe`) passe pour un GPU : il s'annonce
+  `PHYSICAL_DEVICE_TYPE_CPU`, c'est ce qui le démasque.
 - **schéma de `clinfo --json`** (vérifié sur 3.0.25, pas deviné) : `platforms` et
   `devices` sont deux listes **parallèles**, et les devices d'une plateforme pendent
   d'une clé `online` au lieu d'être imbriqués dans la plateforme.

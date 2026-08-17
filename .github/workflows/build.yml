@@ -1,0 +1,105 @@
+name: build
+
+# Every commit on master, plus a manual button. The image is what gets deployed,
+# so it is built from the same Dockerfile the machines run, never from a variant.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# A second push while the first is still building makes the first one pointless:
+# only the head of master ever gets deployed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Lowercase and hardcoded on purpose: `github.repository` is `Okhr/video-stab`,
+  # and GHCR rejects an uppercase letter in an image name.
+  IMAGE: ghcr.io/okhr/video-stab
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.13 because that is what ubuntu:25.04 ships and therefore what the image
+      # runs. Testing on anything else would test something we do not deploy.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: pytest
+        run: pytest -q
+        working-directory: backend
+
+  image:
+    name: image
+    # The image is only worth building if the frame arithmetic, the split
+    # detection and the capability probing still hold.
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # `latest` for deployments, the sha for pinning one and for rolling back.
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # amd64 only, and not by omission: Gyroflow and mp4_merge are shipped as
+          # prebuilt linux64 binaries, so there is no arm64 image to be had.
+          platforms: linux/amd64
+          # Without this, buildx pushes a manifest list with an extra
+          # unknown/unknown attestation entry, which some registries and some
+          # Portainer versions display as a second broken architecture.
+          provenance: false
+          # The apt layer and the Gyroflow download dominate the build; caching them
+          # turns a 10 minute job into about 2.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Image poussée"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Déploiement : \`VS_IMAGE=${{ env.IMAGE }}:latest\` dans le \`.env\`, puis"
+            echo "\`docker compose pull && docker compose up -d\`."
+          } >> "$GITHUB_STEP_SUMMARY"

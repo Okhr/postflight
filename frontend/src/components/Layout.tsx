@@ -36,8 +36,8 @@ export function Layout() {
   // the CPU.
   const backend = caps?.decode_backend ?? "cpu";
   const decode = backend === "cpu" ? "CPU" : backend.toUpperCase();
-  const gpu = caps?.opencl_gpu ?? null;
-  const stabilize = gpu ? "GPU" : "CPU";
+  // Either of Gyroflow's two GPU paths counts, OpenCL or wgpu over Vulkan.
+  const stabilize = caps?.stabilize_on_gpu ? "GPU" : "CPU";
   // Candidates that were tried and refused, so a CPU fallback can be explained
   // rather than merely announced.
   const refused = Object.entries(caps?.decode_probes ?? {}).filter(([, why]) => why);
@@ -98,9 +98,9 @@ export function Layout() {
                     </p>
                     <p>
                       Stabilization:{" "}
-                      {gpu
-                        ? `OpenCL on ${gpu} (about 3x faster than CPU)`
-                        : "CPU only, no OpenCL GPU device"}
+                      {caps?.stabilize_on_gpu
+                        ? caps.stabilize_device
+                        : "CPU only, neither an OpenCL nor a Vulkan GPU device"}
                     </p>
                     {refused.length > 0 && (
                       <p className="mt-1">

@@ -18,12 +18,13 @@ does not:
 - **ffmpeg decode** for proxies: `cuda` (NVDEC), then `vaapi` (AMD radeonsi and
   Intel iHD/i965), then the CPU. NVDEC first because a discrete card beats an
   iGPU on the machines that have both.
-- **Gyroflow's OpenCL warp**: we do not drive it. Gyroflow tries OpenCL, then
-  wgpu, then the CPU on its own, and `render()` reads back from its log what it
-  picked. What we do here is answer the question the UI needs *before* a render:
-  is there a real OpenCL **GPU** device, or only a CPU one? Counting the installed
-  ICD files answers that wrong: this machine ships three of them (mesa, rusticl,
-  pocl) and exposes exactly one device, the CPU.
+- **Gyroflow's warp**: we do not drive it. Gyroflow tries OpenCL, then wgpu (which
+  means Vulkan), then the CPU on its own, and `render()` reads back from its log
+  what it picked. What we do here is answer the question the UI needs *before* a
+  render: is there a real **GPU** device on either path, or only a CPU one?
+  Counting the installed ICD files answers that wrong. The image ships five of
+  them, and on a machine whose driver stack was wedged they enumerated exactly one
+  device: the CPU.
 """
 
 from __future__ import annotations
@@ -88,6 +89,9 @@ class Capabilities:
 
     opencl_icds: list[str] = field(default_factory=list)
     opencl_devices: list[OpenCLDevice] = field(default_factory=list)
+    # Names of the Vulkan devices that are real GPUs. Gyroflow's second choice
+    # after OpenCL, so a machine with Vulkan and no ICD still warps on its GPU.
+    vulkan_devices: list[str] = field(default_factory=list)
 
     notes: list[str] = field(default_factory=list)
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -104,14 +108,25 @@ class Capabilities:
 
     @property
     def stabilize_device(self) -> str:
+        """What Gyroflow will most likely warp on, in its own order of preference:
+        OpenCL, then wgpu over Vulkan, then the CPU."""
         gpu = self.opencl_gpu
-        return str(gpu) if gpu else "CPU"
+        if gpu:
+            return str(gpu)
+        if self.vulkan_devices:
+            return f"{self.vulkan_devices[0]} (Vulkan)"
+        return "CPU"
+
+    @property
+    def stabilize_on_gpu(self) -> bool:
+        return bool(self.opencl_gpu or self.vulkan_devices)
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["detected_at"] = self.detected_at.isoformat()
         data["hwaccel"] = self.hwaccel
         data["stabilize_device"] = self.stabilize_device
+        data["stabilize_on_gpu"] = self.stabilize_on_gpu
         data["opencl_gpu"] = str(self.opencl_gpu) if self.opencl_gpu else None
         return data
 
@@ -194,6 +209,58 @@ def _device_kind(entry: dict) -> str:
             if name.endswith(kind):
                 return kind
     return "other"
+
+
+def parse_vulkaninfo(payload: str) -> list[str]:
+    """Names of the Vulkan devices that are real GPUs, from `vulkaninfo --summary`.
+
+    Gyroflow tries OpenCL first and **wgpu**, which means Vulkan, second. A machine
+    with a working Vulkan driver and no OpenCL ICD therefore still warps on its GPU,
+    and reporting only OpenCL would repeat one layer down the very lie this module
+    exists to kill.
+
+    Format, captured on vulkan-tools 1.4 rather than guessed: a `Devices:` section,
+    one `GPUn:` block per device, then indented `key = value` lines. Mesa's software
+    rasterizer announces itself as PHYSICAL_DEVICE_TYPE_CPU, which is how it gets
+    filtered out despite being listed as a device like any other.
+    """
+    devices: list[str] = []
+    name = ""
+    kind = ""
+
+    def flush() -> None:
+        if name and "GPU" in kind:
+            devices.append(name)
+
+    for raw in payload.splitlines():
+        line = raw.strip()
+        if line.startswith("GPU") and line.endswith(":"):
+            flush()
+            name, kind = "", ""
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key == "deviceName":
+            name = value
+        elif key == "deviceType":
+            kind = value
+    flush()
+    return devices
+
+
+def _vulkan_devices() -> list[str]:
+    if not shutil.which("vulkaninfo"):
+        return []
+    try:
+        # Non-zero exit when no driver answers, which is not an error here: the
+        # question was whether a GPU exists, and the answer is simply no.
+        proc = _run(["vulkaninfo", "--summary"], timeout=60)
+    except (subprocess.SubprocessError, OSError) as exc:
+        log.warning("vulkaninfo unusable: %s", exc)
+        return []
+    return parse_vulkaninfo(proc.stdout)
 
 
 def _opencl_devices() -> list[OpenCLDevice]:
@@ -351,6 +418,7 @@ def detect(force: bool = False) -> Capabilities:
 
     _detect_decode(caps)
     caps.opencl_devices = _opencl_devices()
+    caps.vulkan_devices = _vulkan_devices()
 
     if not caps.dri_devices and not caps.nvidia_present:
         caps.notes.append(
@@ -362,12 +430,18 @@ def detect(force: bool = False) -> Capabilities:
         caps.notes.append(
             "mp4_merge is missing: cannot join split rushes without losing the gyro"
         )
-    if caps.opencl_gpu is None:
+    if caps.opencl_gpu is None and caps.vulkan_devices:
+        caps.notes.append(
+            f"no OpenCL GPU, but Vulkan exposes {caps.vulkan_devices[0]}: Gyroflow "
+            "should fall back to wgpu, which is a GPU path even if we have not "
+            "measured it against OpenCL. Its render log says which one it took."
+        )
+    elif caps.opencl_gpu is None:
         # The interesting half of the message is *why*, and the ICD list is what
         # says whether the vendor's driver ever made it into the container.
         caps.notes.append(
-            "no OpenCL GPU device: Gyroflow will warp on the CPU (about 3x slower). "
-            f"ICDs installed: {', '.join(caps.opencl_icds) or 'none'}."
+            "no OpenCL GPU and no Vulkan GPU: Gyroflow will warp on the CPU (about "
+            f"3x slower). ICDs installed: {', '.join(caps.opencl_icds) or 'none'}."
         )
 
     log.info(

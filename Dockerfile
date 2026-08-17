@@ -30,6 +30,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       # the CPU fallback. NVIDIA cannot be shipped (its driver is injected by the
       # container runtime), but the ICD pointing at it is created below.
       ocl-icd-libopencl1 mesa-opencl-icd intel-opencl-icd pocl-opencl-icd clinfo \
+      # Vulkan, which is what Gyroflow's wgpu backend uses when OpenCL exposes no
+      # GPU. mesa-vulkan-drivers covers AMD (radv) and Intel (anv); NVIDIA's ICD
+      # comes from the container runtime. vulkan-tools is the probe.
+      libvulkan1 mesa-vulkan-drivers vulkan-tools \
       # VAAPI decoding (decode only, see services/proxy.py). One image has to cover
       # every vendor: mesa-va-drivers is AMD radeonsi, intel-media-va-driver is
       # Intel Gen9+ (iHD) and i965 the older parts. Without the Intel ones, an

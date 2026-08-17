@@ -5,6 +5,7 @@ from app.services.capabilities import (
     OpenCLDevice,
     backends_to_probe,
     parse_clinfo,
+    parse_vulkaninfo,
 )
 
 _RAW = {"CPU": 2, "GPU": 4, "ACCELERATOR": 8}
@@ -106,6 +107,77 @@ def test_unreadable_output_never_raises():
     the worker from starting. The hardware chart is a nicety."""
     for payload in ("", "not json", "[]", "null", '{"platforms": null}', "{}"):
         assert parse_clinfo(payload) == []
+
+
+# Real `vulkaninfo --summary` output, captured on the RTX 3090 box (2026-08-17).
+VULKANINFO = """Devices:
+========
+GPU0:
+\tapiVersion         = 1.3.242
+\tdriverVersion      = 535.5.3.192
+\tvendorID           = 0x10de
+\tdeviceType         = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+\tdeviceName         = NVIDIA GeForce RTX 3090
+\tdriverName         = NVIDIA
+GPU1:
+\tapiVersion         = 1.3.230
+\tdriverVersion      = 0.0.1
+\tvendorID           = 0x10005
+\tdeviceType         = PHYSICAL_DEVICE_TYPE_CPU
+\tdeviceName         = llvmpipe (LLVM 15.0.6, 256 bits)
+\tdriverName         = llvmpipe
+"""
+
+
+def test_software_rasterizer_is_not_a_gpu():
+    """llvmpipe is listed as a device like any other and would happily be reported
+    as a GPU. Its deviceType is what gives it away."""
+    assert parse_vulkaninfo(VULKANINFO) == ["NVIDIA GeForce RTX 3090"]
+
+
+def test_vulkan_without_a_driver_reports_nothing():
+    """What vulkaninfo prints when the ICD cannot load its library, measured on a
+    container where the runtime injected no graphics libs."""
+    payload = (
+        "ERROR: [Loader Message] Code 0 : libnvidia-glsi.so.535.261.03: cannot open "
+        "shared object file\nCannot create Vulkan instance.\n"
+    )
+    assert parse_vulkaninfo(payload) == []
+    assert parse_vulkaninfo("") == []
+
+
+def test_integrated_gpu_counts_too():
+    payload = (
+        "Devices:\nGPU0:\n\tdeviceType = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU\n"
+        "\tdeviceName = Intel(R) HD Graphics 630\n"
+    )
+    assert parse_vulkaninfo(payload) == ["Intel(R) HD Graphics 630"]
+
+
+def test_opencl_gpu_wins_over_vulkan():
+    """Gyroflow tries OpenCL first, so that is what we name when both exist."""
+    caps = Capabilities(
+        opencl_devices=[OpenCLDevice("NVIDIA CUDA", "NVIDIA GeForce RTX 3090", "GPU")],
+        vulkan_devices=["NVIDIA GeForce RTX 3090"],
+    )
+    assert caps.stabilize_device == "NVIDIA GeForce RTX 3090 (NVIDIA CUDA)"
+    assert caps.stabilize_on_gpu
+
+
+def test_vulkan_alone_still_counts_as_a_gpu():
+    """A host with a Vulkan driver and no OpenCL ICD: Gyroflow falls back to wgpu,
+    so announcing "CPU" here would be the same lie as counting ICD files."""
+    caps = Capabilities(vulkan_devices=["AMD Radeon 890M"])
+    assert caps.stabilize_device == "AMD Radeon 890M (Vulkan)"
+    assert caps.stabilize_on_gpu
+
+
+def test_neither_path_means_cpu():
+    caps = Capabilities(
+        opencl_devices=[OpenCLDevice("Portable Computing Language", POCL_CPU, "CPU")]
+    )
+    assert caps.stabilize_device == "CPU"
+    assert not caps.stabilize_on_gpu
 
 
 def test_auto_probes_nvdec_before_vaapi():

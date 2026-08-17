@@ -186,7 +186,11 @@ export interface Status {
     opencl_devices: OpenCLDevice[];
     /** The OpenCL GPU Gyroflow will warp on, null when there is only a CPU one. */
     opencl_gpu: string | null;
+    /** Vulkan GPUs, Gyroflow's wgpu fallback when no OpenCL GPU exists. */
+    vulkan_devices: string[];
+    /** What Gyroflow will most likely warp on, named. */
     stabilize_device: string;
+    stabilize_on_gpu: boolean;
     notes: string[];
   };
   counts: Record<string, number>;

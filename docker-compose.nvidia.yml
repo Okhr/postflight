@@ -10,10 +10,16 @@
 #
 # Requires on the host: nvidia-container-toolkit (check with `nvidia-ctk --version`).
 #
-# The three capabilities are each needed by a different part of the pipeline:
-#   compute → OpenCL, which is what Gyroflow warps with
-#   video   → NVDEC, which is what ffmpeg decodes proxies with
-#   utility → nvidia-smi, which is what makes a broken driver diagnosable
+# Each capability is needed by a different part of the pipeline:
+#   compute  → OpenCL, which is what Gyroflow warps with
+#   video    → NVDEC, which is what ffmpeg decodes proxies with
+#   utility  → nvidia-smi, which is what makes a broken driver diagnosable
+#   graphics → Vulkan, Gyroflow's wgpu fallback when OpenCL exposes no GPU
+#
+# Measured caveat on `graphics`: with a Debian-packaged driver, whose libraries live
+# in /usr/lib/x86_64-linux-gnu/nvidia/current, the runtime injects the Vulkan ICD but
+# not the libnvidia-glsi it depends on, so Vulkan stays unavailable in the container.
+# It costs nothing to ask for, and OpenCL is the path that matters anyway.
 #
 # Usage: docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d
 #
@@ -27,10 +33,10 @@ services:
     runtime: nvidia
     environment:
       NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility,graphics
 
   worker:
     runtime: nvidia
     environment:
       NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility,graphics
