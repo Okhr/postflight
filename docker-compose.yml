@@ -1,0 +1,63 @@
+# video-stab stack. Two services out of the same image: the API (which also
+# serves the frontend) and the worker (inbox scan + merge + proxies + renders).
+# They only talk through the SQLite database on the /data volume, in WAL mode.
+#
+# With no GPU it runs as is: Gyroflow falls back to pocl/CPU and ffmpeg decodes on
+# the CPU. To make use of a GPU, add the override:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
+services:
+  api:
+    image: ${VS_IMAGE:-video-stab:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["api"]
+    restart: unless-stopped
+    # Files written to /data belong to this user: without it a NAS volume fills up
+    # with root-owned files.
+    user: "${VS_UID:-1000}:${VS_GID:-1000}"
+    ports:
+      - "${VS_PORT:-8080}:8000"
+    volumes:
+      - ${VS_DATA_PATH:-./data}:/data
+    environment:
+      VS_DATA_DIR: /data
+      VS_HWACCEL: ${VS_HWACCEL:-auto}
+      VS_PROXY_HEIGHT: ${VS_PROXY_HEIGHT:-960}
+      VS_PROXY_CRF: ${VS_PROXY_CRF:-26}
+      VS_SPLIT_GAP_TOLERANCE_S: ${VS_SPLIT_GAP_TOLERANCE_S:-2.0}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    image: ${VS_IMAGE:-video-stab:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["worker"]
+    restart: unless-stopped
+    # Docker's default is 10s, then SIGKILL. A proxy or a render runs for minutes,
+    # so the default guaranteed that `compose down` killed ffmpeg mid-flight — which
+    # on AMD hardware left the GPU deadlocked on an orphaned VAAPI fence, machine
+    # reboot only. The worker forwards SIGTERM to its child and waits; this gives it
+    # the room to.
+    stop_grace_period: 60s
+    user: "${VS_UID:-1000}:${VS_GID:-1000}"
+    depends_on:
+      - api
+    volumes:
+      - ${VS_DATA_PATH:-./data}:/data
+    environment:
+      VS_DATA_DIR: /data
+      VS_HWACCEL: ${VS_HWACCEL:-auto}
+      VS_SCAN_INTERVAL_S: ${VS_SCAN_INTERVAL_S:-30}
+      VS_STABILITY_CHECKS: ${VS_STABILITY_CHECKS:-2}
+      VS_PROXY_HEIGHT: ${VS_PROXY_HEIGHT:-960}
+      VS_PROXY_CRF: ${VS_PROXY_CRF:-26}
+      VS_SPLIT_GAP_TOLERANCE_S: ${VS_SPLIT_GAP_TOLERANCE_S:-2.0}
+      VS_PURGE_PARTS_AFTER_MERGE: ${VS_PURGE_PARTS_AFTER_MERGE:-false}

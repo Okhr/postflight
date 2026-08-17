@@ -1,0 +1,11 @@
+.git
+.env
+.venv
+data
+fixtures
+tools
+docker/Dockerfile.spike
+**/node_modules
+**/dist
+**/__pycache__
+*.md

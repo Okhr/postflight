@@ -1,0 +1,44 @@
+# Spike jetable : valide que Gyroflow tourne headless dans un conteneur avec
+# OpenCL acceleration, and that mp4_merge + ffmpeg (VAAPI decode) work.
+# Base ubuntu:25.04 = same version as the host, so the host's ROCm libs can be
+# bind-mounted without ABI trouble.
+FROM ubuntu:25.04
+
+ARG GYROFLOW_VERSION=1.6.3
+ARG MP4_MERGE_VERSION=0.1.11
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl xz-utils \
+      ffmpeg \
+      ocl-icd-libopencl1 clinfo \
+      mesa-opencl-icd pocl-opencl-icd \
+      mesa-va-drivers libva2 libva-drm2 vainfo \
+      libgl1 libegl1 libgbm1 libdrm2 libglx0 libopengl0 \
+      libc++1 libc++abi1 \
+      libasound2t64 libpulse0 libdbus-1-3 libglib2.0-0t64 \
+      libfontconfig1 libfreetype6 fontconfig \
+      libxkbcommon0 libx11-6 libxcb1 libxcb-cursor0 \
+      libkrb5-3 libgssapi-krb5-2 libpcre2-8-0 libbrotli1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Gyroflow : le tarball embarque lib/, plugins/, qml/, camera_presets/
+RUN curl -fsSL "https://github.com/gyroflow/gyroflow/releases/download/v${GYROFLOW_VERSION}/Gyroflow-linux64.tar.gz" \
+      -o /tmp/gyroflow.tar.gz \
+ && mkdir -p /opt/gyroflow \
+ && tar -xzf /tmp/gyroflow.tar.gz -C /opt/gyroflow --strip-components=1 \
+ && rm /tmp/gyroflow.tar.gz \
+ && printf '#!/bin/sh\nexport LD_LIBRARY_PATH="/opt/gyroflow/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexec /opt/gyroflow/gyroflow "$@"\n' > /usr/local/bin/gyroflow \
+ && chmod +x /usr/local/bin/gyroflow
+
+# mp4_merge: lossless mp4 join that preserves the djmd gyro stream
+RUN curl -fsSL "https://github.com/gyroflow/mp4-merge/releases/download/v${MP4_MERGE_VERSION}/mp4_merge-linux64" \
+      -o /usr/local/bin/mp4_merge \
+ && chmod +x /usr/local/bin/mp4_merge
+
+ENV QT_QPA_PLATFORM=offscreen \
+    RUSTICL_ENABLE=radeonsi \
+    HOME=/tmp
+
+WORKDIR /work
+CMD ["/bin/bash"]

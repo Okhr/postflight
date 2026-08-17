@@ -1,0 +1,70 @@
+{
+  "$meta": {
+    "id": "h_1080",
+    "label": "Horizontal 1080p",
+    "description": "16:9 crop inside the 4:3 source, 1920x1080 H.265 10-bit output.",
+    "aspect": "16:9"
+  },
+  "version": 2,
+  "stabilization": {
+    "fov": 1.0,
+    "method": "Default",
+    "smoothing_params": [
+      {
+        "name": "smoothness",
+        "value": 0.2
+      },
+      {
+        "name": "smoothness_pitch",
+        "value": 0.5
+      },
+      {
+        "name": "smoothness_yaw",
+        "value": 0.5
+      },
+      {
+        "name": "smoothness_roll",
+        "value": 0.5
+      },
+      {
+        "name": "per_axis",
+        "value": 0.0
+      },
+      {
+        "name": "trim_range_only",
+        "value": 1.0
+      },
+      {
+        "name": "max_smoothness",
+        "value": 1.0
+      },
+      {
+        "name": "alpha_0_1s",
+        "value": 0.1
+      }
+    ],
+    "adaptive_zoom_window": 4.0,
+    "adaptive_zoom_method": 1,
+    "adaptive_zoom_center_offset": [
+      0.0,
+      0.0
+    ],
+    "lens_correction_amount": 1.0,
+    "horizon_lock_amount": 0.0,
+    "horizon_lock_roll": 0.0,
+    "max_zoom": 130.0,
+    "max_zoom_iterations": 5,
+    "video_speed": 1.0
+  },
+  "output": {
+    "codec": "H.265/HEVC",
+    "output_width": 1920,
+    "output_height": 1080,
+    "bitrate": 40.0,
+    "use_gpu": false,
+    "audio": false,
+    "encoder_options": "-preset superfast",
+    "interpolation": "Lanczos4",
+    "pad_with_black": false
+  }
+}
