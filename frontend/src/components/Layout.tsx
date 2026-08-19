@@ -1,10 +1,10 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Cpu, FolderInput } from "lucide-react";
+import { Cpu, FolderInput, ServerOff } from "lucide-react";
 
 import { JobsBar } from "@/components/JobsBar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { api } from "@/lib/api";
+import { api, type WorkerInfo } from "@/lib/api";
 import { LiveJobsProvider } from "@/lib/live";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +16,42 @@ const STEPS = [
   { to: "/color", step: 4, label: "Color", end: false },
 ];
 
+function decodeLabel(worker: WorkerInfo): string {
+  const backend = worker.capabilities.decode_backend || "cpu";
+  return backend === "cpu" ? "CPU" : backend.toUpperCase();
+}
+
+/** One line per worker, which is where the hardware actually lives. */
+function WorkerLine({ worker }: { worker: WorkerInfo }) {
+  const caps = worker.capabilities;
+  // Backends that were tried and refused, so a CPU fallback can be explained rather
+  // than merely announced.
+  const refused = Object.entries(caps.decode_probes ?? {}).filter(([, why]) => why);
+
+  return (
+    <div className="mt-1.5 first:mt-0">
+      <p className="font-medium">
+        {worker.name}
+        {!worker.online && <span className="text-muted-foreground"> (offline)</span>}
+        {worker.running > 0 && <span className="text-muted-foreground"> · busy</span>}
+      </p>
+      <p>decode: {decodeLabel(worker)}{caps.decode_device ? ` on ${caps.decode_device}` : ""}</p>
+      <p>stabilize: {caps.stabilize_device || "CPU"}</p>
+      {refused.length > 0 && (
+        <p className="text-muted-foreground">
+          refused:{" "}
+          {refused.map(([name, why]) => `${name} (${why.split("\n")[0].slice(0, 70)})`).join("; ")}
+        </p>
+      )}
+      {caps.notes?.map((note) => (
+        <p key={note} className="text-amber-400">
+          {note}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 export function Layout() {
   const { data: status } = useQuery({
     queryKey: ["status"],
@@ -25,22 +61,11 @@ export function Layout() {
     refetchInterval: 10_000,
   });
 
-  const caps = status?.capabilities;
-  // Two independent paths: ffmpeg for proxy decoding, OpenCL for Gyroflow's
-  // warping. One can be on the GPU while the other is not, so say which is which
-  // rather than showing a single "CPU" that reads as "nothing is accelerated".
-  //
-  // Both come from a probe that ran the thing, never from a driver being present.
-  // Counting ICD files was the old test, and it lied: a machine carrying every
-  // vendor's ICD and no usable GPU read as "stabilize GPU" while Gyroflow warped on
-  // the CPU.
-  const backend = caps?.decode_backend ?? "cpu";
-  const decode = backend === "cpu" ? "CPU" : backend.toUpperCase();
-  // Either of Gyroflow's two GPU paths counts, OpenCL or wgpu over Vulkan.
-  const stabilize = caps?.stabilize_on_gpu ? "GPU" : "CPU";
-  // Candidates that were tried and refused, so a CPU fallback can be explained
-  // rather than merely announced.
-  const refused = Object.entries(caps?.decode_probes ?? {}).filter(([, why]) => why);
+  // Hardware belongs to the workers, and each one measured its own by running the
+  // thing. The API has none worth reporting: it never decodes, warps or merges.
+  const workers = status?.workers ?? [];
+  const online = workers.filter((w) => w.online);
+  const lone = online.length === 1 ? online[0] : null;
 
   return (
     <TooltipProvider>
@@ -82,39 +107,39 @@ export function Layout() {
               <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <span className="inline-flex items-center gap-1.5">
-                      <Cpu className="h-3.5 w-3.5" />
-                      decode {decode} · stabilize {stabilize}
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1.5",
+                        online.length === 0 && "text-amber-400",
+                      )}
+                    >
+                      {online.length === 0 ? (
+                        <>
+                          <ServerOff className="h-3.5 w-3.5" />
+                          no worker
+                        </>
+                      ) : (
+                        <>
+                          <Cpu className="h-3.5 w-3.5" />
+                          {lone
+                            ? `decode ${decodeLabel(lone)} · stabilize ${
+                                lone.capabilities.stabilize_on_gpu ? "GPU" : "CPU"
+                              }`
+                            : `${online.length} workers`}
+                        </>
+                      )}
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent className="max-w-xs">
-                    <p>
-                      Proxy decoding:{" "}
-                      {backend === "cuda"
-                        ? "NVDEC, probed on a real HEVC 10-bit sample"
-                        : backend === "vaapi"
-                          ? `VAAPI on ${caps?.decode_device ?? "the render node"}`
-                          : "CPU (about 1.6x slower than a working hardware decoder)"}
-                    </p>
-                    <p>
-                      Stabilization:{" "}
-                      {caps?.stabilize_on_gpu
-                        ? caps.stabilize_device
-                        : "CPU only, neither an OpenCL nor a Vulkan GPU device"}
-                    </p>
-                    {refused.length > 0 && (
-                      <p className="mt-1">
-                        Hardware decoding tried and refused:{" "}
-                        {refused
-                          .map(([name, why]) => `${name} (${why.split("\n")[0].slice(0, 90)})`)
-                          .join("; ")}
+                  <TooltipContent className="max-w-sm">
+                    {workers.length === 0 ? (
+                      <p>
+                        Nothing has registered yet. A worker announces itself to this API
+                        on startup, so check that one is running and that VS_API_URL
+                        points here.
                       </p>
+                    ) : (
+                      workers.map((worker) => <WorkerLine key={worker.id} worker={worker} />)
                     )}
-                    {caps?.notes?.map((note) => (
-                      <p key={note} className="mt-1 text-amber-400">
-                        {note}
-                      </p>
-                    ))}
                   </TooltipContent>
                 </Tooltip>
 
@@ -127,7 +152,7 @@ export function Layout() {
                       </span>
                     </TooltipTrigger>
                     <TooltipContent>
-                      <p>Picked up on the next scan — the worker looks every 30 s.</p>
+                      <p>Picked up on the next scan, which runs every 30 s.</p>
                     </TooltipContent>
                   </Tooltip>
                 )}

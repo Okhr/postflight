@@ -45,7 +45,6 @@ from ..services.grouping import sequence_hash
 from ..services import grading as grading_service
 from ..services import gyro as gyro_service
 from ..services import gyroflow as gyroflow_service
-from ..services.capabilities import detect
 from ..services.probe import fingerprint_lengths, fingerprint_parts
 from ..timeutil import as_utc
 from . import media, schemas
@@ -262,7 +261,6 @@ def get_status(session: Session = Depends(get_session)) -> schemas.StatusOut:
         for w in session.exec(select(Worker).order_by(Worker.name)).all()  # type: ignore[arg-type]
     ]
     return schemas.StatusOut(
-        capabilities=detect().to_dict(),
         workers=workers,
         counts=counts,
         inbox_pending=inbox_pending,

@@ -28,13 +28,10 @@
 # trusting NVDEC, and Gyroflow falls back to pocl when OpenCL exposes no GPU. The
 # UI then says so instead of claiming a GPU it never got.
 
+# Only the worker. The API image carries no OpenCL, no Vulkan and no Gyroflow, and
+# the API decodes nothing, so handing it a GPU would inject driver libraries for a
+# process that has nothing to do with them.
 services:
-  api:
-    runtime: nvidia
-    environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility,graphics
-
   worker:
     runtime: nvidia
     environment:

@@ -2,8 +2,8 @@
 
 Chaîne de traitement des rushes FPV : surveillance d'un dossier réseau → fusion
 des enregistrements découpés → derush dans une interface web → stabilisation
-Gyroflow. Une image Docker, deux services (`api`, `worker`), déployable sur
-Portainer.
+Gyroflow. Deux images issues d'un seul Dockerfile (`--target api`, `--target
+worker`), déployables sur Portainer.
 
 **Langues** : le code, les commentaires, les docstrings, les messages de log et
 tout le texte de l'interface sont **en anglais**. Ce fichier, le README et les
@@ -283,9 +283,9 @@ La nôtre (`services/grouping.py`) :
 
 - index caméra consécutifs **et** `start(n+1) - (start(n) + durée(n)) < 2 s`
   (mesuré : 0.36 s d'écart sur une vraie paire)
-- **trois sources pour l'heure de départ, la meilleure d'abord** : le nom (exact,
-  UTC), puis le `creation_time` du conteneur, puis `mtime - durée` en dernier
-  recours. Voir ci-dessous, l'ordre n'est pas cosmétique.
+- **deux sources pour l'heure de départ** : le nom (exact, UTC), puis le
+  `creation_time` du conteneur. Aucune des deux, aucun repli : le fichier est
+  **refusé** avec la raison. Voir ci-dessous.
 - **la taille de la part est une condition nécessaire**, pas un simple indice : une
   part qui n'a pas approché la limite de fichier s'est arrêtée parce qu'on a arrêté
   d'enregistrer. Seuil `split_min_part_bytes`, 3 Go par défaut.
@@ -358,18 +358,28 @@ Donc du vrai UTC, et il survit à la copie. Un garde-fou quand même : une camé
 l'horloge n'a jamais été réglée écrit une date epoch, pire que rien puisque tous les
 rushes paraîtraient contigus. En dessous de l'an 2000, on ignore.
 
-### Ce qui n'a pas de gyro n'est pas un master
+### Deviner faux est pire que ne pas savoir
 
-Les sorties Gyroflow reviennent dans l'inbox (elles vivent dans les mêmes dossiers
-que les rushes). Ingérées, elles coûtent une passe proxy complète pour finir dans la
-liste de derush et échouer à la stabilisation, puisque **Gyroflow refuse un fichier
-sans télémétrie**. On les écarte donc dans `inbox/.no-gyro/`, à côté de
-`.duplicates/`, jamais supprimées, et le scan en publie le compte.
+Deux refus francs plutôt que deux heuristiques, choix de florian le 2026-08-19.
 
-Le test porte sur le **contenu**, pas sur le nom : les sorties prennent plusieurs
-formes (`_stabilized`, `_stabilized_16x9`, `_joined_stabilized`) et l'extension bascule
-en minuscules. Mesuré, et c'est net : **15 masters sur 15 ont du gyro** quel que soit
-leur nommage, **2 sorties sur 2 n'en ont aucune**.
+**Pas d'heure de départ utilisable → fichier refusé.** Le repli `mtime - durée` a été
+**supprimé**, pas corrigé : il mentait sur tout fichier copié, et un mensonge
+silencieux sur le timing produit un groupage faux qui ne se voit qu'au montage. Le
+clip finit en `FAILED` avec la raison écrite, visible dans l'interface. Une horloge
+de caméra jamais réglée (date epoch) tombe dans le même cas, puisqu'on l'ignore.
+
+**Sortie déjà stabilisée → écartée sur le nom.** Gyroflow nomme sa sortie
+`..._stabilized`, avec parfois le format en suffixe (`_stabilized_16x9`,
+`_joined_stabilized`). Le sous-chaîne `stabilized` suffit, et le contrôle passe
+**avant** l'empreinte, donc sans lire le fichier. Le fichier part dans
+`inbox/.stabilized/`, à côté de `.duplicates/`, jamais supprimé, et le scan en publie
+le compte.
+
+Lire la piste gyro serait plus robuste (mesuré : 15 masters sur 15 en ont, 2 sorties
+sur 2 n'en ont pas), mais ces fichiers ne sont pas censés arriver dans l'inbox et un
+contrôle de nom ne coûte pas une sonde. Conséquence assumée : un fichier sans gyro
+qui passerait quand même échouera à l'étape de stabilisation, avec l'erreur de
+Gyroflow.
 
 ## Dispatcher et workers
 
@@ -416,6 +426,45 @@ est un autre problème, déjà traité par les timeouts de `procs.run_with_progr
 Le nom d'un worker est son identité (`VS_WORKER_NAME`) et doit être **stable** :
 le hostname d'un conteneur a l'air stable et ne l'est pas, il change à chaque
 recréation et laisse une ligne `worker` orpheline derrière lui.
+
+### Deux images, un Dockerfile
+
+La scission ne vaut que dans un sens, et elle rapporte plus qu'il n'y paraît. Mesuré :
+**656 Mo pour l'API contre 1,98 Go** pour l'image unique d'avant, soit **1,33 Go de
+moins, les deux tiers**. Additionner les gros morceaux (Gyroflow 165 Mo, Vulkan Mesa
+90 Mo, pilotes VA 18 Mo, deux des trois copies de LLVM) n'en explique que la moitié :
+les pilotes traînent une longue queue de dépendances transitives. Ce qui est propre à
+l'API pèse **508 Ko** de front compilé.
+
+Il reste 138 Mo de LLVM dans l'image API, tirés par les dépendances de **ffmpeg**
+lui-même. Impossible de s'en débarrasser sans retirer ffmpeg, dont l'aperçu
+d'étalonnage a besoin.
+
+| | API | worker |
+|---|---|---|
+| Python, dépendances, code | oui | oui |
+| **ffmpeg** | **oui** (aperçu d'étalonnage, analyse) | oui |
+| front compilé | oui | non |
+| OpenCL, Vulkan, pilotes VA | non | oui |
+| Gyroflow, `mp4_merge` | non | oui |
+
+Un seul fichier et deux cibles, pas deux fichiers : la couche `base` est construite
+une fois et partagée dans le registre comme dans le cache CI. Et la CI les construit
+**dans un seul job, l'un après l'autre**, pour que le second réutilise `base` et
+`frontend` du premier ; une matrice les ferait en parallèle et construirait deux fois
+les étages communs.
+
+Conséquences à ne pas oublier :
+
+- **l'API ne sonde plus le matériel.** `/api/status` n'a plus de bloc `capabilities`,
+  il a une liste `workers` où chacun publie ce qu'il a mesuré chez lui. L'entête et
+  les « hardware notes » de l'interface lisent ça, et une note est attribuée à la
+  machine qui s'en plaint.
+- **les overrides GPU ne s'appliquent qu'au worker.** Donner la carte à l'API
+  injecterait des bibliothèques de pilote dans un processus qui n'a rien à en faire.
+- **une seule image worker pour toutes les machines.** Le choix se fait en sondant au
+  démarrage, pas à la construction : la VM sans GPU et le poste à RTX 3090 font
+  tourner les mêmes octets.
 
 ## Conventions
 

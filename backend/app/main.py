@@ -17,7 +17,6 @@ from .config import settings
 from .db import init_db, session_scope
 from .pipeline import ingest_and_group
 from .services import gyroflow as gyroflow_service
-from .services.capabilities import detect
 
 log = logging.getLogger(__name__)
 
@@ -52,11 +51,10 @@ async def lifespan(_app: FastAPI):
     )
     settings.ensure_dirs()
     init_db()
+    # Templates are read here and travel inside each render spec: the dispatcher owns
+    # the editable copies under `templates/`, and a worker has no database to look one
+    # up in.
     gyroflow_service.seed_templates()
-    # Probe here rather than on the first /api/status: the probe really decodes an
-    # HEVC 10-bit sample, which is a few seconds, and the header of the very first
-    # page load is what would have paid for it.
-    detect()
     with session_scope() as session:
         dispatch.drop_stale_jobs(session)
 

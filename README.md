@@ -79,6 +79,13 @@ disaient « GPU prêt ».
 section de l'override correspondant au matériel, et renseigner les variables
 d'environnement de `.env.example`.
 
+Deux images sortent d'un seul Dockerfile : `video-stab-api` pour le dispatcher, qui
+sert aussi l'interface, et `video-stab-worker` pour les machines qui travaillent.
+L'API ne décode, ne warpe et ne fusionne rien, donc elle n'embarque ni OpenCL, ni
+Vulkan, ni Gyroflow : **656 Mo contre 1,98 Go**, soit 1,33 Go de moins. Elle garde
+ffmpeg, dont l'aperçu d'étalonnage a besoin. Les overrides GPU ne concernent donc que
+le worker.
+
 Interface sur `http://<hôte>:8080`.
 
 ### Le volume de données
@@ -103,9 +110,11 @@ plusieurs gigaoctets. Compter environ 2x la taille des rushes tant que
      Un rush déjà connu est reconnu à l'empreinte et écarté dans
      `inbox/.duplicates/` au lieu d'être traité deux fois.
 
-   Un fichier **sans piste gyro** est écarté dans `inbox/.no-gyro/` et le compte
-   remonte à l'interface : c'est presque toujours une sortie Gyroflow revenue dans
-   le dossier, et rien en aval ne peut travailler dessus. Rien n'est supprimé.
+   Une **sortie Gyroflow** revenue dans le dossier est reconnue à son nom
+   (`..._stabilized`) et écartée dans `inbox/.stabilized/`, le compte remontant à
+   l'interface. Rien n'est supprimé. Et un fichier dont **l'heure de départ est
+   introuvable** (ni dans le nom, ni dans le conteneur) est refusé avec la raison
+   plutôt que groupé au hasard.
 2. Les parts d'un même vol sont regroupées automatiquement, fusionnées, puis un
    proxy est généré. La séquence passe à *prête*. Les trois nommages DJI sont
    reconnus, y compris l'ancien `DJI_0327.MP4` qui ne porte aucun horodatage : dans

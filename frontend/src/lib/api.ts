@@ -168,31 +168,47 @@ export interface OpenCLDevice {
   kind: string;
 }
 
+/**
+ * What a worker measured on its own machine, by running the thing rather than by
+ * reading a driver list. The API has no such block of its own: it never decodes,
+ * warps or merges anything, so its hardware says nothing useful.
+ */
+export interface WorkerCapabilities {
+  /** What the probe settled on: "cuda", "vaapi" or "cpu". */
+  decode_backend: string;
+  decode_device: string | null;
+  /** Backend → why it was refused. An empty string means it works. */
+  decode_probes: Record<string, string>;
+  ffmpeg_version: string;
+  gyroflow_version: string;
+  mp4_merge_available: boolean;
+  dri_devices: string[];
+  nvidia_present: boolean;
+  opencl_icds: string[];
+  opencl_devices: OpenCLDevice[];
+  /** The OpenCL GPU Gyroflow will warp on, null when there is only a CPU one. */
+  opencl_gpu: string | null;
+  /** Vulkan GPUs, Gyroflow's wgpu fallback when no OpenCL GPU exists. */
+  vulkan_devices: string[];
+  /** What Gyroflow will most likely warp on, named. */
+  stabilize_device: string;
+  stabilize_on_gpu: boolean;
+  notes: string[];
+}
+
+export interface WorkerInfo {
+  id: number;
+  name: string;
+  capabilities: WorkerCapabilities;
+  concurrency: number;
+  last_seen_at: string;
+  /** A worker that stopped asking for work is gone: that is the whole health model. */
+  online: boolean;
+  running: number;
+}
+
 export interface Status {
-  capabilities: {
-    /** Same as decode_backend, under the name the header has always used. */
-    hwaccel: string;
-    /** What the probe settled on: "cuda", "vaapi" or "cpu". */
-    decode_backend: string;
-    decode_device: string | null;
-    /** Backend → why it was refused. An empty string means it works. */
-    decode_probes: Record<string, string>;
-    ffmpeg_version: string;
-    gyroflow_version: string;
-    mp4_merge_available: boolean;
-    dri_devices: string[];
-    nvidia_present: boolean;
-    opencl_icds: string[];
-    opencl_devices: OpenCLDevice[];
-    /** The OpenCL GPU Gyroflow will warp on, null when there is only a CPU one. */
-    opencl_gpu: string | null;
-    /** Vulkan GPUs, Gyroflow's wgpu fallback when no OpenCL GPU exists. */
-    vulkan_devices: string[];
-    /** What Gyroflow will most likely warp on, named. */
-    stabilize_device: string;
-    stabilize_on_gpu: boolean;
-    notes: string[];
-  };
+  workers: WorkerInfo[];
   counts: Record<string, number>;
   inbox_pending: number;
   settings: Record<string, unknown>;

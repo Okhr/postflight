@@ -24,10 +24,17 @@ log = logging.getLogger(__name__)
 # Suffixes of files still being written, skipped while scanning.
 _IGNORED_SUFFIXES = (".partial", ".tmp", ".part", ".crdownload")
 _DUPLICATES_DIRNAME = ".duplicates"
-_NO_GYRO_DIRNAME = ".no-gyro"
+_STABILIZED_DIRNAME = ".stabilized"
 # Files set aside rather than deleted, so nothing is ever lost silently. Scanning
 # must skip them, or every pass would pick them straight back up.
-_SIDELINED_DIRNAMES = (_DUPLICATES_DIRNAME, _NO_GYRO_DIRNAME)
+_SIDELINED_DIRNAMES = (_DUPLICATES_DIRNAME, _STABILIZED_DIRNAME)
+
+# Gyroflow names its output after the source plus `_stabilized`, with the aspect
+# sometimes appended: `_stabilized`, `_stabilized_16x9`, `_joined_stabilized`. A
+# substring is enough and it is all we look at. Reading the gyro track would be
+# stronger, but these files are not supposed to land in the inbox in the first place,
+# and a name check does not cost a probe.
+_STABILIZED_MARKER = "stabilized"
 
 # Manual scan: minimum file age, and delay before re-checking the size.
 QUIESCENT_MIN_AGE_S = 2.0
@@ -170,6 +177,17 @@ def scan_inbox(session: Session, immediate: bool = False) -> ScanResult:
             log.debug("not stable yet: %s", path.name)
             continue
 
+        if _STABILIZED_MARKER in path.stem.lower():
+            # A Gyroflow output back in the inbox. Not a rush: nothing downstream can
+            # stabilize it a second time, and ingesting it would cost a full proxy
+            # encode before failing. Set aside, never deleted.
+            dest = unique_destination(settings.inbox_dir / _STABILIZED_DIRNAME, path.name)
+            _move(path, dest)
+            _forget(path)
+            result.rejected.append(path.name)
+            log.info("%s looks stabilized → set aside in %s/", path.name, _STABILIZED_DIRNAME)
+            continue
+
         try:
             fp = fingerprint(path)
         except OSError as exc:
@@ -201,23 +219,22 @@ def scan_inbox(session: Session, immediate: bool = False) -> ScanResult:
             result.failed.append(path.name)
             continue
 
-        if not info.has_gyro:
-            # Nothing downstream can work on it: Gyroflow refuses a file without
-            # telemetry, so the rush would go through a full proxy encode only to
-            # sit in the derush list and fail at the stabilization step. In practice
-            # it is a Gyroflow output dropped back into the inbox.
-            #
-            # The test is on the content and not on the name, because the outputs
-            # come in several shapes (`_stabilized`, `_stabilized_16x9`,
-            # `_joined_stabilized`). Measured on a real O3 collection: 15 masters
-            # out of 15 carry gyro, whatever their naming, and 2 stabilized outputs
-            # out of 2 carry none.
-            sidelined = settings.inbox_dir / _NO_GYRO_DIRNAME
-            dest = unique_destination(sidelined, path.name)
-            _move(path, dest)
-            _forget(path)
-            result.rejected.append(path.name)
-            log.info("No gyro track in %s → set aside in %s/", path.name, _NO_GYRO_DIRNAME)
+        if info.recorded_at is None:
+            # Neither the name nor the container gives a start time, and there is no
+            # third source worth trusting: the mtime used to fill in here and it lied
+            # every time the file had been copied. Without a start time the parts of a
+            # flight cannot be told apart from two separate flights, so refuse the
+            # file and say so rather than group it wrongly and silently.
+            reason = (
+                "no reliable start time: the name carries no timestamp and the file "
+                "has no creation_time"
+            )
+            log.error("%s refused: %s", path.name, reason)
+            session.add(
+                Clip(filename=path.name, fingerprint=fp, state=ClipState.FAILED, error=reason)
+            )
+            session.commit()
+            result.failed.append(path.name)
             continue
 
         raw_dest = unique_destination(settings.raw_dir, path.name)

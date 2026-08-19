@@ -134,13 +134,18 @@ def probe(path: Path) -> ProbeResult:
     ]
     tags = [t for t in tags if t]
 
-    # Three sources, best first. The name is the camera's own statement and is exact;
+    # Two sources, best first. The name is the camera's own statement and is exact;
     # the container agrees with it to the second where both exist, and survives being
-    # copied; the mtime is a last resort that any copy can destroy.
+    # copied.
+    #
+    # There used to be a third, `mtime - duration`, and it did more harm than good.
+    # The mtime does not travel with the bytes, so a plain `cp`, an rsync without -t or
+    # a drag and drop upload all reset it to the time of the copy. Measured on a real
+    # pair 0.4 s apart: it came out 78 s apart and the two parts of one flight became
+    # two sequences, silently. Guessing wrong is worse than not knowing, so `None`
+    # now means "no reliable start time" and the caller refuses the file outright.
     parsed = parse_filename(path)
     recorded_at = parsed.recorded_at or _creation_time(data)
-    if recorded_at is None:
-        recorded_at = datetime.fromtimestamp(path.stat().st_mtime - duration_s, tz=timezone.utc)
 
     return ProbeResult(
         duration_ms=duration_s * 1000.0,

@@ -1,9 +1,8 @@
-"""What the inbox lets through, and what it sets aside.
+"""What the inbox lets through, what it sets aside, and what it refuses outright.
 
 The rules here come from a real 622 GB O3/O4 collection rather than from guesses:
 13 masters out of 15 sampled carry the old `DJI_0327.MP4` name with no timestamp at
-all, every master carries a gyro track whatever its naming, and every stabilized
-output carries none.
+all, so their start time can only come from the container.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from sqlmodel import Session, select
 
 from app import pipeline
 from app.config import settings
-from app.models import Clip
+from app.models import Clip, ClipState
 from app.services.grouping import ClipInfo, chain_clips
 from app.services.naming import parse_filename
 from app.services.probe import ProbeResult
@@ -111,10 +110,10 @@ def test_a_legacy_part_is_not_chained_onto_a_goggles_part():
 
 
 # --------------------------------------------------------------------------- #
-# The gyro track decides what gets in
+# What gets in
 # --------------------------------------------------------------------------- #
 
-def _probe_result(has_gyro: bool) -> ProbeResult:
+def _probe_result(has_gyro: bool = True, recorded_at: datetime | None = BASE) -> ProbeResult:
     return ProbeResult(
         duration_ms=34_200.0,
         width=3840,
@@ -124,7 +123,7 @@ def _probe_result(has_gyro: bool) -> ProbeResult:
         codec="h264",
         size_bytes=1024,
         has_gyro=has_gyro,
-        recorded_at=BASE,
+        recorded_at=recorded_at,
     )
 
 
@@ -136,8 +135,8 @@ def _drop(name: str) -> None:
     pipeline.mark_upload_complete(path)
 
 
-def test_a_master_with_gyro_is_ingested(session: Session, monkeypatch):
-    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result(True))
+def test_a_master_is_ingested(session: Session, monkeypatch):
+    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result())
     _drop("DJI_0327.MP4")
 
     result = pipeline.scan_inbox(session)
@@ -151,25 +150,39 @@ def test_a_master_with_gyro_is_ingested(session: Session, monkeypatch):
 
 
 def test_a_stabilized_output_is_set_aside_not_ingested(session: Session, monkeypatch):
-    """A Gyroflow output dropped back into the inbox. Nothing downstream can work on
-    it, and ingesting it would cost a full proxy encode before failing at the
-    stabilization step."""
-    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result(False))
-    _drop("DJI_0044_0045_joined_stabilized.mp4")
+    """A Gyroflow output back in the inbox. Recognized by its name, which is all the
+    checking this deserves: these files are not supposed to be dropped here, and a
+    name check costs no probe."""
+    def explode(_p):
+        raise AssertionError("a file set aside on its name must never be probed")
+
+    monkeypatch.setattr(pipeline, "probe", explode)
+    for name in (
+        "DJI_0044_0045_joined_stabilized.mp4",
+        "DJI_0046_stabilized.mp4",
+        "DJI_20260703174523_0022_D_stabilized_16x9.mp4",
+    ):
+        _drop(name)
 
     result = pipeline.scan_inbox(session)
 
-    assert result.rejected == ["DJI_0044_0045_joined_stabilized.mp4"]
+    assert sorted(result.rejected) == sorted(
+        [
+            "DJI_0044_0045_joined_stabilized.mp4",
+            "DJI_0046_stabilized.mp4",
+            "DJI_20260703174523_0022_D_stabilized_16x9.mp4",
+        ]
+    )
     assert result.ingested == []
     assert session.exec(select(Clip)).all() == []
     # Set aside, never deleted.
-    assert (settings.inbox_dir / ".no-gyro" / "DJI_0044_0045_joined_stabilized.mp4").exists()
-    assert not (settings.raw_dir / "DJI_0044_0045_joined_stabilized.mp4").exists()
+    assert (settings.inbox_dir / ".stabilized" / "DJI_0046_stabilized.mp4").exists()
+    assert not (settings.raw_dir / "DJI_0046_stabilized.mp4").exists()
 
 
 def test_a_file_set_aside_is_not_picked_up_again(session: Session, monkeypatch):
     """Otherwise every scan would move it around and report it afresh."""
-    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result(False))
+    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result())
     _drop("DJI_0046_stabilized.mp4")
     pipeline.scan_inbox(session)
 
@@ -178,10 +191,30 @@ def test_a_file_set_aside_is_not_picked_up_again(session: Session, monkeypatch):
     assert again.ingested == []
 
 
+def test_a_clip_with_no_usable_start_time_is_refused_with_a_reason(
+    session: Session, monkeypatch
+):
+    """Guessing wrong is worse than not knowing. Without a start time, the parts of one
+    flight cannot be told from two separate flights, so the file is refused and the
+    reason is recorded rather than the grouping being quietly wrong."""
+    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result(recorded_at=None))
+    _drop("MYSTERY.mp4")
+
+    result = pipeline.scan_inbox(session)
+
+    assert result.failed == ["MYSTERY.mp4"]
+    assert result.ingested == []
+    clip = session.exec(select(Clip)).one()
+    assert clip.state == ClipState.FAILED
+    assert "no reliable start time" in (clip.error or "")
+    # Not moved into raw/: nothing downstream should see it.
+    assert not (settings.raw_dir / "MYSTERY.mp4").exists()
+
+
 def test_the_two_sidelines_do_not_collide(session: Session, monkeypatch):
     """Duplicates and gyro-less files each have their own folder, and a scan sees
     neither of them."""
-    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result(True))
+    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result())
     _drop("DJI_0327.MP4")
     pipeline.scan_inbox(session)
     # The same bytes again: a duplicate by fingerprint.
@@ -236,30 +269,30 @@ def test_the_name_still_wins_over_the_container(tmp_path, monkeypatch):
     assert result.recorded_at == datetime(2026, 7, 3, 17, 28, 54, tzinfo=timezone.utc)
 
 
-def test_an_unset_camera_clock_is_ignored(tmp_path, monkeypatch):
-    """A drone that never got the time writes an epoch date. Trusting it would make
+def test_an_unset_camera_clock_is_refused_not_believed(tmp_path, monkeypatch):
+    """A drone that never got the time writes an epoch date. Believing it would make
     every rush of every flight look contiguous."""
     payload = {
         **FFPROBE_JSON,
         "format": {"duration": "194.6", "tags": {"creation_time": "1970-01-01T00:00:00.000000Z"}},
     }
     result = _probed(tmp_path, monkeypatch, payload, mtime=1_800_000_000)
-    # Fell through to the mtime, walked back by the duration.
-    assert result.recorded_at.timestamp() == 1_800_000_000 - 194.6
+    assert result.recorded_at is None
 
 
-def test_a_missing_or_unreadable_creation_time_falls_back(tmp_path, monkeypatch):
+def test_no_creation_time_means_no_start_time_at_all(tmp_path, monkeypatch):
+    """The mtime used to fill in here, and it lied on every copied file. None is the
+    honest answer, and the caller refuses the file on it."""
     for tags in ({}, {"creation_time": "not a date"}, {"creation_time": ""}):
         payload = {**FFPROBE_JSON, "format": {"duration": "10.0", "tags": tags}}
         result = _probed(tmp_path, monkeypatch, payload, mtime=1_800_000_000)
-        assert result.recorded_at is not None
-        assert result.recorded_at.timestamp() == 1_800_000_000 - 10.0
+        assert result.recorded_at is None
 
 
 def test_a_real_split_pair_chains_even_when_the_mtime_was_lost(tmp_path, monkeypatch):
     """The end-to-end shape of the bug: DJI_0330 and DJI_0331, copied with plain `cp`
-    so both carry the same fresh mtime. Their real start times are 3 min 15 apart and
-    the first lasts 194.6 s, so they are one recording."""
+    so both carry the same fresh mtime, which is now ignored entirely. Their real start
+    times are 3 min 15 apart and the first lasts 194.6 s, so they are one recording."""
     from app.services import probe as probe_mod
 
     same_mtime = 1_800_000_000

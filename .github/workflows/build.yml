@@ -1,7 +1,7 @@
 name: build
 
-# Every commit on master, plus a manual button. The image is what gets deployed,
-# so it is built from the same Dockerfile the machines run, never from a variant.
+# Every commit on master, plus a manual button. The images are what gets deployed,
+# so they are built from the same Dockerfile the machines run, never from a variant.
 on:
   push:
     branches: [master]
@@ -43,10 +43,10 @@ jobs:
         run: pytest -q
         working-directory: backend
 
-  image:
-    name: image
-    # The image is only worth building if the frame arithmetic, the split
-    # detection and the capability probing still hold.
+  images:
+    name: images
+    # The images are only worth building if the frame arithmetic, the split
+    # detection, the ingestion rules and the capability probing still hold.
     needs: tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -64,21 +64,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: meta
+      # Two images, one Dockerfile, two targets. Built in one job and in this order
+      # so the second build reuses the `base` and `frontend` stages the first one just
+      # produced, from the same builder instance. A matrix would run them in parallel
+      # and build the shared stages twice.
+      - id: meta_api
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ env.IMAGE }}-api
           # `latest` for deployments, the sha for pinning one and for rolling back.
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
 
-      - uses: docker/build-push-action@v7
+      - name: api image
+        uses: docker/build-push-action@v7
         with:
           context: .
+          target: api
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta_api.outputs.tags }}
+          labels: ${{ steps.meta_api.outputs.labels }}
           # amd64 only, and not by omission: Gyroflow and mp4_merge are shipped as
           # prebuilt linux64 binaries, so there is no arm64 image to be had.
           platforms: linux/amd64
@@ -87,19 +93,48 @@ jobs:
           # Portainer versions display as a second broken architecture.
           provenance: false
           # The apt layer and the Gyroflow download dominate the build; caching them
-          # turns a 10 minute job into about 2.
+          # turns a 10 minute job into about 2. One scope for both images, since they
+          # share every layer up to `base`.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - id: meta_worker
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}-worker
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+
+      - name: worker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: worker
+          push: true
+          tags: ${{ steps.meta_worker.outputs.tags }}
+          labels: ${{ steps.meta_worker.outputs.labels }}
+          platforms: linux/amd64
+          provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Summary
         run: |
           {
-            echo "### Image poussée"
+            echo "### Images poussées"
             echo
             echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
+            echo "${{ steps.meta_api.outputs.tags }}"
+            echo "${{ steps.meta_worker.outputs.tags }}"
             echo '```'
             echo
-            echo "Déploiement : \`VS_IMAGE=${{ env.IMAGE }}:latest\` dans le \`.env\`, puis"
-            echo "\`docker compose pull && docker compose up -d\`."
+            echo "Déploiement, dans le \`.env\` :"
+            echo
+            echo '```'
+            echo "VS_IMAGE_API=${{ env.IMAGE }}-api:latest"
+            echo "VS_IMAGE_WORKER=${{ env.IMAGE }}-worker:latest"
+            echo '```'
+            echo
+            echo "puis \`docker compose pull && docker compose up -d\`."
           } >> "$GITHUB_STEP_SUMMARY"

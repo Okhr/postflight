@@ -223,7 +223,9 @@ class WorkerOut(BaseSchema):
 
 
 class StatusOut(BaseSchema):
-    capabilities: dict[str, Any]
+    # No `capabilities` block: the API does not decode, warp or merge anything, so its
+    # own hardware says nothing useful. What matters is each worker's, measured on the
+    # machine that will do the work and reported by it.
     workers: list[WorkerOut]
     counts: dict[str, int]
     inbox_pending: int

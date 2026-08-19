@@ -1,4 +1,21 @@
 # syntax=docker/dockerfile:1
+#
+# Two images out of one file, sharing a base layer.
+#
+# The split is worth it in one direction only, and by more than it looks. Measured:
+# the API image comes to 656 MB against the 1.98 GB of the single image that came
+# before, so 1.33 GB less, two thirds of it. Summing the obvious parts (Gyroflow at
+# 165 MB, Mesa Vulkan at 90 MB, the VA drivers at 18 MB, two of the three LLVM copies)
+# only accounts for about half of that: the drivers drag in a long transitive tail.
+# What is actually the API's own comes to 508 KB of compiled frontend.
+#
+# 138 MB of LLVM stays in the API image, pulled in by ffmpeg's own dependencies. It
+# cannot be dropped without dropping ffmpeg, which the grading preview needs.
+#
+# So: `--target api` for the dispatcher, `--target worker` for the machines that do
+# the work. One file rather than two, so the base layer is built once and shared in
+# the registry and in the CI cache.
+#
 # ---------------------------------------------------------------------------
 # 1. Frontend build
 # ---------------------------------------------------------------------------
@@ -11,21 +28,72 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---------------------------------------------------------------------------
-# 2. Runtime
+# 2. Base: what both images need
 # ---------------------------------------------------------------------------
-# ubuntu:25.04 rather than python:slim: it ships a recent Mesa (rusticl for
-# OpenCL, which Gyroflow uses for warping) and it is the distribution the Gyroflow
-# binary is built against.
-FROM ubuntu:25.04 AS runtime
+# ubuntu:25.04 rather than python:slim: it ships a recent Mesa (rusticl for OpenCL,
+# which Gyroflow uses for warping) and it is the distribution the Gyroflow binary is
+# built against. The API does not need Mesa, but sharing the base with the worker is
+# worth more than the few megabytes a different base would save.
+FROM ubuntu:25.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ffmpeg is in the base and not in the worker alone: the API runs it too, for the
+# grading preview (one filtered frame in 0.32 s, which is why the preview is a real
+# ffmpeg frame and not a shader reimplementation) and for the clip analysis.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      python3 python3-venv python3-pip \
+      ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
+RUN python3 -m venv "$VIRTUAL_ENV"
+
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+
+WORKDIR /app
+COPY backend/app /app/app
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENV XDG_RUNTIME_DIR=/tmp/runtime \
+    HOME=/tmp \
+    PYTHONUNBUFFERED=1 \
+    VS_DATA_DIR=/data
+
+VOLUME ["/data"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# ---------------------------------------------------------------------------
+# 3. API: the dispatcher, and the only one that serves the frontend
+# ---------------------------------------------------------------------------
+# It owns the database and hands jobs out over HTTP. It never decodes a rush, never
+# warps a frame and never merges a file, so it carries no OpenCL, no Vulkan, no VA
+# driver and no Gyroflow. What hardware there is belongs to the workers, and they
+# report it themselves.
+FROM base AS api
+
+COPY --from=frontend /build/dist /app/static
+ENV VS_STATIC_DIR=/app/static
+EXPOSE 8000
+CMD ["api"]
+
+# ---------------------------------------------------------------------------
+# 4. Worker: everything that touches pixels
+# ---------------------------------------------------------------------------
+# One worker image for every machine, whatever its hardware, because the choice is
+# made by probing at startup and not by the image. A NAS VM with no GPU and a desktop
+# with an RTX 3090 run the same bytes.
+FROM base AS worker
 
 ARG GYROFLOW_VERSION=1.6.3
 ARG MP4_MERGE_VERSION=0.1.11
-ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl \
-      python3 python3-venv python3-pip \
-      ffmpeg \
+      curl \
       # OpenCL, for Gyroflow's warping: rusticl/Mesa on AMD, NEO on Intel, pocl as
       # the CPU fallback. NVIDIA cannot be shipped (its driver is injected by the
       # container runtime), but the ICD pointing at it is created below.
@@ -78,29 +146,7 @@ RUN curl -fsSL "https://github.com/gyroflow/mp4-merge/releases/download/v${MP4_M
       -o /usr/local/bin/mp4_merge \
  && chmod +x /usr/local/bin/mp4_merge
 
-ENV VIRTUAL_ENV=/opt/venv \
-    PATH="/opt/venv/bin:$PATH"
-RUN python3 -m venv "$VIRTUAL_ENV"
-
-COPY backend/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
-
-WORKDIR /app
-COPY backend/app /app/app
-COPY --from=frontend /build/dist /app/static
-COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
 ENV QT_QPA_PLATFORM=offscreen \
-    XDG_RUNTIME_DIR=/tmp/runtime \
-    RUSTICL_ENABLE=radeonsi \
-    HOME=/tmp \
-    PYTHONUNBUFFERED=1 \
-    VS_DATA_DIR=/data \
-    VS_STATIC_DIR=/app/static
+    RUSTICL_ENABLE=radeonsi
 
-VOLUME ["/data"]
-EXPOSE 8000
-
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["api"]
+CMD ["worker"]

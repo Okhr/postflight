@@ -163,11 +163,15 @@ export function Import() {
     onError: (error: Error) => toast.error(error.message),
   });
 
+  const hardwareNotes = (status?.workers ?? []).flatMap((worker) =>
+    (worker.capabilities.notes ?? []).map((note) => ({ worker: worker.name, note })),
+  );
+
   return (
     <div className="space-y-6">
       <UploadZone />
 
-      {(status?.capabilities.notes?.length ?? 0) > 0 && (
+      {hardwareNotes.length > 0 && (
         <Card className="border-amber-500/30 bg-amber-500/5">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-sm">
@@ -176,8 +180,10 @@ export function Import() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-1 text-sm text-muted-foreground">
-            {status?.capabilities.notes.map((note) => (
-              <p key={note}>{note}</p>
+            {hardwareNotes.map(({ worker, note }) => (
+              <p key={`${worker}:${note}`}>
+                <span className="font-medium">{worker}</span>: {note}
+              </p>
             ))}
           </CardContent>
         </Card>

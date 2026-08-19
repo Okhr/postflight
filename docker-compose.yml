@@ -12,10 +12,11 @@
 
 services:
   api:
-    image: ${VS_IMAGE:-video-stab:latest}
+    image: ${VS_IMAGE_API:-video-stab-api:latest}
     build:
       context: .
       dockerfile: Dockerfile
+      target: api
     command: ["api"]
     restart: unless-stopped
     # Files written to /data belong to this user: without it a NAS volume fills up
@@ -27,7 +28,8 @@ services:
       - ${VS_DATA_PATH:-./data}:/data
     environment:
       VS_DATA_DIR: /data
-      VS_HWACCEL: ${VS_HWACCEL:-auto}
+      # No VS_HWACCEL here: this image carries no GPU stack and the API decodes
+      # nothing. Accelerated paths belong to the workers, which probe their own.
       # Ingestion and grouping walk the volume the dispatcher owns, so they run here
       # and not on a worker that may well be switched off.
       VS_SCAN_INTERVAL_S: ${VS_SCAN_INTERVAL_S:-30}
@@ -50,10 +52,11 @@ services:
       start_period: 20s
 
   worker:
-    image: ${VS_IMAGE:-video-stab:latest}
+    image: ${VS_IMAGE_WORKER:-video-stab-worker:latest}
     build:
       context: .
       dockerfile: Dockerfile
+      target: worker
     command: ["worker"]
     restart: unless-stopped
     # Docker's default is 10s, then SIGKILL. A proxy or a render runs for minutes,
