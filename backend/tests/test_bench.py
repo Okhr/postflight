@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from app.config import settings
 from app.services import bench
 from app.services.bench import _Rate
@@ -25,7 +27,7 @@ def test_a_rate_is_timed_between_the_first_and_last_progress():
     rate.first = (0.1, now)
     rate.last = (0.9, now + 2.0)
     # 80% of 100 frames in 2 s
-    assert rate.rate(100) == 40.0
+    assert rate.rate(100) == pytest.approx(40.0)
 
 
 def test_zero_progress_measures_nothing():
@@ -40,7 +42,7 @@ def test_a_single_progress_line_still_yields_something():
     rate = _Rate()
     rate.started = time.monotonic()
     rate.first = rate.last = (1.0, rate.started + 0.5)
-    assert rate.rate(30) == 60.0
+    assert rate.rate(30) == pytest.approx(60.0)
 
 
 def test_progress_going_nowhere_falls_back_on_the_elapsed_time():
@@ -49,7 +51,8 @@ def test_progress_going_nowhere_falls_back_on_the_elapsed_time():
     rate.started = time.monotonic()
     rate.first = (0.5, rate.started + 1.0)
     rate.last = (0.5, rate.started + 1.5)
-    assert rate.rate(60) == 20.0  # 0.5 of 60 frames in the 1.5 s it took to get there
+    # 0.5 of 60 frames in the 1.5 s it took to get there
+    assert rate.rate(60) == pytest.approx(20.0)
 
 
 def test_a_zero_progress_report_is_ignored():
