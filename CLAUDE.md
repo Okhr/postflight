@@ -19,6 +19,19 @@ réponses en conversation restent **en français**.
    → Le **derush reste de la métadonnée** : on ne coupe jamais un master, on
    passe les bornes à Gyroflow via `trim_ranges_ms`.
 
+   → **Cherché à fond le 2026-08-19, il n'existe aucun outil prêt à l'emploi pour
+   découper un rush en gardant le gyro.** Mesuré : Gyroflow n'a pas de mode « couper
+   sans stabiliser » (vérifié dans son `--help`), `mp4_merge` ne fait que fusionner,
+   `ffmpeg -c copy` vers mp4 est refusé même avec `-copy_unknown` et `-tag:d djmd`, et
+   vers `.mov` **le muxage réussit** mais le tag des pistes de données devient `stts` au
+   lieu de `djmd`/`dbgi` : le `detected_source` de Gyroflow tombe de `DJI O4P` à `None`,
+   zéro quaternion. `exiftool` n'expose rien, la charge utile étant des samples du
+   `mdat`. Restent deux pistes non testées : GPAC/`MP4Box -splitx`, absent des paquets
+   Ubuntu 25.04 (le `.deb` officiel est un 0.7.2-DEV de 2018 qui ne s'installe pas, donc
+   il faudrait compiler), et l'issue amont `gyroflow/gyroflow#1000` « mp4-split »,
+   ouverte et non implémentée. C'est ce qui force le clip de benchmark à être un vrai
+   rush court plutôt qu'un extrait fabriqué.
+
 2. **On fusionne AVANT de stabiliser, jamais l'inverse.** Le lissage et
    l'adaptive zoom sont calculés sur toute la courbe gyro ; stabiliser deux parts
    séparément produirait une couture visible à la jonction.
