@@ -24,6 +24,10 @@ log = logging.getLogger(__name__)
 # Suffixes of files still being written, skipped while scanning.
 _IGNORED_SUFFIXES = (".partial", ".tmp", ".part", ".crdownload")
 _DUPLICATES_DIRNAME = ".duplicates"
+_NO_GYRO_DIRNAME = ".no-gyro"
+# Files set aside rather than deleted, so nothing is ever lost silently. Scanning
+# must skip them, or every pass would pick them straight back up.
+_SIDELINED_DIRNAMES = (_DUPLICATES_DIRNAME, _NO_GYRO_DIRNAME)
 
 # Manual scan: minimum file age, and delay before re-checking the size.
 QUIESCENT_MIN_AGE_S = 2.0
@@ -36,6 +40,9 @@ class ScanResult:
 
     ingested: list["Clip"] = field(default_factory=list)
     duplicates: list[str] = field(default_factory=list)
+    # Set aside for want of a gyro track: almost always a stabilized output that
+    # found its way back into the inbox.
+    rejected: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     sequences: list["Sequence"] = field(default_factory=list)
 
@@ -56,7 +63,7 @@ def _candidate_files() -> list[Path]:
     for path in sorted(settings.inbox_dir.rglob("*")):
         if not path.is_file():
             continue
-        if _DUPLICATES_DIRNAME in path.parts:
+        if any(name in path.parts for name in _SIDELINED_DIRNAMES):
             continue
         if path.name.startswith("."):
             continue
@@ -194,6 +201,25 @@ def scan_inbox(session: Session, immediate: bool = False) -> ScanResult:
             result.failed.append(path.name)
             continue
 
+        if not info.has_gyro:
+            # Nothing downstream can work on it: Gyroflow refuses a file without
+            # telemetry, so the rush would go through a full proxy encode only to
+            # sit in the derush list and fail at the stabilization step. In practice
+            # it is a Gyroflow output dropped back into the inbox.
+            #
+            # The test is on the content and not on the name, because the outputs
+            # come in several shapes (`_stabilized`, `_stabilized_16x9`,
+            # `_joined_stabilized`). Measured on a real O3 collection: 15 masters
+            # out of 15 carry gyro, whatever their naming, and 2 stabilized outputs
+            # out of 2 carry none.
+            sidelined = settings.inbox_dir / _NO_GYRO_DIRNAME
+            dest = unique_destination(sidelined, path.name)
+            _move(path, dest)
+            _forget(path)
+            result.rejected.append(path.name)
+            log.info("No gyro track in %s → set aside in %s/", path.name, _NO_GYRO_DIRNAME)
+            continue
+
         raw_dest = unique_destination(settings.raw_dir, path.name)
         _move(path, raw_dest)
         _forget(path)
@@ -239,6 +265,7 @@ def _clip_info(clip: Clip) -> ClipInfo:
         fps_num=clip.fps_num,
         fps_den=clip.fps_den,
         codec=clip.codec,
+        size_bytes=clip.size_bytes,
         camera_index=clip.camera_index,
         group_key=parsed.group_key,
     )
@@ -295,7 +322,11 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
         return []
 
     created: list[Sequence] = []
-    for group in chain_clips([_clip_info(c) for c in candidates], settings.split_gap_tolerance_s):
+    for group in chain_clips(
+        [_clip_info(c) for c in candidates],
+        settings.split_gap_tolerance_s,
+        settings.split_min_part_bytes,
+    ):
         clips = [session.get(Clip, info.id) for info in group]
         clips = [c for c in clips if c is not None]
         if not clips:

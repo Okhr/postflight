@@ -171,6 +171,9 @@ export function UploadZone() {
         if (scan.ingested.length) parts.push(`${scan.ingested.length} ingested`);
         if (scan.sequences.length) parts.push(`${scan.sequences.length} sequence(s)`);
         if (scan.duplicates.length) parts.push(`${scan.duplicates.length} duplicate(s) skipped`);
+        // Almost always a stabilized clip dropped back in: worth saying out loud,
+        // since the file is set aside and nothing else will happen to it.
+        if (scan.rejected.length) parts.push(`${scan.rejected.length} without gyro set aside`);
         if (scan.failed.length) parts.push(`${scan.failed.length} unreadable`);
         if (skipped) parts.push(`${skipped} already imported`);
         toast.success(`${sent} file(s) uploaded — ${parts.join(", ") || "nothing new"}`);

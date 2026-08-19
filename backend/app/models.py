@@ -226,9 +226,39 @@ class Grade(SQLModel, table=True):
     finished_at: Optional[datetime] = None
 
 
+class Worker(SQLModel, table=True):
+    """A machine that executes jobs.
+
+    Rows are created by the workers themselves: the dispatcher never has to know
+    where a worker lives, only that one asked for work. So there is no discovery
+    and no health probe either. `last_seen_at` is the whole health model, because a
+    worker that stops asking is gone, whatever the reason.
+
+    `capabilities` is the payload of `services.capabilities.detect()`, measured on
+    the worker's own machine. It belongs here and not in the API's status, since the
+    hardware that matters is the hardware that does the work.
+    """
+
+    __tablename__ = "worker"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True, unique=True)
+    capabilities: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    concurrency: int = 1
+    first_seen_at: datetime = Field(default_factory=utcnow)
+    last_seen_at: datetime = Field(default_factory=utcnow)
+
+
 class Job(SQLModel, table=True):
-    """Work queue. It is also the API ↔ worker channel: two separate processes
-    sharing nothing but this table (SQLite in WAL mode)."""
+    """Work queue, owned by the dispatcher alone.
+
+    A worker never opens this database. It asks for a job over HTTP, receives a
+    self-contained spec, and posts back the facts it measured. That is what lets a
+    worker sit on another machine.
+
+    `lease_expires_at` is what makes an interrupted job come back: the worker that
+    holds the job renews it while it works, and a lease nobody renews is requeued.
+    """
 
     __tablename__ = "job"
 
@@ -237,6 +267,10 @@ class Job(SQLModel, table=True):
     state: JobState = Field(default=JobState.QUEUED, index=True)
     priority: int = 0                                   # lower runs first
     payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+    # Who holds it, and until when. Both null while queued.
+    worker_id: Optional[int] = Field(default=None, index=True)
+    lease_expires_at: Optional[datetime] = None
 
     sequence_id: Optional[int] = Field(default=None, index=True)
     render_id: Optional[int] = Field(default=None, index=True)

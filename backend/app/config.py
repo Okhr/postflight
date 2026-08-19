@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     video_extensions: str = ".mp4,.mov"
     # Two parts of the same recording are contiguous within this gap.
     split_gap_tolerance_s: float = 2.0
+    # A part is only a candidate for having been continued if it got close to the
+    # camera's file limit. Measured on a real O3 collection: every genuine split has
+    # a first part of 3.763 to 3.770 Go, and every pair wrongly glued by the timing
+    # alone has one of 1.398 Go at most. 3 Go sits in the middle with a wide margin on
+    # both sides, and stays a setting because the limit belongs to the camera and the
+    # card, not to us.
+    split_min_part_bytes: int = 3_000_000_000
     # Delete the parts from raw/ after a verified merge (the merge is lossless).
     purge_parts_after_merge: bool = False
 
@@ -57,6 +64,20 @@ class Settings(BaseSettings):
     # without AMF in particular. Encode on the CPU by default.
     gyroflow_use_gpu_encode: bool = False
     gyroflow_timeout_s: int = 86400
+
+    # --- Worker channel ------------------------------------------------------
+    # Where the worker finds the dispatcher. The worker holds no database: this URL
+    # is its only link to the rest of the system.
+    api_url: str = "http://api:8000"
+    # Identity of this worker, stable across restarts so its history stays attached
+    # to the machine. Empty means: use the hostname.
+    worker_name: str = ""
+    # Shared secret on the worker endpoints. Empty leaves them open, which is fine
+    # while the API is only reachable on a private network.
+    worker_token: str = ""
+    # How many heavy jobs one worker runs at once. One on purpose: ffmpeg, mp4_merge
+    # and Gyroflow each already saturate every core, so two at a time is slower.
+    worker_concurrency: int = 1
 
     # --- Server --------------------------------------------------------------
     api_host: str = "0.0.0.0"

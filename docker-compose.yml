@@ -1,6 +1,10 @@
-# video-stab stack. Two services out of the same image: the API (which also
-# serves the frontend) and the worker (inbox scan + merge + proxies + renders).
-# They only talk through the SQLite database on the /data volume, in WAL mode.
+# video-stab stack. Two services out of the same image: the API, which is also the
+# dispatcher and serves the frontend, and a worker that executes the jobs.
+#
+# The database belongs to the API alone. The worker holds none: it registers over
+# HTTP, asks for a job, and posts back what it measured. That is what lets a second
+# worker run on another machine later on, and why `VS_API_URL` is all it needs to
+# find its way home.
 #
 # With no GPU it runs as is: Gyroflow falls back to pocl/CPU and ffmpeg decodes on
 # the CPU. To make use of a GPU, add the override:
@@ -24,9 +28,19 @@ services:
     environment:
       VS_DATA_DIR: /data
       VS_HWACCEL: ${VS_HWACCEL:-auto}
+      # Ingestion and grouping walk the volume the dispatcher owns, so they run here
+      # and not on a worker that may well be switched off.
+      VS_SCAN_INTERVAL_S: ${VS_SCAN_INTERVAL_S:-30}
+      VS_STABILITY_CHECKS: ${VS_STABILITY_CHECKS:-2}
+      VS_SPLIT_GAP_TOLERANCE_S: ${VS_SPLIT_GAP_TOLERANCE_S:-2.0}
+      # Deleting the parts after a merge is the dispatcher's call: its copy is the
+      # one that matters, a worker only ever holds a copy of it.
+      VS_PURGE_PARTS_AFTER_MERGE: ${VS_PURGE_PARTS_AFTER_MERGE:-false}
       VS_PROXY_HEIGHT: ${VS_PROXY_HEIGHT:-960}
       VS_PROXY_CRF: ${VS_PROXY_CRF:-26}
-      VS_SPLIT_GAP_TOLERANCE_S: ${VS_SPLIT_GAP_TOLERANCE_S:-2.0}
+      # Shared secret on the worker endpoints. Empty leaves them open, which is fine
+      # while nothing outside this network can reach the API.
+      VS_WORKER_TOKEN: ${VS_WORKER_TOKEN:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
       interval: 30s
@@ -54,10 +68,14 @@ services:
       - ${VS_DATA_PATH:-./data}:/data
     environment:
       VS_DATA_DIR: /data
+      # The worker's only link to the rest of the system.
+      VS_API_URL: ${VS_API_URL:-http://api:8000}
+      VS_WORKER_TOKEN: ${VS_WORKER_TOKEN:-}
+      # Identity, and it has to be stable: a name is what ties a worker's history to
+      # its machine. The container hostname would look stable and is not, since it
+      # changes on every `compose up` that recreates the container, leaving a new
+      # worker row behind each time and losing whatever was measured on the old one.
+      VS_WORKER_NAME: ${VS_WORKER_NAME:-local}
       VS_HWACCEL: ${VS_HWACCEL:-auto}
-      VS_SCAN_INTERVAL_S: ${VS_SCAN_INTERVAL_S:-30}
-      VS_STABILITY_CHECKS: ${VS_STABILITY_CHECKS:-2}
       VS_PROXY_HEIGHT: ${VS_PROXY_HEIGHT:-960}
       VS_PROXY_CRF: ${VS_PROXY_CRF:-26}
-      VS_SPLIT_GAP_TOLERANCE_S: ${VS_SPLIT_GAP_TOLERANCE_S:-2.0}
-      VS_PURGE_PARTS_AFTER_MERGE: ${VS_PURGE_PARTS_AFTER_MERGE:-false}

@@ -1,439 +1,274 @@
-"""Worker: inbox scanning plus job queue execution.
+"""Worker: ask the dispatcher for a job, run it, report what came out.
 
-A separate process from the API. The two share nothing but the SQLite database
-(in WAL mode): the API posts jobs, the worker consumes them and writes its
-progress there, the API reads it back for its SSE stream. No broker to maintain.
+A separate process from the API, and now a separate machine if you want one. It
+holds no database and knows no row id: it registers, polls, executes a spec, and
+posts back the facts it measured. `executor.py` does the work, this module is the
+loop and the plumbing around it.
 
-Concurrency is deliberately 1 on heavy jobs: ffmpeg, mp4_merge and Gyroflow
-already saturate every core, so running two at once only makes them slower.
+Three things earn their keep here.
+
+**The heartbeat.** A claimed job is held on a lease that only this worker renews.
+Stop renewing (crash, shutdown, cable pulled) and the dispatcher hands the job to
+somebody else. That is what makes a worker something you can simply switch off in
+the middle of a render.
+
+**Fencing.** The other side of the same coin: if the lease is gone, the job may
+already be running elsewhere, so this worker has to stop touching the output file.
+Two ffmpeg processes writing the same path is the one outcome worth going out of
+the way to prevent, and the heartbeat thread is what notices.
+
+**Progress is decoupled from the network.** The executor's callback only writes to
+a variable; the heartbeat thread is what posts. So a slow or missing dispatcher
+never slows down a render, and a render that stalls without printing a line still
+keeps its lease. A stalled *process* is a different problem, already handled where
+it belongs, by the per-process timeouts in `procs.run_with_progress`.
+
+Concurrency is deliberately 1: ffmpeg, mp4_merge and Gyroflow each already
+saturate every core, so running two at once only makes both slower.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import signal
+import socket
 import threading
 import time
-from pathlib import Path
-
-from sqlmodel import Session, select
+import urllib.error
+import urllib.request
+from typing import Any
 
 from .config import settings
-from .db import init_db, session_scope
-from .framing import cut_to_trim_range_ms, duration_to_frames
-from .models import (
-    Clip,
-    ClipState,
-    Cut,
-    Grade,
-    GradeState,
-    Job,
-    JobKind,
-    JobState,
-    Render,
-    RenderState,
-    Sequence,
-    SequenceState,
-    utcnow,
-)
-from .paths import to_absolute, to_relative
-from .pipeline import enqueue_proxy, ingest_and_group
-from .services import gyroflow as gyroflow_service
-from .services import grading as grading_service
-from .services import gyro as gyro_service
-from .services import merge as merge_service
-from .services import proxy as proxy_service
-from .services.capabilities import detect
+from .executor import SpecError, execute
 from .services import procs
-from .services.procs import ProcessError
+from .services.capabilities import detect
 
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 1.0
-PROGRESS_MIN_DELTA = 0.005
-PROGRESS_MIN_INTERVAL_S = 1.0
+# Startup backoff while the API is not answering yet. `depends_on` in compose waits
+# for the container, not for uvicorn to be listening.
+REGISTER_RETRY_S = 3.0
+HTTP_TIMEOUT_S = 30.0
 
 
-class ProgressWriter:
-    """Write progress into the `job` table without hammering SQLite."""
-
-    def __init__(self, session: Session, job: Job, render: Render | None = None) -> None:
-        self._session = session
-        self._job = job
-        self._render = render
-        self._last_value = -1.0
-        self._last_write = 0.0
-
-    def __call__(self, value: float, message: str = "") -> None:
-        now = time.monotonic()
-        if (
-            value < 1.0
-            and value - self._last_value < PROGRESS_MIN_DELTA
-            and now - self._last_write < PROGRESS_MIN_INTERVAL_S
-        ):
-            return
-        self._last_value = value
-        self._last_write = now
-        self._job.progress = value
-        if message:
-            self._job.message = message[:300]
-        self._session.add(self._job)
-        if self._render is not None:
-            self._render.progress = value
-            self._session.add(self._render)
-        self._session.commit()
+class TransportError(RuntimeError):
+    """The dispatcher could not be reached. Says nothing about the job itself."""
 
 
-def _claim_job(session: Session) -> Job | None:
-    job = session.exec(
-        select(Job)
-        .where(Job.state == JobState.QUEUED)
-        .order_by(Job.priority, Job.id)  # type: ignore[arg-type]
-        .limit(1)
-    ).first()
-    if job is None:
-        return None
-    job.state = JobState.RUNNING
-    job.started_at = utcnow()
-    job.attempts += 1
-    job.progress = 0.0
-    job.error = None
-    session.add(job)
-    session.commit()
-    session.refresh(job)
-    return job
+class Unregistered(RuntimeError):
+    """The dispatcher does not know this worker any more: register again."""
 
 
-def _finish(session: Session, job: Job, state: JobState, error: str | None = None) -> None:
-    job.state = state
-    job.finished_at = utcnow()
-    job.progress = 1.0 if state == JobState.DONE else job.progress
-    if error:
-        job.error = error[:2000]
-    session.add(job)
-    session.commit()
+class Dispatcher:
+    """Everything this worker knows about the outside world."""
 
+    def __init__(self, base_url: str, token: str = "") -> None:
+        self.base_url = base_url.rstrip("/")
+        self.token = token
 
-# --------------------------------------------------------------------------- #
-# Handlers
-# --------------------------------------------------------------------------- #
-
-def _handle_merge(session: Session, job: Job) -> None:
-    sequence = session.get(Sequence, job.payload.get("sequence_id"))
-    if sequence is None:
-        raise RuntimeError(f"sequence {job.payload.get('sequence_id')} not found")
-
-    clips = session.exec(
-        select(Clip).where(Clip.sequence_id == sequence.id).order_by(Clip.part_index)  # type: ignore[arg-type]
-    ).all()
-    if not clips:
-        raise RuntimeError(f"sequence {sequence.key} has no part")
-
-    sequence.state = SequenceState.MERGING
-    sequence.error = None
-    session.add(sequence)
-    session.commit()
-
-    parts = [to_absolute(c.raw_path) for c in clips if c.raw_path]
-    parts = [p for p in parts if p is not None]
-    dest = settings.merged_dir / f"{sequence.artifact_stem}.mp4"
-    result = merge_service.merge_parts(parts, dest, ProgressWriter(session, job))
-
-    # The values measured on the merged file are authoritative, not the estimates.
-    sequence.merged_path = to_relative(result.path)
-    sequence.width = result.probe.width
-    sequence.height = result.probe.height
-    sequence.fps_num = result.probe.fps_num
-    sequence.fps_den = result.probe.fps_den
-    sequence.duration_ms = result.probe.duration_ms
-    sequence.frame_count = duration_to_frames(
-        result.probe.duration_ms, result.probe.fps_num, result.probe.fps_den
-    )
-    sequence.size_bytes = result.probe.size_bytes
-    sequence.state = SequenceState.MERGED
-    sequence.updated_at = utcnow()
-    session.add(sequence)
-
-    for clip in clips:
-        clip.state = ClipState.MERGED
-        session.add(clip)
-    session.commit()
-
-    if settings.purge_parts_after_merge and result.method == "mp4_merge":
-        for part in parts:
-            part.unlink(missing_ok=True)
-        log.info("Raw parts deleted for %s (merge verified)", sequence.key)
-
-    enqueue_proxy(session, sequence)
-
-
-def _handle_proxy(session: Session, job: Job) -> None:
-    sequence = session.get(Sequence, job.payload.get("sequence_id"))
-    if sequence is None:
-        raise RuntimeError(f"sequence {job.payload.get('sequence_id')} not found")
-    source = to_absolute(sequence.merged_path)
-    if source is None or not source.exists():
-        raise RuntimeError(f"merged file missing for {sequence.key}")
-
-    sequence.state = SequenceState.PROXYING
-    sequence.error = None
-    session.add(sequence)
-    session.commit()
-
-    caps = detect()
-    proxy_path = settings.proxies_dir / f"{sequence.artifact_stem}.mp4"
-
-    result = proxy_service.build_proxy(
-        source,
-        proxy_path,
-        caps,
-        frame_count=sequence.frame_count,
-        fps_num=sequence.fps_num,
-        fps_den=sequence.fps_den,
-        progress_cb=ProgressWriter(session, job),
-    )
-
-    filmstrip = settings.proxies_dir / f"{sequence.artifact_stem}.filmstrip.jpg"
-    poster = settings.proxies_dir / f"{sequence.artifact_stem}.poster.jpg"
-    try:
-        proxy_service.build_filmstrip(result.path, filmstrip, sequence.duration_ms)
-        proxy_service.build_poster(result.path, poster, sequence.duration_ms)
-    except (ProcessError, RuntimeError) as exc:
-        # A missing filmstrip does not prevent derushing.
-        log.warning("Filmstrip/poster not generated for %s: %s", sequence.key, exc)
-
-    # Read from the merged master, not the proxy: the proxy has no gyro track.
-    # A few seconds, against a proxy measured in minutes.
-    try:
-        gyro_service.build_chart(
-            source,
-            gyro_service.chart_path(sequence.artifact_stem),
-            sequence.duration_ms,
+    def _post(self, path: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["X-Worker-Token"] = self.token
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload).encode(),
+            headers=headers,
+            method="POST",
         )
-    except (gyro_service.GyroError, OSError) as exc:
-        log.warning("Gyro chart not generated for %s: %s", sequence.key, exc)
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:
+                body = response.read()
+                if not body:
+                    return response.status, {}
+                return response.status, json.loads(body)
+        except urllib.error.HTTPError as exc:
+            # An answer, just not a happy one: the caller decides what it means.
+            return exc.code, {"detail": exc.read().decode(errors="replace")[:500]}
+        except (urllib.error.URLError, socket.timeout, OSError, json.JSONDecodeError) as exc:
+            raise TransportError(str(exc)) from exc
 
-    sequence.proxy_path = to_relative(result.path)
-    sequence.proxy_width = result.width
-    sequence.proxy_height = result.height
-    sequence.filmstrip_path = to_relative(filmstrip) if filmstrip.exists() else None
-    sequence.state = SequenceState.READY
-    sequence.updated_at = utcnow()
-    session.add(sequence)
-    session.commit()
-
-
-def _handle_render(session: Session, job: Job) -> None:
-    render = session.get(Render, job.payload.get("render_id"))
-    if render is None:
-        raise RuntimeError(f"render {job.payload.get('render_id')} not found")
-    sequence = session.get(Sequence, render.sequence_id)
-    merged = to_absolute(sequence.merged_path) if sequence else None
-    if sequence is None or merged is None or not merged.exists():
-        raise RuntimeError("sequence or merged file not found")
-
-    template = gyroflow_service.get_template(render.template)
-
-    if render.cut_id is not None:
-        cut = session.get(Cut, render.cut_id)
-        if cut is None:
-            raise RuntimeError(f"cut {render.cut_id} not found")
-        trim = [cut_to_trim_range_ms(cut.start_frame, cut.end_frame, sequence.fps_num, sequence.fps_den)]
-        suffix = f"c{cut.order_index:02d}"
-        render.start_frame, render.end_frame = cut.start_frame, cut.end_frame
-    else:
-        trim = []  # whole sequence
-        suffix = "full"
-        render.start_frame, render.end_frame = 0, max(0, sequence.frame_count - 1)
-
-    out_filename = f"{sequence.key}__{template.id}__{suffix}.mp4"
-    project_path = settings.projects_dir / f"{sequence.key}__{template.id}__{suffix}.gyroflow.json"
-
-    render.state = RenderState.RUNNING
-    render.started_at = utcnow()
-    render.error = None
-    session.add(render)
-    session.commit()
-
-    result = gyroflow_service.render(
-        source=merged,
-        template=template,
-        trim_ranges_ms=trim,
-        out_dir=settings.out_dir,
-        out_filename=out_filename,
-        project_path=project_path,
-        overrides=render.overrides or {},
-        progress_cb=ProgressWriter(session, job, render),
-    )
-
-    render.out_path = to_relative(result.out_path)
-    render.project_path = to_relative(result.project_path)
-    render.state = RenderState.DONE
-    render.progress = 1.0
-    render.finished_at = utcnow()
-    render.processing_device = result.processing_device
-    render.log_tail = result.log_tail[-4000:]
-    session.add(render)
-    session.commit()
-
-
-def _handle_grade(session: Session, job: Job) -> None:
-    grade = session.get(Grade, job.payload.get("grade_id"))
-    if grade is None:
-        raise RuntimeError(f"grade {job.payload.get('grade_id')} not found")
-    render = session.get(Render, grade.render_id)
-    source = to_absolute(render.out_path) if render else None
-    if render is None or source is None or not source.exists():
-        raise RuntimeError("stabilized clip not found")
-
-    grade.state = GradeState.RUNNING
-    grade.started_at = utcnow()
-    grade.error = None
-    session.add(grade)
-    session.commit()
-
-    # The graded file is named after the clip *and* the look, so two looks live
-    # side by side and a look already produced is never produced again.
-    grade.params_hash = grading_service.params_hash(grade.params)
-    dest = settings.graded_dir / f"{source.stem}__{grade.params_hash}.mp4"
-    frames = max(render.end_frame - render.start_frame + 1, 0)
-
-    if dest.exists():
-        log.info("Grade %s already produced, reusing %s", grade.id, dest.name)
-    else:
-        grading_service.render(
-            source,
-            dest,
-            grade.params,
-            analysis=grade.analysis,
-            frame_count=frames,
-            progress_cb=ProgressWriter(session, job),
+    def register(self, name: str, capabilities: dict[str, Any], concurrency: int) -> dict[str, Any]:
+        code, body = self._post(
+            "/api/workers/register",
+            {"name": name, "capabilities": capabilities, "concurrency": concurrency},
         )
+        if code != 200:
+            raise TransportError(f"register refused ({code}): {body.get('detail', '')}")
+        return body
 
-    grade.out_path = to_relative(dest)
-    grade.state = GradeState.DONE
-    grade.progress = 1.0
-    grade.finished_at = utcnow()
-    session.add(grade)
-    session.commit()
+    def claim(self, worker_id: int) -> dict[str, Any] | None:
+        code, body = self._post(f"/api/workers/{worker_id}/claim", {})
+        if code == 204:
+            return None
+        if code == 404:
+            raise Unregistered(body.get("detail", "unknown worker"))
+        if code != 200:
+            raise TransportError(f"claim refused ({code}): {body.get('detail', '')}")
+        return body
 
+    def heartbeat(self, job_id: int, worker_id: int, progress: float, message: str) -> bool:
+        code, body = self._post(
+            f"/api/jobs/{job_id}/heartbeat",
+            {"worker_id": worker_id, "progress": progress, "message": message},
+        )
+        if code != 200:
+            raise TransportError(f"heartbeat refused ({code})")
+        return bool(body.get("ok"))
 
-_HANDLERS = {
-    JobKind.MERGE: _handle_merge,
-    JobKind.PROXY: _handle_proxy,
-    JobKind.RENDER: _handle_render,
-    JobKind.GRADE: _handle_grade,
-}
+    def complete(self, job_id: int, worker_id: int, result: dict[str, Any]) -> bool:
+        code, body = self._post(
+            f"/api/jobs/{job_id}/complete", {"worker_id": worker_id, "result": result}
+        )
+        if code != 200:
+            raise TransportError(f"complete refused ({code})")
+        return bool(body.get("ok"))
 
+    def fail(self, job_id: int, worker_id: int, error: str) -> bool:
+        code, body = self._post(
+            f"/api/jobs/{job_id}/fail", {"worker_id": worker_id, "error": error[:2000]}
+        )
+        if code != 200:
+            raise TransportError(f"fail refused ({code})")
+        return bool(body.get("ok"))
 
-def _mark_failure(session: Session, job: Job, exc: Exception) -> None:
-    message = str(exc)
-    if isinstance(exc, ProcessError) and exc.log_tail:
-        message = f"{message}\n{exc.log_tail}"
-    log.error("Job %s#%s failed: %s", job.kind.value, job.id, message)
-
-    if job.sequence_id:
-        sequence = session.get(Sequence, job.sequence_id)
-        if sequence is not None:
-            sequence.state = SequenceState.FAILED
-            sequence.error = message[:2000]
-            sequence.updated_at = utcnow()
-            session.add(sequence)
-    if job.kind == JobKind.RENDER:
-        render = session.get(Render, job.payload.get("render_id"))
-        if render is not None:
-            render.state = RenderState.FAILED
-            render.error = message[:2000]
-            render.finished_at = utcnow()
-            session.add(render)
-    if job.kind == JobKind.GRADE:
-        grade = session.get(Grade, job.payload.get("grade_id"))
-        if grade is not None:
-            grade.state = GradeState.FAILED
-            grade.error = message[:2000]
-            grade.finished_at = utcnow()
-            session.add(grade)
-    session.commit()
-    _finish(session, job, JobState.FAILED, message)
+    def release(self, worker_id: int) -> None:
+        self._post(f"/api/workers/{worker_id}/release", {})
 
 
-def process_next_job() -> bool:
-    """Process one job. Returns False when the queue is empty."""
-    with session_scope() as session:
-        job = _claim_job(session)
-        if job is None:
-            return False
-        handler = _HANDLERS.get(job.kind)
-        if handler is None:
-            _finish(session, job, JobState.FAILED, f"unknown job kind: {job.kind}")
-            return True
-        try:
-            handler(session, job)
-        except Exception as exc:  # noqa: BLE001 — a crashed job must not kill the worker
-            session.rollback()
-            _mark_failure(session, job, exc)
-        else:
-            _finish(session, job, JobState.DONE)
-        return True
+class Heartbeat:
+    """Holds the lease while a job runs, and fences the job when it cannot.
 
-
-def _scanner_loop(stop: threading.Event) -> None:
-    while not stop.is_set():
-        try:
-            with session_scope() as session:
-                ingest_and_group(session)
-        except Exception:
-            log.exception("inbox scan failed")
-        stop.wait(settings.scan_interval_s)
-
-
-def _requeue_orphans() -> None:
-    """After an abrupt restart, jobs left `running` go back into the queue."""
-    with session_scope() as session:
-        stuck = session.exec(select(Job).where(Job.state == JobState.RUNNING)).all()
-        for job in stuck:
-            job.state = JobState.QUEUED
-            job.progress = 0.0
-            job.message = "requeued after a worker restart"
-            session.add(job)
-        if stuck:
-            log.warning("%d job(s) requeued after restart", len(stuck))
-
-
-def _drop_stale_jobs() -> None:
-    """Clean the queue of jobs that cannot produce anything useful.
-
-    Two cases. A sequence that was deleted or rebuilt leaves behind jobs pointing
-    at nothing; keeping them would only fail them one by one, flagging errors that
-    are not errors. And several jobs of the same kind on the same sequence would
-    redo the same work, the later ones on top of the earlier one's output.
+    Runs in its own thread so that neither a slow dispatcher nor a silent encoder
+    can be mistaken for the other.
     """
-    with session_scope() as session:
-        known = {seq.id for seq in session.exec(select(Sequence)).all()}
-        queued = session.exec(
-            select(Job).where(Job.state == JobState.QUEUED).order_by(Job.id)  # type: ignore[arg-type]
-        ).all()
 
-        orphans, duplicates = 0, 0
-        seen: set[tuple[int, JobKind]] = set()
-        for job in queued:
-            if job.sequence_id is None:
-                continue
-            if job.sequence_id not in known:
-                session.delete(job)
-                orphans += 1
-                continue
-            key = (job.sequence_id, job.kind)
-            if key in seen:
-                session.delete(job)
-                duplicates += 1
-                continue
-            seen.add(key)
+    def __init__(
+        self,
+        client: Dispatcher,
+        job_id: int,
+        worker_id: int,
+        renew_s: float,
+        lease_s: float,
+    ) -> None:
+        self._client = client
+        self._job_id = job_id
+        self._worker_id = worker_id
+        # The dispatcher owns both timings and sends them at registration. The floor
+        # is only there so a nonsense value cannot turn this into a busy loop, and a
+        # lease shorter than the renewal interval would expire by construction.
+        self._renew_s = max(0.01, renew_s)
+        self._lease_s = max(self._renew_s, lease_s)
+        self._progress = 0.0
+        self._message = ""
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._lost = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="heartbeat", daemon=True)
 
-        if orphans:
-            log.warning("%d queued job(s) with no sequence: dropped", orphans)
-        if duplicates:
-            log.warning("%d duplicate queued job(s): dropped", duplicates)
+    @property
+    def lost(self) -> bool:
+        """True once the job stopped being ours. Whatever it produced is not to be
+        reported: the dispatcher has already given the work to someone else."""
+        return self._lost.is_set()
+
+    def report(self, progress: float, message: str = "") -> None:
+        """Progress callback handed to the executor. Never touches the network."""
+        with self._lock:
+            self._progress = progress
+            self._message = message
+
+    def _run(self) -> None:
+        last_ok = time.monotonic()
+        while not self._stop.wait(self._renew_s):
+            with self._lock:
+                progress, message = self._progress, self._message
+            try:
+                still_ours = self._client.heartbeat(
+                    self._job_id, self._worker_id, progress, message
+                )
+            except TransportError as exc:
+                # A blip is normal (the API restarting, for one). Only a silence
+                # longer than the lease means the job is certainly gone.
+                if time.monotonic() - last_ok > self._lease_s:
+                    log.error(
+                        "Job %s: dispatcher unreachable for more than %.0fs, giving it up (%s)",
+                        self._job_id, self._lease_s, exc,
+                    )
+                    self._give_up()
+                    return
+                continue
+            last_ok = time.monotonic()
+            if not still_ours:
+                log.warning("Job %s is no longer ours: stopping", self._job_id)
+                self._give_up()
+                return
+
+    def _give_up(self) -> None:
+        self._lost.set()
+        # Concurrency is 1, so every child belongs to this job.
+        procs.terminate_all()
+
+    def __enter__(self) -> "Heartbeat":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5.0)
+
+
+def _worker_name() -> str:
+    return settings.worker_name or os.environ.get("HOSTNAME") or socket.gethostname()
+
+
+def run_job(client: Dispatcher, worker_id: int, claimed: dict[str, Any], lease: dict[str, Any]) -> None:
+    """Execute one claimed job and report the outcome. Never raises."""
+    job_id = claimed["job_id"]
+    spec = claimed["spec"]
+    log.info("Job %s#%s starting", claimed.get("kind"), job_id)
+    started = time.monotonic()
+
+    with Heartbeat(client, job_id, worker_id, lease["renew_s"], lease["lease_s"]) as beat:
+        try:
+            result = execute(spec, beat.report)
+        except Exception as exc:  # noqa: BLE001 (a job that breaks must not take the worker down)
+            if beat.lost:
+                log.warning("Job %s stopped because it was taken away", job_id)
+                return
+            message = str(exc)
+            if isinstance(exc, procs.ProcessError) and exc.log_tail:
+                message = f"{message}\n{exc.log_tail}"
+            elif not isinstance(exc, (SpecError, procs.ProcessError)):
+                log.exception("Job %s raised", job_id)
+            _report(client.fail, job_id, worker_id, message, what="failure")
+            return
+
+    if beat.lost:
+        # Finished, but somebody else owns the job now. Reporting would overwrite
+        # their work with ours.
+        log.warning("Job %s finished after being taken away: result dropped", job_id)
+        return
+
+    elapsed = time.monotonic() - started
+    if _report(client.complete, job_id, worker_id, result, what="result"):
+        log.info("Job %s#%s done in %.1fs", claimed.get("kind"), job_id, elapsed)
+
+
+def _report(method, job_id: int, worker_id: int, payload, what: str) -> bool:
+    """Post an outcome, retrying briefly: losing it would leave the job hanging
+    until its lease lapses, and the work would then be redone for nothing."""
+    for attempt in range(3):
+        try:
+            return method(job_id, worker_id, payload)
+        except TransportError as exc:
+            log.warning("Job %s: %s could not be posted (%s)", job_id, what, exc)
+            time.sleep(2.0 * (attempt + 1))
+    log.error("Job %s: %s lost, the dispatcher will requeue it", job_id, what)
+    return False
 
 
 def main() -> None:
@@ -442,12 +277,8 @@ def main() -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
     settings.ensure_dirs()
-    init_db()
-    gyroflow_service.seed_templates()
-    detect()
-    _requeue_orphans()
-    _drop_stale_jobs()
-
+    name = _worker_name()
+    client = Dispatcher(settings.api_url, settings.worker_token)
     stop = threading.Event()
 
     def _shutdown(signum, _frame):  # noqa: ANN001
@@ -463,18 +294,47 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
-    scanner = threading.Thread(target=_scanner_loop, args=(stop,), name="scanner", daemon=True)
-    scanner.start()
-    log.info("Worker started (scanning every %.0fs)", settings.scan_interval_s)
+    # Probing really decodes an HEVC 10-bit sample, so it costs a few seconds. Pay
+    # it once, here, and hand the answer to the dispatcher: the hardware that
+    # matters is the hardware that does the work.
+    capabilities = detect().to_dict()
 
+    worker_id = 0
+    lease: dict[str, Any] = {}
     while not stop.is_set():
         try:
-            worked = process_next_job()
-        except Exception:
-            log.exception("job loop raised")
-            worked = False
-        if not worked:
+            if not worker_id:
+                lease = client.register(name, capabilities, settings.worker_concurrency)
+                worker_id = lease["worker_id"]
+                log.info(
+                    "Worker %s registered as #%s on %s (lease %.0fs)",
+                    name, worker_id, settings.api_url, lease["lease_s"],
+                )
+
+            claimed = client.claim(worker_id)
+        except Unregistered as exc:
+            log.warning("Dispatcher no longer knows us (%s): registering again", exc)
+            worker_id = 0
+            stop.wait(REGISTER_RETRY_S)
+            continue
+        except TransportError as exc:
+            log.warning("Dispatcher unreachable (%s), retrying in %.0fs", exc, REGISTER_RETRY_S)
+            stop.wait(REGISTER_RETRY_S)
+            continue
+
+        if claimed is None:
             stop.wait(POLL_INTERVAL_S)
+            continue
+
+        run_job(client, worker_id, claimed, lease)
+
+    if worker_id:
+        # Give the jobs back at once instead of leaving the queue idle until the
+        # lease lapses.
+        try:
+            client.release(worker_id)
+        except TransportError as exc:
+            log.warning("Jobs could not be released (%s): their lease will lapse", exc)
 
     log.info("Worker stopped")
 

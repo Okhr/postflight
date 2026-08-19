@@ -92,7 +92,7 @@ plusieurs gigaoctets. Compter environ 2x la taille des rushes tant que
 ## Utilisation
 
 1. Vider la carte SD dans `inbox/`, de deux façons au choix :
-   - **copie directe** dans le dossier réseau. Le worker scanne toutes les 30 s
+   - **copie directe** dans le dossier réseau. Le dispatcher scanne toutes les 30 s
      et n'ingère un fichier qu'après plusieurs scans à taille identique —
      inotify n'est pas fiable sur NFS/SMB et un rush de 4 Go met du temps à
      arriver.
@@ -102,8 +102,15 @@ plusieurs gigaoctets. Compter environ 2x la taille des rushes tant que
      renommé seulement une fois complet, donc sa complétude est certaine).
      Un rush déjà connu est reconnu à l'empreinte et écarté dans
      `inbox/.duplicates/` au lieu d'être traité deux fois.
+
+   Un fichier **sans piste gyro** est écarté dans `inbox/.no-gyro/` et le compte
+   remonte à l'interface : c'est presque toujours une sortie Gyroflow revenue dans
+   le dossier, et rien en aval ne peut travailler dessus. Rien n'est supprimé.
 2. Les parts d'un même vol sont regroupées automatiquement, fusionnées, puis un
-   proxy est généré. La séquence passe à *prête*.
+   proxy est généré. La séquence passe à *prête*. Les trois nommages DJI sont
+   reconnus, y compris l'ancien `DJI_0327.MP4` qui ne porte aucun horodatage : dans
+   ce cas l'heure de départ vient du `creation_time` du conteneur, qui survit à la
+   copie, et non du `mtime`, qu'un simple `cp` détruit.
 3. Derush : `←`/`→` image par image, `maj` pour une seconde, `espace` lecture,
    sélecteur de vitesse. `I` pose un début, `O` ferme la zone, `ctrl+S`
    enregistre. Sous le lecteur, la pellicule et la **courbe gyro** (vitesse

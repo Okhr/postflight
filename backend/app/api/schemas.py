@@ -187,6 +187,7 @@ class TemplateOut(BaseSchema):
 class ScanOut(BaseSchema):
     ingested: list[str] = Field(default_factory=list)
     duplicates: list[str] = Field(default_factory=list)
+    rejected: list[str] = Field(default_factory=list)
     failed: list[str] = Field(default_factory=list)
     sequences: list[str] = Field(default_factory=list)
 
@@ -205,8 +206,25 @@ class UploadCheckOut(BaseSchema):
     sequence_id: int | None = None
 
 
+class WorkerOut(BaseSchema):
+    """A registered machine, as the UI sees it.
+
+    `capabilities` is what the worker measured on itself, not what the API can see:
+    the hardware that matters is the hardware that runs the jobs.
+    """
+
+    id: int
+    name: str
+    capabilities: dict[str, Any]
+    concurrency: int
+    last_seen_at: datetime
+    online: bool
+    running: int
+
+
 class StatusOut(BaseSchema):
     capabilities: dict[str, Any]
+    workers: list[WorkerOut]
     counts: dict[str, int]
     inbox_pending: int
     settings: dict[str, Any]

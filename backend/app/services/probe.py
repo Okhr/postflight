@@ -59,6 +59,37 @@ def _run_ffprobe(path: Path) -> dict:
         raise ProbeError(f"sortie ffprobe illisible pour {path.name}") from exc
 
 
+def _creation_time(data: dict) -> datetime | None:
+    """Start time as the container itself states it.
+
+    Checked against the files whose name carries the true UTC time, and it matches to
+    the second: the name of `DJI_20260703172854_0020_D.MP4` says 17:28:54 UTC and the
+    container says `2026-07-03T17:28:54.000000Z`. So it is genuine UTC.
+
+    It matters because the alternative is the `mtime`, and the `mtime` does not travel
+    with the bytes. A `cp` without `-p`, a drag-and-drop upload (HTTP carries no
+    mtime) or an `rsync` without `-t` all reset it to the time of the copy. On the
+    older O3 names, which carry no timestamp at all, that was the only source left:
+    every rush then looked as if it had been recorded just now, and a real split pair
+    measured 0.4 s apart came out 78 s apart and was never chained. Measured
+    2026-08-19, on a real pair, by copying it with plain `cp`.
+    """
+    raw = ((data.get("format") or {}).get("tags") or {}).get("creation_time")
+    if not raw:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    # A camera whose clock was never set writes an epoch date. Worse than nothing: it
+    # would make every rush of every flight look contiguous.
+    if stamp.year < 2000:
+        return None
+    return stamp.astimezone(timezone.utc)
+
+
 def _parse_rational(value: str | None, default: tuple[int, int] = (0, 1)) -> tuple[int, int]:
     if not value or "/" not in value:
         return default
@@ -103,10 +134,12 @@ def probe(path: Path) -> ProbeResult:
     ]
     tags = [t for t in tags if t]
 
+    # Three sources, best first. The name is the camera's own statement and is exact;
+    # the container agrees with it to the second where both exist, and survives being
+    # copied; the mtime is a last resort that any copy can destroy.
     parsed = parse_filename(path)
-    recorded_at = parsed.recorded_at
+    recorded_at = parsed.recorded_at or _creation_time(data)
     if recorded_at is None:
-        # Fallback: mtime is when writing ended, so walk back by the duration.
         recorded_at = datetime.fromtimestamp(path.stat().st_mtime - duration_s, tz=timezone.utc)
 
     return ProbeResult(

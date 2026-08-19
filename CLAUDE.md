@@ -140,6 +140,32 @@ runtime injecte l'ICD Vulkan mais **pas** le `libnvidia-glsi` dont il dépend, m
 avec `NVIDIA_DRIVER_CAPABILITIES=all` : Vulkan reste indisponible dans le conteneur
 sur cette machine, alors qu'il marche sur l'hôte.
 
+### Le rendu Gyroflow est limité par le CPU, pas par le GPU
+
+Mesuré le 2026-08-19 sur le poste RTX 3090 + i7-7700K, source O3 réelle 3840x2160
+h264, sortie 1080p, 3000 images :
+
+| | valeur |
+|---|---|
+| débit avec démarrage de Gyroflow | 19,7 img/s |
+| débit en régime établi | **22,7 img/s** |
+| `processing_device` rapporté | `OpenCL` |
+| CPU du conteneur pendant le rendu | **676 %** sur 800 % (8 threads) |
+| GPU pendant le rendu | **13 %** |
+
+Le warp passe bien par OpenCL sur le 3090, et pourtant c'est le CPU qui sature. D'où
+un résultat qui a l'air absurde : **un RTX 3090 rend à la même vitesse qu'un iGPU
+Radeon 890M** (23 img/s dans le tableau plus haut). Il n'y a rien d'absurde, les deux
+mesures sont simplement bornées par autre chose que le GPU, et le 890M était accompagné
+d'un Ryzen AI 9 HX 370 (12 cœurs, 2024) là où le 3090 l'est d'un i7-7700K (4 cœurs,
+2017).
+
+Conséquence pour la répartition des jobs : **« envoyer les rendus à la machine qui a
+le gros GPU » est un mauvais modèle**. La bonne question est quelle machine a le
+meilleur CPU pour ce travail, et seule une **mesure du vrai débit** répond, jamais un
+a priori tiré des capacités matérielles. Un GPU reste nécessaire (sans lui, ~8,7 img/s
+mesuré), mais il n'est pas ce qui départage deux machines qui en ont un.
+
 D'où le modèle de `services/capabilities.py` : **on sonde en exécutant**.
 
 - **décodage** : NVDEC puis VAAPI, chacun essayé en décodant réellement un
@@ -257,9 +283,139 @@ La nôtre (`services/grouping.py`) :
 
 - index caméra consécutifs **et** `start(n+1) - (start(n) + durée(n)) < 2 s`
   (mesuré : 0.36 s d'écart sur une vraie paire)
-- **le timestamp du nom est en UTC**, le `mtime` est l'heure *locale* de fin
-  d'écriture → deux signaux indépendants
-- une taille de part ≈ 3.763 Go est un indice de découpe, jamais une preuve
+- **trois sources pour l'heure de départ, la meilleure d'abord** : le nom (exact,
+  UTC), puis le `creation_time` du conteneur, puis `mtime - durée` en dernier
+  recours. Voir ci-dessous, l'ordre n'est pas cosmétique.
+- **la taille de la part est une condition nécessaire**, pas un simple indice : une
+  part qui n'a pas approché la limite de fichier s'est arrêtée parce qu'on a arrêté
+  d'enregistrer. Seuil `split_min_part_bytes`, 3 Go par défaut.
+
+### La taille sépare, l'écart presque pas
+
+Mesuré le 2026-08-19 sur les 179 paires consécutives de la collection O3 réelle :
+
+| | taille de la part 1 | durée | écart |
+|---|---|---|---|
+| **51 vraies découpes** | 3,763 à 3,770 Go | 193,7 à 196,8 s | 0,12 à **0,79 s** |
+| **9 paires collées à tort** | jusqu'à **1,398 Go** | variable | **1,11** à 1,96 s |
+
+L'écart ne laisse que **0,32 s** entre les deux populations, la taille laisse un
+**facteur 2,7**. Avec le seul timing et une tolérance de 2 s, 9 paires de vols sans
+rapport sur 60 étaient fusionnées, puis lissées comme une seule courbe et derushées
+comme un seul rush. D'où la condition sur la taille, avec un seuil à 3 Go qui garde
+les 51 vraies (min 3,763 Go) et écarte les 9 fausses (max 1,398 Go).
+
+Le seuil reste un réglage : la limite appartient à la caméra et à la carte, pas à
+nous. Vérifié sur O3 uniquement ; la paire O4 documentée plus haut (222,639 s) tombe
+sur le même ordre de grandeur à ~135 Mb/s, mais n'a pas été remesurée.
+
+Une part de taille inconnue (`size_bytes` à 0) ne bloque pas : même convention que
+l'index caméra absent, un signal qu'on n'a pas ne doit pas empêcher le chaînage.
+
+### Trois nommages, et un seul porte un horodatage
+
+Relevé le 2026-08-19 sur la collection O3 réelle de florian (622 Go, 194 masters) :
+
+| forme | exemple | reconnu comme | profil |
+|---|---|---|---|
+| horodaté | `DJI_20260703172854_0020_D.MP4` | `dji_goggles` | 3840x2880 hevc |
+| index seul | `DJI_0327.MP4` | `dji_legacy` (ajouté le 2026-08-19) | 3840x2160 h264 |
+| fusion à la main | `DJI_0044_0045_joined.MP4` | `unknown`, et c'est voulu | 3840x2160 h264 |
+
+**L'ancien nommage O3 n'était pas lu du tout** : 13 masters sur 15 échantillonnés
+le portent, et le groupage se rabattait donc sur le seul timing. Attention, il n'y a
+là **aucun horodatage** : `recorded_at` vient du repli de `probe()`, soit
+`mtime - durée`. C'est juste comme instant absolu (le `mtime` est un epoch), et
+précis parce que le fichier est écrit en temps réel pendant l'enregistrement.
+
+Le `_joined` reste volontairement `unknown` : c'est un enregistrement entier, rien ne
+doit jamais s'y chaîner, et sans index seul le timing peut en décider.
+
+### Le `mtime` ne voyage pas avec les octets
+
+Piège coûteux, trouvé le 2026-08-19 en testant sur les vrais fichiers. L'heure de
+départ venait du nom, et à défaut de `mtime - durée`. Or **l'ancien nommage O3 ne
+porte aucun horodatage**, donc pour 13 masters sur 15 le `mtime` était la seule
+source. Et le `mtime` est détruit par n'importe quelle copie : `cp` sans `-p`, un
+`rsync` sans `-t`, et surtout **le glisser-déposer de l'interface**, puisque HTTP ne
+transporte pas de date de fichier.
+
+Effet mesuré : la vraie paire `DJI_0330` + `DJI_0331`, séparée de **0,4 s**, copiée
+avec un `cp` ordinaire, ressortait à **78 s d'écart** et n'était jamais chaînée. Les
+deux parts d'un même vol devenaient deux séquences, donc deux fusions, donc une
+couture au montage.
+
+La bonne source était dans le fichier depuis le début : **`creation_time` du
+conteneur mp4**. Contre-épreuve sur les fichiers dont le nom porte l'heure vraie, et
+c'est exact à la seconde près :
+
+| fichier | nom (UTC) | `creation_time` |
+|---|---|---|
+| `DJI_20260703172854_0020_D.MP4` | 17:28:54 | `2026-07-03T17:28:54.000000Z` |
+| `DJI_0330.MP4` | rien | `2025-08-17T09:51:19.000000Z` |
+
+Donc du vrai UTC, et il survit à la copie. Un garde-fou quand même : une caméra dont
+l'horloge n'a jamais été réglée écrit une date epoch, pire que rien puisque tous les
+rushes paraîtraient contigus. En dessous de l'an 2000, on ignore.
+
+### Ce qui n'a pas de gyro n'est pas un master
+
+Les sorties Gyroflow reviennent dans l'inbox (elles vivent dans les mêmes dossiers
+que les rushes). Ingérées, elles coûtent une passe proxy complète pour finir dans la
+liste de derush et échouer à la stabilisation, puisque **Gyroflow refuse un fichier
+sans télémétrie**. On les écarte donc dans `inbox/.no-gyro/`, à côté de
+`.duplicates/`, jamais supprimées, et le scan en publie le compte.
+
+Le test porte sur le **contenu**, pas sur le nom : les sorties prennent plusieurs
+formes (`_stabilized`, `_stabilized_16x9`, `_joined_stabilized`) et l'extension bascule
+en minuscules. Mesuré, et c'est net : **15 masters sur 15 ont du gyro** quel que soit
+leur nommage, **2 sorties sur 2 n'en ont aucune**.
+
+## Dispatcher et workers
+
+Depuis le 2026-08-19, **la base appartient au dispatcher seul**. Un worker ne
+l'ouvre jamais : il s'enregistre en HTTP, réclame un job, reçoit une **spec
+autoportante** et repose les faits qu'il a mesurés. C'est ce qui permettra de poser
+un worker sur une autre machine, et ça a déplacé du code :
+
+| | avant | maintenant |
+|---|---|---|
+| scan de l'inbox, groupage | worker | **API** (elle seule voit le volume qui compte) |
+| purge des parts après fusion | worker | **API** (sa copie est celle qui fait foi) |
+| hash des paramètres d'étalonnage, bornes de coupe | worker | **API** (elle doit les stocker de toute façon) |
+| sonde matérielle, exécution | worker | worker |
+
+Quatre choses à ne pas défaire :
+
+1. **Les workers tirent, le dispatcher ne pousse jamais.** Il n'y a donc aucune
+   découverte (un worker reçoit une URL et s'annonce), aucun port entrant côté
+   worker, aucune sonde de santé (un worker qui cesse de demander est parti) et
+   aucun moyen de le surcharger, puisque le travail ne bouge que quand il en
+   demande.
+2. **Un job est tenu par un bail** (`lease_expires_at`, 60 s, renouvelé toutes les
+   2 s). Un bail que personne ne renouvelle retourne en file : c'est le seul réessai
+   automatique du système, et c'est ce qui rend un worker éteignable en pleine passe
+   (mesuré : SIGKILL sur le worker, requeue à +66 s, reprise et fin du job).
+   Plafonné à `MAX_ATTEMPTS` pour qu'un job qui tue son worker ne fasse pas tourner
+   la file indéfiniment. La cadence de 2 s est celle de la **barre de progression**,
+   pas celle du bail : le battement porte les deux, et à 15 s la barre avançait par
+   sauts visibles.
+3. **Le revers du bail, c'est le clôturage.** Un worker qui n'arrive plus à
+   renouveler doit tuer son propre enfant : deux ffmpeg écrivant le même fichier de
+   sortie est le seul scénario qui vaille qu'on se donne du mal. D'où le
+   `ok: false` en réponse au battement de cœur, et `procs.terminate_all()` derrière.
+4. **L'attribution est atomique** : un `UPDATE ... WHERE state='queued'`
+   conditionnel. Un `SELECT` puis un `UPDATE` donnerait la même fusion de 4 Go à
+   deux machines.
+
+Le battement de cœur est **découplé de la progression** : le callback de
+l'executor n'écrit qu'une variable, un thread poste. Donc un dispatcher lent ne
+ralentit pas un rendu, et un rendu silencieux garde son bail. Un *process* bloqué
+est un autre problème, déjà traité par les timeouts de `procs.run_with_progress`.
+
+Le nom d'un worker est son identité (`VS_WORKER_NAME`) et doit être **stable** :
+le hostname d'un conteneur a l'air stable et ne l'est pas, il change à chaque
+recréation et laisse une ligne `worker` orpheline derrière lui.
 
 ## Conventions
 
@@ -270,7 +426,8 @@ La nôtre (`services/grouping.py`) :
   **mesurées sur le fichier fusionné**, pas la somme des estimations des parts.
 - SQLite perd les fuseaux : normaliser avec `timeutil.as_utc()` avant toute
   comparaison de dates relues (cf. `BaseSchema` côté API).
-- Un job planté ne doit jamais tuer le worker : `process_next_job` isole.
+- Un job planté ne doit jamais tuer le worker : `worker.run_job` isole et
+  rapporte l'échec au dispatcher.
 - Front : shadcn/ui de base uniquement, composants copiés dans
   `frontend/src/components/ui/`.
 - **Fin de tâche = commit puis push sur `master`.** Ni branche ni PR sur ce projet :

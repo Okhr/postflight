@@ -31,10 +31,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -302,13 +302,24 @@ def _opencl_devices() -> list[OpenCLDevice]:
 # --------------------------------------------------------------------------- #
 
 def _build_sample() -> Path | None:
-    # Named after the process: the API and the worker are started together by
-    # compose and both probe, so a shared filename means one of them deleting the
-    # sample while the other is still decoding it, and a hardware path reported
-    # broken for no reason.
-    sample = settings.tmp_dir / f"caps_probe_hevc10_{os.getpid()}.mp4"
+    """Encode the little HEVC 10-bit clip every decode probe runs against.
+
+    In a private directory, and **not** in a filename built from the pid. Two
+    processes probe at once (the API and the worker are started together by compose)
+    and they share the volume, but each is pid 1 inside its own container: a
+    pid-derived name is the same name on both sides. Measured on 2026-08-19, that is
+    exactly what happened, one of them deleting the sample while the other was still
+    decoding it, and NVDEC reported broken on a machine where it works. A directory
+    from mkdtemp is unique by construction, with no namespace to reason about.
+    """
     try:
         settings.tmp_dir.mkdir(parents=True, exist_ok=True)
+        scratch = Path(tempfile.mkdtemp(prefix="caps_probe_", dir=settings.tmp_dir))
+    except OSError as exc:
+        log.warning("HEVC 10-bit probe sample not built: %s", exc)
+        return None
+    sample = scratch / "hevc10.mp4"
+    try:
         made = _run(
             [
                 settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
@@ -320,8 +331,10 @@ def _build_sample() -> Path | None:
         )
     except (subprocess.SubprocessError, OSError) as exc:
         log.warning("HEVC 10-bit probe sample not built: %s", exc)
+        shutil.rmtree(scratch, ignore_errors=True)
         return None
     if made.returncode != 0 or not sample.exists():
+        shutil.rmtree(scratch, ignore_errors=True)
         return None
     return sample
 
@@ -435,7 +448,7 @@ def _detect_decode(caps: Capabilities) -> None:
                 return
             log.info("Decode backend %s unusable: %s", name, why.replace("\n", " ")[:160])
     finally:
-        sample.unlink(missing_ok=True)
+        shutil.rmtree(sample.parent, ignore_errors=True)
 
     if len(wanted) == 1:
         caps.notes.append(f"{wanted[0]} requested but unusable → CPU decoding")

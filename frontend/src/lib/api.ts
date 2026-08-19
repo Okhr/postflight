@@ -201,6 +201,7 @@ export interface Status {
 export interface ScanResult {
   ingested: string[];
   duplicates: string[];
+  rejected: string[];
   failed: string[];
   sequences: string[];
 }

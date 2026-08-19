@@ -10,6 +10,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response, StreamingResponse
 from sqlmodel import Session, func, select
 
+from .. import dispatch
 from ..config import settings
 from ..db import get_session
 from ..framing import format_timecode, frame_to_ms
@@ -26,6 +27,7 @@ from ..models import (
     RenderState,
     Sequence,
     SequenceState,
+    Worker,
     utcnow,
 )
 from ..paths import exists as path_exists, to_absolute
@@ -247,8 +249,21 @@ def get_status(session: Session = Depends(get_session)) -> schemas.StatusOut:
         "jobs_running": _count(session, Job, state=JobState.RUNNING),
         "jobs_failed": _count(session, Job, state=JobState.FAILED),
     }
+    workers = [
+        schemas.WorkerOut(
+            id=w.id or 0,
+            name=w.name,
+            capabilities=w.capabilities or {},
+            concurrency=w.concurrency,
+            last_seen_at=w.last_seen_at,
+            online=dispatch.is_online(w),
+            running=_count(session, Job, state=JobState.RUNNING, worker_id=w.id),
+        )
+        for w in session.exec(select(Worker).order_by(Worker.name)).all()  # type: ignore[arg-type]
+    ]
     return schemas.StatusOut(
         capabilities=detect().to_dict(),
+        workers=workers,
         counts=counts,
         inbox_pending=inbox_pending,
         settings={
@@ -268,6 +283,7 @@ async def trigger_scan(session: Session = Depends(get_session)) -> schemas.ScanO
     return schemas.ScanOut(
         ingested=[c.filename for c in result.ingested],
         duplicates=result.duplicates,
+        rejected=result.rejected,
         failed=result.failed,
         sequences=[s.key for s in result.sequences],
     )

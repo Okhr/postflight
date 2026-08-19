@@ -32,6 +32,7 @@ class ClipInfo:
     fps_num: int
     fps_den: int
     codec: str
+    size_bytes: int = 0
     camera_index: int | None = None
     group_key: str | None = None
 
@@ -49,8 +50,31 @@ def _indices_consecutive(a: ClipInfo, b: ClipInfo) -> bool:
     return b.camera_index == a.camera_index + 1
 
 
-def _contiguous(a: ClipInfo, b: ClipInfo, tolerance_s: float) -> bool:
+def _reached_the_file_limit(clip: ClipInfo, min_bytes: int) -> bool:
+    """Could this part have been cut short by the camera, rather than by the pilot?
+
+    A part that stopped well below the file limit stopped because recording stopped.
+    This is the signal that actually separates the two cases, and the timing barely
+    does. Measured on 179 consecutive pairs of a real 622 GB O3 collection:
+
+    - the **51 genuine splits** all have a first part between 3.763 and 3.770 Go,
+      lasting 193.7 to 196.8 s, and follow within 0.79 s at the very most;
+    - the **9 pairs the timing alone glued wrongly** have a first part of 1.398 Go at
+      most, and follow between 1.11 and 1.96 s later.
+
+    So the gap leaves 0.32 s between the two populations while the size leaves a
+    factor of 2.7. Going on timing alone merged 9 pairs of unrelated flights out of
+    60, which then get smoothed as one curve and cut as one rush.
+    """
+    if not clip.size_bytes:
+        return True  # signal unavailable: fall back on timing alone
+    return clip.size_bytes >= min_bytes
+
+
+def _contiguous(a: ClipInfo, b: ClipInfo, tolerance_s: float, min_part_bytes: int = 0) -> bool:
     if not _same_profile(a, b) or not _indices_consecutive(a, b):
+        return False
+    if not _reached_the_file_limit(a, min_part_bytes):
         return False
     if (a.group_key or "") != (b.group_key or ""):
         return False
@@ -59,7 +83,9 @@ def _contiguous(a: ClipInfo, b: ClipInfo, tolerance_s: float) -> bool:
     return gap_s <= tolerance_s
 
 
-def chain_clips(clips: list[ClipInfo], tolerance_s: float) -> list[list[ClipInfo]]:
+def chain_clips(
+    clips: list[ClipInfo], tolerance_s: float, min_part_bytes: int = 0
+) -> list[list[ClipInfo]]:
     """Split the list into groups of contiguous parts, in chronological order."""
     ordered = sorted(
         clips,
@@ -67,7 +93,7 @@ def chain_clips(clips: list[ClipInfo], tolerance_s: float) -> list[list[ClipInfo
     )
     groups: list[list[ClipInfo]] = []
     for clip in ordered:
-        if groups and _contiguous(groups[-1][-1], clip, tolerance_s):
+        if groups and _contiguous(groups[-1][-1], clip, tolerance_s, min_part_bytes):
             groups[-1].append(clip)
         else:
             groups.append([clip])
