@@ -483,6 +483,86 @@ worker lit le sien et l'envoie à l'enregistrement ; l'égalité **est** le test
 qui casse est silencieux : un worker à qui on a dit à tort qu'il partage le volume va
 chercher des fichiers qui ne sont pas là et rate tous ses jobs.
 
+### Un worker ailleurs : les fichiers voyagent, le coût décide
+
+Vérifié de bout en bout le 2026-08-19, ce PC en worker distant contre le dispatcher
+local, avec son propre volume de travail :
+
+| | mesuré |
+|---|---|
+| détection du volume | `shares_data=False`, sans rien configurer |
+| master récupéré | 450,9 Mo en HTTP |
+| rendu | 1470 images en 59,3 s, OpenCL sur le 3090 |
+| sorties renvoyées | 114,4 Mo + le `.gyroflow.json` |
+| deuxième rendu du même master | **aucun transfert d'entrée**, seuls 88,8 Mo repartent |
+| proxy distant | **quatre** fichiers renvoyés : proxy, filmstrip, poster, graphe gyro |
+| fusion distante | part récupérée, hardlink, master renvoyé |
+| ce que les vrais jobs ont appris | rendu 24,9 img/s contre 28,0 au benchmark |
+
+Les quatre types de job ont tourné à distance, et le proxy est le plus instructif :
+**trois de ses quatre sorties ne sont nommées par aucun champ du résultat**.
+
+**Adressés par chemin relatif, pas par hash de contenu.** Le hash serait la réponse
+de manuel et c'est la mauvaise ici : il faudrait lire 4 Go pour nommer un fichier dont
+le dispatcher connaît déjà le nom. Les chemins sont des identités sûres dans ce dépôt
+parce que rien n'est jamais réécrit sur place (un master fusionné porte le stem de la
+séquence, un étalonnage le hash de son look, un rendu son template et son cut). Donc
+le cache du worker vérifie un chemin et une taille, et il a raison.
+
+**Ce qui remonte, c'est tout ce que le job a écrit, pas ce que le résultat nomme.** La
+seule étape proxy écrit un poster, un filmstrip et un graphe gyro qu'aucun champ du
+résultat ne mentionne, et l'interface les lit tous. La détection se fait par
+**instantané avant/après**, pas par comparaison d'horodatage : la granularité du mtime
+appartient au système de fichiers, et les deux façons de se tromper sont mauvaises
+(rater une sortie laisse le dispatcher avec un chemin sans fichier, prendre une entrée
+pour une sortie renvoie un master de 4 Go d'où il vient).
+
+**La fonction de coût, en une ligne** : `secondes = ampleur / débit + (à récupérer +
+ratio_sortie x total_entrée) / lien`. Deux détails qui ont demandé une mesure :
+
+- **le retour se compte à part de l'aller.** Version d'avant : un facteur x2 sur les
+  octets *manquants*. Trou réel : un worker qui a déjà le master ne payait plus rien,
+  alors qu'il doit toujours renvoyer le rendu. Les ratios viennent de deux rushes
+  réels : un master 4K de 451 Mo donne 114 Mo en 1080p (0,3) et 19 Mo de proxy (0,05) ;
+  fusion et étalonnage rendent ce qu'on leur a donné (1,0).
+- **inconnu reste inconnu.** Un débit que le benchmark n'a pas pu mesurer prend la
+  moyenne de ce que les autres ont mesuré, jamais zéro : un worker exclu en silence de
+  tous les jobs d'un type serait pire qu'un worker mal classé. Idem pour un lien non
+  mesuré.
+
+**La règle d'attribution.** Un worker prend le job pour lequel il est le moins cher.
+Si un autre est nettement meilleur et qu'il est en ligne avec de la place, il laisse :
+tout le monde interroge le dispatcher une fois par seconde, donc l'autre se le verra
+proposer dans la seconde. `SKIP_MARGIN` de 1,2 parce que les deux workers se notent
+mutuellement sur des données légèrement différentes (chacun connaît son cache
+exactement et celui de l'autre à son dernier poll) : à quasi-égalité, les deux prennent
+et l'attribution atomique tranche, alors que les deux qui s'effacent serait un blocage
+sans vainqueur.
+
+Trois limites assumées, pas résolues :
+
+1. **rien n'est réservé à un worker simplement occupé**, même trois fois plus rapide et
+   sur le point de finir : le savoir demanderait de prédire la fin d'un job en cours, et
+   donner le travail à qui est libre ne laisse jamais une machine à l'arrêt.
+2. **le benchmark et l'observé se comparent alors qu'ils ne sont pas commensurables.**
+   Un worker qui a fini de vrais jobs paraît ~13 % plus lent qu'une machine identique
+   qui n'en a pas fait (mesuré : 24,9 contre 28,0). Sous la marge de 20 %, donc sans
+   effet sur les décisions, et l'écart s'efface à mesure que tout le monde accumule.
+3. **avec un seul worker tout ceci se réduit à « prendre le prochain job »**, puisque
+   l'unique candidat est toujours le moins cher. C'est le déploiement normal ici.
+
+Un dernier point trouvé en le regardant se produire : **un worker arrêté proprement
+compte comme parti tout de suite**. Avec le worker local stoppé et un rendu en file, le
+distant s'effaçait correctement devant une machine moins chère qui n'existait plus, et
+le job attendait 59 s que le bail expire. L'expiration de bail est le bon garde-fou pour
+un worker qui a disparu, et la mauvaise réponse pour un worker qui a dit au revoir :
+`release()` le vieillit donc au-delà de `ONLINE_S`.
+
+**Ce qui n'est pas gardé côté worker** : `tmp/`, `db/` et `inbox/` ne voyagent jamais,
+et l'éviction ne touche que les répertoires de rushes. Elle n'existe que sur un worker
+qui ne partage pas le volume, garanti par construction (le `Workspace` n'est instancié
+que dans ce cas) : sur le volume du dispatcher, elle supprimerait les originaux.
+
 ### Deux images, un Dockerfile
 
 La scission ne vaut que dans un sens, et elle rapporte plus qu'il n'y paraît. Mesuré :

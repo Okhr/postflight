@@ -252,6 +252,10 @@ class Worker(SQLModel, table=True):
     capabilities: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     rates: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     observed: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Relative paths this worker already holds, refreshed on every poll. Only ever
+    # filled by a worker that keeps its own copy: it is what stops a second cut of an
+    # already-fetched sequence from being priced as another 4 GB transfer.
+    cached: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # Whether this worker reads and writes the dispatcher's own data volume. When it
     # does, a job costs no transfer at all; when it does not, every input has to
     # travel. Decided by comparing volume ids, never configured (see paths.py).

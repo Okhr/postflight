@@ -39,13 +39,16 @@ import time
 import urllib.error
 import urllib.request
 from functools import partial
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from .config import settings
 from .executor import SpecError, execute
 from .paths import read_volume_id
 from .services import bench, procs
 from .services.capabilities import detect
+from .transport import Workspace
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +65,11 @@ HTTP_TIMEOUT_S = 30.0
 LINK_PROBE_S = 1.0
 LINK_PROBE_MAX = 128 << 20
 LINK_READ_CHUNK = 1 << 18
+
+# Moving a 4 GB master is minutes, not seconds. The timeout is per socket operation,
+# not for the whole transfer, so this is "the link went quiet for five minutes".
+BLOB_TIMEOUT_S = 300.0
+BLOB_CHUNK = 1 << 20
 
 
 class TransportError(RuntimeError):
@@ -150,8 +158,10 @@ class Dispatcher:
             return None
         return received / (1 << 20) / elapsed
 
-    def claim(self, worker_id: int) -> dict[str, Any] | None:
-        code, body = self._post(f"/api/workers/{worker_id}/claim", {})
+    def claim(self, worker_id: int, cached: list[str] | None = None) -> dict[str, Any] | None:
+        code, body = self._post(
+            f"/api/workers/{worker_id}/claim", {"cached": cached or []}
+        )
         if code == 204:
             return None
         if code == 404:
@@ -159,6 +169,56 @@ class Dispatcher:
         if code != 200:
             raise TransportError(f"claim refused ({code}): {body.get('detail', '')}")
         return body
+
+    def _headers(self) -> dict[str, str]:
+        return {"X-Worker-Token": self.token} if self.token else {}
+
+    def download(self, rel: str, dest: Path, on_bytes: Any = None) -> int:
+        """Pull one file into this machine's data directory.
+
+        Written beside its final name and renamed at the end, so a transfer cut off
+        halfway is never mistaken for a master this worker already holds: the cache
+        check is a path and a size, and a truncated file would pass it.
+        """
+        url = f"{self.base_url}/api/blobs/{quote(rel)}"
+        request = urllib.request.Request(url, headers=self._headers())
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        partial = dest.with_name(dest.name + ".partial")
+        received = 0
+        try:
+            with urllib.request.urlopen(request, timeout=BLOB_TIMEOUT_S) as response:
+                with partial.open("wb") as sink:
+                    while True:
+                        block = response.read(BLOB_CHUNK)
+                        if not block:
+                            break
+                        sink.write(block)
+                        received += len(block)
+                        if on_bytes:
+                            on_bytes(received)
+        except (urllib.error.HTTPError, urllib.error.URLError, socket.timeout, OSError) as exc:
+            partial.unlink(missing_ok=True)
+            raise TransportError(f"{rel} could not be fetched: {exc}") from exc
+        partial.replace(dest)
+        return received
+
+    def upload(self, rel: str, source: Path) -> int:
+        """Send one file the job produced back to the dispatcher."""
+        size = source.stat().st_size
+        url = f"{self.base_url}/api/blobs/{quote(rel)}"
+        headers = {
+            **self._headers(),
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(size),
+        }
+        try:
+            with source.open("rb") as body:
+                request = urllib.request.Request(url, data=body, headers=headers, method="PUT")
+                with urllib.request.urlopen(request, timeout=BLOB_TIMEOUT_S) as response:
+                    response.read()
+        except (urllib.error.HTTPError, urllib.error.URLError, socket.timeout, OSError) as exc:
+            raise TransportError(f"{rel} could not be sent: {exc}") from exc
+        return size
 
     def heartbeat(self, job_id: int, worker_id: int, progress: float, message: str) -> bool:
         code, body = self._post(
@@ -278,20 +338,38 @@ def _worker_name() -> str:
     return settings.worker_name or os.environ.get("HOSTNAME") or socket.gethostname()
 
 
-def run_job(client: Dispatcher, worker_id: int, claimed: dict[str, Any], lease: dict[str, Any]) -> None:
-    """Execute one claimed job and report the outcome. Never raises."""
+def run_job(
+    client: Dispatcher,
+    worker_id: int,
+    claimed: dict[str, Any],
+    lease: dict[str, Any],
+    workspace: Workspace | None = None,
+) -> None:
+    """Execute one claimed job and report the outcome. Never raises.
+
+    `workspace` is set only when this worker keeps its own copy of the data volume, in
+    which case the job is bracketed by a fetch and a send. Everything between the two is
+    identical either way: the spec carries relative paths and the executor resolves them
+    against whatever data directory it has.
+    """
     job_id = claimed["job_id"]
     spec = claimed["spec"]
     log.info("Job %s#%s starting", claimed.get("kind"), job_id)
 
     with Heartbeat(client, job_id, worker_id, lease["renew_s"], lease["lease_s"]) as beat:
-        # Timed here and not around the whole block: the dispatcher folds this number
-        # into what it knows about this machine's speed, so it has to be the work and
-        # nothing else. Waiting for the heartbeat thread to notice it should stop is
-        # up to one renewal interval, which on a short job is a visible share of it.
-        started = time.monotonic()
         try:
+            # Inside the heartbeat block, because a 4 GB transfer outlasts a lease and
+            # the job has to stay ours while it happens.
+            before = workspace.pull(spec.get("inputs") or [], beat.report) if workspace else {}
+            # Timed around the work alone: the dispatcher folds this number into what it
+            # knows about this machine's speed, so counting a transfer here would call a
+            # fast machine slow for having a thin cable. Waiting for the heartbeat thread
+            # to notice it should stop is excluded for the same reason.
+            started = time.monotonic()
             result = execute(spec, beat.report)
+            elapsed = time.monotonic() - started
+            if workspace:
+                workspace.publish(before, beat.report)
         except Exception as exc:  # noqa: BLE001 (a job that breaks must not take the worker down)
             if beat.lost:
                 log.warning("Job %s stopped because it was taken away", job_id)
@@ -299,11 +377,10 @@ def run_job(client: Dispatcher, worker_id: int, claimed: dict[str, Any], lease: 
             message = str(exc)
             if isinstance(exc, procs.ProcessError) and exc.log_tail:
                 message = f"{message}\n{exc.log_tail}"
-            elif not isinstance(exc, (SpecError, procs.ProcessError)):
+            elif not isinstance(exc, (SpecError, procs.ProcessError, TransportError)):
                 log.exception("Job %s raised", job_id)
             _report(client.fail, job_id, worker_id, message, what="failure")
             return
-        elapsed = time.monotonic() - started
 
     if beat.lost:
         # Finished, but somebody else owns the job now. Reporting would overwrite
@@ -365,6 +442,7 @@ def main() -> None:
 
     capabilities = caps.to_dict()
     worker_id = 0
+    workspace: Workspace | None = None
     lease: dict[str, Any] = {}
     while not stop.is_set():
         try:
@@ -388,7 +466,14 @@ def main() -> None:
                     f"{benchmark.link_mbps:.0f} MB/s" if benchmark.link_mbps else "?",
                 )
 
-            claimed = client.claim(worker_id)
+            if workspace is None and not lease.get("shares_data", True):
+                # Built only now, because only registration can say whether this worker
+                # is looking at the dispatcher's files or at a copy. It has to be that
+                # way round: a Workspace evicts footage, and on the dispatcher's volume
+                # that would be deleting the originals.
+                workspace = Workspace(client)
+                log.info("This worker keeps its own copy: files will travel over HTTP")
+            claimed = client.claim(worker_id, workspace.cached() if workspace else None)
         except Unregistered as exc:
             log.warning("Dispatcher no longer knows us (%s): registering again", exc)
             worker_id = 0
@@ -403,7 +488,7 @@ def main() -> None:
             stop.wait(POLL_INTERVAL_S)
             continue
 
-        run_job(client, worker_id, claimed, lease)
+        run_job(client, worker_id, claimed, lease, workspace)
 
     if worker_id:
         # Give the jobs back at once instead of leaving the queue idle until the

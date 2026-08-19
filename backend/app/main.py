@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import dispatch
+from .api.blobs import router as blob_router
 from .api.routes import router
 from .api.worker_api import router as worker_router
 from .config import settings
@@ -85,6 +86,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="video-stab", version="0.1.0", lifespan=lifespan)
 app.include_router(router)
 app.include_router(worker_router)
+app.include_router(blob_router)
 
 
 @app.get("/healthz")

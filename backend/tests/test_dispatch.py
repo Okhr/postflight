@@ -580,3 +580,230 @@ def test_an_unreachable_dispatcher_measures_no_link():
 
     # Port 1 is reserved and nothing listens there.
     assert Dispatcher("http://127.0.0.1:1").link_mbps() is None
+
+
+# --------------------------------------------------------------------------- #
+# Where a job goes: the cost of running it, transfer included
+# --------------------------------------------------------------------------- #
+
+def _ranked(session: Session, name: str, *, render_fps: float, link: float | None, shares: bool):
+    worker = dispatch.upsert_worker(
+        session, name, {}, 1,
+        rates={"render_fps": render_fps, "merge_mbps": 500.0, "link_mbps": link},
+    )
+    worker.shares_data = shares
+    session.add(worker)
+    session.commit()
+    return worker
+
+
+def test_sharing_the_volume_costs_no_transfer(session: Session):
+    local = _ranked(session, "nas", render_fps=10.0, link=100.0, shares=True)
+    assert dispatch.cost(local, JobKind.RENDER, 1000, 4000, 4000, fallback_rate=0.0) == 100.0
+
+
+def test_what_comes_back_is_priced_even_when_the_input_is_already_there(session: Session):
+    """The hole this replaced: folding the return trip into a multiplier on the
+    *missing* input made the output cost vanish exactly when a cached master made the
+    input free. Measured, a 451 MB master renders to 114 MB, so a render sends back
+    about a third of what it read."""
+    remote = _ranked(session, "desktop", render_fps=10.0, link=100.0, shares=False)
+
+    # Nothing cached: 1000 frames at 10/s, plus 4000 MB in and 0.3 x 4000 MB back.
+    assert dispatch.cost(remote, JobKind.RENDER, 1000, 4000, 4000, 0.0) == pytest.approx(152.0)
+    # Master already held: the download is free, the render still has to travel home.
+    assert dispatch.cost(remote, JobKind.RENDER, 1000, 0, 4000, 0.0) == pytest.approx(112.0)
+
+
+def test_an_unmeasured_link_is_not_a_slow_link(session: Session):
+    """Unknown, as everywhere else here. Assuming it is slow would quietly exclude the
+    machine from every job that has to travel."""
+    remote = _ranked(session, "desktop", render_fps=10.0, link=None, shares=False)
+    assert dispatch.cost(remote, JobKind.RENDER, 1000, 4000, 4000, 0.0) == 100.0
+
+
+def test_an_unmeasured_rate_stands_in_at_what_the_others_measured(session: Session):
+    """Not slow: unknown. A worker whose benchmark step failed must stay in the running
+    rather than be quietly excluded from every job of that kind."""
+    blank = dispatch.upsert_worker(session, "blank", {}, 1)
+    blank.shares_data = True
+    session.add(blank)
+    session.commit()
+    assert dispatch.cost(blank, JobKind.RENDER, 1000, 0, 0, fallback_rate=20.0) == 50.0
+
+
+def test_a_faster_machine_wins_a_render_when_the_master_is_already_there(
+    session: Session, sequence: Sequence
+):
+    """The whole point of tracking what a worker holds: a second cut of a sequence
+    already fetched must not be priced as another 4 GB transfer."""
+    sequence.merged_path = "merged/master.mp4"
+    sequence.frame_count = 12_000
+    session.add(sequence)
+    session.commit()
+    render = Render(sequence_id=sequence.id, template="h_1080", start_frame=0, end_frame=11_999)
+    session.add(render)
+    session.commit()
+    job = Job(kind=JobKind.RENDER, sequence_id=sequence.id, render_id=render.id)
+    session.add(job)
+    session.commit()
+
+    slow = _ranked(session, "nas", render_fps=5.0, link=100.0, shares=True)
+    fast = _ranked(session, "desktop", render_fps=25.0, link=100.0, shares=False)
+    fast.cached = ["merged/master.mp4"]
+    session.add(fast)
+    session.commit()
+
+    scored = dispatch._score(session, job, [slow, fast], magnitude=12_000)
+    assert scored[0][2].name == "desktop"
+
+
+def test_a_worker_steps_aside_for_one_that_is_clearly_better(
+    session: Session, sequence: Sequence
+):
+    """It will be asked for the job within the second, since every worker polls that
+    often. Holding it is worth more than starting it five times slower."""
+    sequence.merged_path = "merged/master.mp4"
+    sequence.frame_count = 12_000
+    session.add(sequence)
+    session.commit()
+    render = Render(sequence_id=sequence.id, template="h_1080", start_frame=0, end_frame=11_999)
+    session.add(render)
+    session.commit()
+    session.add(Job(kind=JobKind.RENDER, sequence_id=sequence.id, render_id=render.id))
+    session.commit()
+
+    slow = _ranked(session, "nas", render_fps=5.0, link=100.0, shares=True)
+    fast = _ranked(session, "desktop", render_fps=25.0, link=100.0, shares=True)
+
+    assert dispatch._pick(session, slow, [slow, fast]) is None
+    assert dispatch._pick(session, fast, [slow, fast]) is not None
+
+
+def test_nothing_is_held_for_a_worker_that_is_not_available(
+    session: Session, sequence: Sequence
+):
+    """A job held for a machine that is busy or gone would be a job nobody runs. The
+    pool is the whole guard: it holds only workers that are online with room to spare."""
+    sequence.merged_path = "merged/master.mp4"
+    sequence.frame_count = 12_000
+    session.add(sequence)
+    session.commit()
+    render = Render(sequence_id=sequence.id, template="h_1080", start_frame=0, end_frame=11_999)
+    session.add(render)
+    session.commit()
+    session.add(Job(kind=JobKind.RENDER, sequence_id=sequence.id, render_id=render.id))
+    session.commit()
+
+    slow = _ranked(session, "nas", render_fps=5.0, link=100.0, shares=True)
+    fast = _ranked(session, "desktop", render_fps=25.0, link=100.0, shares=True)
+
+    # The fast one is offline: it is not in the pool, so nothing is held for it.
+    fast.last_seen_at = utcnow() - timedelta(seconds=dispatch.ONLINE_S + 5)
+    session.add(fast)
+    session.commit()
+    assert dispatch.available(session) == [slow]
+    assert dispatch._pick(session, slow, dispatch.available(session)) is not None
+
+
+def test_a_near_tie_is_taken_rather_than_deferred(session: Session, sequence: Sequence):
+    """Two workers score each other from slightly different data: each knows its own
+    cache exactly and the other's as of its last poll. On a near-tie both taking it is
+    a race with a winner; both deferring would be a stall with none."""
+    sequence.merged_path = "merged/master.mp4"
+    sequence.frame_count = 12_000
+    session.add(sequence)
+    session.commit()
+    render = Render(sequence_id=sequence.id, template="h_1080", start_frame=0, end_frame=11_999)
+    session.add(render)
+    session.commit()
+    session.add(Job(kind=JobKind.RENDER, sequence_id=sequence.id, render_id=render.id))
+    session.commit()
+
+    one = _ranked(session, "aaa", render_fps=20.0, link=100.0, shares=True)
+    two = _ranked(session, "bbb", render_fps=22.0, link=100.0, shares=True)
+
+    # 10% apart, under the margin: whoever asks first gets it.
+    assert dispatch._pick(session, one, [one, two]) is not None
+    assert dispatch._pick(session, two, [one, two]) is not None
+
+
+def test_a_single_worker_always_takes_the_next_job(session: Session, sequence: Sequence):
+    """The normal deployment here. All of the scoring has to collapse to the plain
+    queue behaviour when there is only one candidate."""
+    enqueue_merge(session, sequence)
+    lone = _worker(session, "nas")
+
+    taken = dispatch.claim(session, lone)
+    assert taken is not None
+    assert taken[0].kind == JobKind.MERGE
+
+
+# --------------------------------------------------------------------------- #
+# What a spec says has to travel
+# --------------------------------------------------------------------------- #
+
+def test_a_spec_names_its_inputs_with_their_sizes(session: Session, sequence: Sequence):
+    """A worker holding its own copy has to know what to fetch and how big it is
+    before it can start, and only the dispatcher can see the files."""
+    enqueue_merge(session, sequence)
+    worker = _worker(session, "nas")
+
+    taken = dispatch.claim(session, worker)
+    assert taken is not None
+    _, spec = taken
+
+    assert [item["path"] for item in spec["inputs"]] == spec["parts"]
+    assert all(item["bytes"] > 0 for item in spec["inputs"])
+
+
+def test_listing_the_inputs_of_a_job_changes_nothing(session: Session, sequence: Sequence):
+    """Scoring calls this for jobs that end up going elsewhere. Marking a sequence as
+    merging while merely pricing it would flag work nobody took."""
+    enqueue_merge(session, sequence)
+    job = session.exec(select(Job)).first()
+    assert job is not None
+
+    before = sequence.state
+    inputs = dispatch.job_inputs(session, job)
+    session.refresh(sequence)
+
+    assert len(inputs) == 2
+    assert sequence.state == before
+
+
+def test_a_hardlink_is_not_a_merge_rate(session: Session, sequence: Sequence):
+    """A single-part sequence is hardlinked, not merged. Measured on a real 451 MB
+    rush: 0.28 s, which reads as 1592 MB/s and is not a throughput at all. Worse than
+    useless for ranking, since a worker holding its own copy has to copy those bytes
+    and would look thirty times slower for being honest about it."""
+    worker = _worker(session, "nas")
+    job = Job(kind=JobKind.MERGE, sequence_id=sequence.id, state=JobState.RUNNING, worker_id=worker.id)
+    session.add(job)
+    session.commit()
+
+    dispatch.observe(session, job, worker.id, {**_merge_result(), "method": "hardlink"}, 0.28)
+    session.commit()
+    session.refresh(worker)
+    assert worker.observed == {}
+
+    dispatch.observe(session, job, worker.id, _merge_result(), 20.0)
+    session.commit()
+    session.refresh(worker)
+    assert worker.observed["merge_mbps"] > 0
+
+
+def test_a_worker_that_said_goodbye_is_gone_at_once(session: Session, sequence: Sequence):
+    """Measured on 2026-08-19: with the local worker stopped and a render queued, the
+    remote worker correctly stepped aside for a machine that was cheaper and no longer
+    there, and the job sat for 59 s until `is_online` lapsed. A lease expiry is the
+    right backstop for a worker that vanished, and the wrong answer for one that said
+    goodbye."""
+    worker = _worker(session, "nas")
+    assert dispatch.is_online(worker)
+
+    dispatch.release(session, worker.id or 0)
+
+    session.refresh(worker)
+    assert not dispatch.is_online(worker)
+    assert dispatch.available(session) == []

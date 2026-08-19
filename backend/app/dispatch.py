@@ -94,6 +94,33 @@ OBSERVE_ALPHA = 0.3
 OBSERVE_MIN_FRAMES = 300
 OBSERVE_MIN_MB = 200.0
 
+# How much better another worker has to look before this one steps aside. A margin
+# and not a strict comparison, because the two workers score each other from slightly
+# different data: each knows its own cache exactly and the other's as of its last poll.
+# On a near-tie both take the job and the atomic claim settles it, which is a race with
+# a winner; both deferring would be a stall with none.
+SKIP_MARGIN = 1.2
+
+# What comes back, as a fraction of what went out. Measured on two real rushes rather
+# than assumed: a 451 MB 4K master renders to 114 MB of 1080p and proxies to 19 MB, and
+# a 73 MB one to 24 MB and 2.3 MB. A merge writes its parts joined and a grade
+# re-encodes at the same size, so both return what they were given.
+#
+# Counted separately from the inbound bytes, and that is the point: a worker that
+# already holds the master still has to send the render back, and folding the return
+# trip into a multiplier on the *missing* input made that cost vanish exactly when the
+# cache made the input free.
+OUTPUT_RATIO = {
+    JobKind.MERGE: 1.0,
+    JobKind.PROXY: 0.05,
+    JobKind.RENDER: 0.3,
+    JobKind.GRADE: 1.0,
+}
+
+# How many cached paths a worker may report. A cache of tens of gigabytes holds a
+# handful of masters, so this is a bound on a mistake, not a working limit.
+MAX_CACHED_PATHS = 200
+
 # Which rate ranks which kind of job, and in what unit.
 RATE_KEYS = {
     JobKind.MERGE: "merge_mbps",
@@ -180,6 +207,44 @@ def _sequence_of(session: Session, job: Job) -> Sequence:
     if sequence is None:
         raise PrepareError(f"sequence {job.sequence_id} not found")
     return sequence
+
+
+def job_inputs(session: Session, job: Job) -> list[str]:
+    """The files a job reads, as relative paths.
+
+    Deliberately free of side effects, because scoring calls it for jobs that will end
+    up going somewhere else: `prepare` is the one that flips a sequence to `merging`,
+    and doing that while merely pricing a job would mark work as started that nobody
+    took.
+    """
+    if job.kind == JobKind.MERGE:
+        clips = session.exec(
+            select(Clip).where(Clip.sequence_id == job.sequence_id).order_by(Clip.part_index)  # type: ignore[arg-type]
+        ).all()
+        return [c.raw_path for c in clips if c.raw_path]
+
+    if job.kind in (JobKind.PROXY, JobKind.RENDER):
+        sequence = session.get(Sequence, job.payload.get("sequence_id") or job.sequence_id)
+        if job.kind == JobKind.RENDER:
+            render = session.get(Render, job.payload.get("render_id") or job.render_id)
+            sequence = session.get(Sequence, render.sequence_id) if render else sequence
+        return [sequence.merged_path] if sequence and sequence.merged_path else []
+
+    grade = session.get(Grade, job.payload.get("grade_id") or job.grade_id)
+    render = session.get(Render, grade.render_id) if grade else None
+    return [render.out_path] if render and render.out_path else []
+
+
+def _sized(paths: list[str]) -> list[dict[str, Any]]:
+    """Each path with the size it has on this volume, for the worker to plan a fetch."""
+    items = []
+    for rel in paths:
+        absolute = to_absolute(rel)
+        size = 0
+        if absolute is not None and absolute.is_file():
+            size = absolute.stat().st_size
+        items.append({"path": rel, "bytes": size})
+    return items
 
 
 def _prepare_merge(session: Session, job: Job) -> dict[str, Any]:
@@ -306,6 +371,9 @@ def prepare(session: Session, job: Job) -> dict[str, Any]:
     spec = preparer(session, job)
     spec["kind"] = job.kind.value
     spec["job_id"] = job.id
+    # Named and measured here rather than derived on the worker: a worker holding its
+    # own copy has to know what to fetch and how big it is before it can start.
+    spec["inputs"] = _sized(job_inputs(session, job))
     return spec
 
 
@@ -334,23 +402,139 @@ def _take(session: Session, job_id: int, worker_id: int) -> bool:
     return result.rowcount == 1
 
 
-def claim(session: Session, worker: Worker) -> tuple[Job, dict[str, Any]] | None:
-    """Give this worker the highest-priority job it can have, spec included.
+def available(session: Session) -> list[Worker]:
+    """The workers a job could go to right now: online, and not already full."""
+    running: dict[int, int] = {}
+    for job in session.exec(select(Job).where(Job.state == JobState.RUNNING)).all():
+        if job.worker_id:
+            running[job.worker_id] = running.get(job.worker_id, 0) + 1
+    return [
+        worker
+        for worker in session.exec(select(Worker)).all()
+        if is_online(worker) and running.get(worker.id or 0, 0) < max(1, worker.concurrency)
+    ]
+
+
+def cost(
+    worker: Worker,
+    kind: JobKind,
+    magnitude: float,
+    missing_mb: float,
+    total_mb: float,
+    fallback_rate: float,
+) -> float:
+    """Seconds this job would take on this worker, moving the files included.
+
+    The whole reason the transfer term exists: a machine twice as fast is not worth
+    using if getting the master to it costs more than the time it saves. Measured on
+    this project, a merge is 4.4 s for 4 GB of pure I/O, so shipping those 4 GB
+    anywhere makes it slower by an order of magnitude, and no special case is needed
+    to say so.
+
+    `missing_mb` is what this worker would have to fetch, `total_mb` what the job reads
+    in all. The second is what sizes the return trip, so a cached master saves the
+    download and still pays for sending the render back.
+    """
+    rate = rate_for(worker, kind) or fallback_rate
+    process_s = magnitude / rate if rate else 0.0
+    if worker.shares_data:
+        return process_s
+    link = float((worker.rates or {}).get("link_mbps") or 0.0)
+    if not link:
+        # Nothing measured about the link. Unknown, as everywhere else here: assuming
+        # it is slow would quietly exclude the machine from every job.
+        return process_s
+    return process_s + (missing_mb + OUTPUT_RATIO[kind] * total_mb) / link
+
+
+def _score(
+    session: Session, job: Job, pool: list[Worker], magnitude: float
+) -> list[tuple[float, int, Worker]]:
+    """Every candidate priced for this job, cheapest first, ties going to the lower id."""
+    if not pool:
+        return []
+    known = [rate for rate in (rate_for(w, job.kind) for w in pool) if rate]
+    # A worker whose benchmark could not measure this kind is not slow, it is unknown.
+    # Standing in the average of what the others measured keeps it in the running
+    # without pretending to know something.
+    fallback = sum(known) / len(known) if known else 0.0
+
+    inputs = _sized(job_inputs(session, job))
+    total_mb = sum(item["bytes"] for item in inputs) / (1 << 20)
+    scored: list[tuple[float, int, Worker]] = []
+    for worker in pool:
+        held = set(worker.cached or [])
+        missing_mb = sum(
+            item["bytes"] for item in inputs if item["path"] not in held
+        ) / (1 << 20)
+        scored.append(
+            (
+                cost(worker, job.kind, magnitude, missing_mb, total_mb, fallback),
+                worker.id or 0,
+                worker,
+            )
+        )
+    scored.sort(key=lambda entry: (entry[0], entry[1]))
+    return scored
+
+
+def _pick(session: Session, worker: Worker, pool: list[Worker]) -> Job | None:
+    """The queued job this worker should take, if any.
+
+    A worker takes what it is the cheapest for. When another is clearly better and is
+    online with room to spare, this one leaves the job alone: every worker polls once a
+    second, so it will be asked for it within that. Nothing is ever held for a worker
+    that is busy or gone, and `is_online` lapsing after a lease is the backstop for a
+    worker that stopped asking without saying so.
+
+    Two limitations, stated rather than solved. A job is never held for a worker that
+    is merely *busy*, even one three times faster and about to free up: knowing that
+    would mean predicting when a running job ends, and handing work to whoever is free
+    is simpler and never leaves a machine idle. And with a single worker, which is the
+    normal case here, all of this collapses to "take the first queued job", because the
+    only candidate is always the cheapest one.
+    """
+    queued = session.exec(
+        select(Job).where(Job.state == JobState.QUEUED).order_by(Job.priority, Job.id)  # type: ignore[arg-type]
+    ).all()
+
+    for job in queued:
+        scored = _score(session, job, pool, _magnitude(session, job) or 0.0)
+        if not scored:
+            return job  # nobody to compare against
+        best_cost, best_id, best = scored[0]
+        if best_id == worker.id:
+            return job
+        mine = next((c for c, wid, _ in scored if wid == worker.id), None)
+        if mine is None or mine <= best_cost * SKIP_MARGIN:
+            return job
+        log.debug(
+            "Job %s#%s left for %s (%.0fs there against %.0fs here)",
+            job.kind.value, job.id, best.name, best_cost, mine,
+        )
+    return None
+
+
+def claim(
+    session: Session, worker: Worker, cached: list[str] | None = None
+) -> tuple[Job, dict[str, Any]] | None:
+    """Give this worker the job it should run, spec included.
 
     A job that cannot be described is failed here rather than handed out, so a
     stale reference never travels to a worker only to come back as an error.
     """
     worker.last_seen_at = utcnow()
+    if cached is not None:
+        # What this machine already holds, so a job whose master is there is not priced
+        # as if it had to be fetched again. Refreshed on every poll, so it never goes
+        # stale enough to matter.
+        worker.cached = list(cached)[:MAX_CACHED_PATHS]
     session.add(worker)
     session.commit()
 
+    pool = available(session)
     while True:
-        candidate = session.exec(
-            select(Job)
-            .where(Job.state == JobState.QUEUED)
-            .order_by(Job.priority, Job.id)  # type: ignore[arg-type]
-            .limit(1)
-        ).first()
+        candidate = _pick(session, worker, pool)
         if candidate is None or candidate.id is None:
             return None
         if not _take(session, candidate.id, worker.id or 0):
@@ -497,10 +681,17 @@ _APPLIERS = {
 }
 
 
-def _magnitude(session: Session, job: Job, result: dict[str, Any]) -> float | None:
-    """How much work the job actually was, in the unit its rate is measured in."""
+def _magnitude(session: Session, job: Job, result: dict[str, Any] | None = None) -> float | None:
+    """How much work the job is, in the unit its rate is measured in.
+
+    Called twice for the same job, and that is the point: with a result to say what was
+    really produced, and without one to price a job still in the queue.
+    """
     if job.kind == JobKind.MERGE:
-        return (result.get("size_bytes") or 0) / (1 << 20)
+        if result is not None:
+            return (result.get("size_bytes") or 0) / (1 << 20)
+        sequence = session.get(Sequence, job.payload.get("sequence_id") or job.sequence_id)
+        return (sequence.size_bytes or 0) / (1 << 20) if sequence else None
     if job.kind == JobKind.PROXY:
         sequence = session.get(Sequence, job.payload.get("sequence_id") or job.sequence_id)
         return float(sequence.frame_count) if sequence else None
@@ -534,6 +725,12 @@ def observe(
         return
     worker = session.get(Worker, worker_id)
     if worker is None:
+        return
+    if job.kind == JobKind.MERGE and result.get("method") != "mp4_merge":
+        # A single-part sequence is hardlinked, not merged. Measured on a real 451 MB
+        # rush: 0.28 s, which reads as 1592 MB/s and is not a throughput at all. Worse
+        # than useless for ranking, because a worker that holds its own copy has to
+        # actually copy those bytes and would look thirty times slower for being honest.
         return
     magnitude = _magnitude(session, job, result)
     if magnitude is None:
@@ -703,6 +900,12 @@ def release(session: Session, worker_id: int) -> int:
 
     Turns a 60 second wait for the lease to lapse into an immediate requeue, and
     does not spend an attempt: being switched off is not the job's fault.
+
+    It also marks the worker gone at once, which matters more than it looks. Measured
+    on 2026-08-19: with the local worker stopped and a render queued, the remote worker
+    correctly stepped aside for a machine that was cheaper and no longer there, and the
+    job sat for 59 seconds until `is_online` lapsed. Lease expiry is the right backstop
+    for a worker that vanished; it is the wrong answer for one that said goodbye.
     """
     held = session.exec(
         select(Job).where(Job.state == JobState.RUNNING, Job.worker_id == worker_id)
@@ -711,8 +914,13 @@ def release(session: Session, worker_id: int) -> int:
         job.attempts = max(0, job.attempts - 1)
         _requeue(session, job, "requeued: the worker was shut down")
         log.info("Job %s#%s released", job.kind.value, job.id)
-    if held:
-        session.commit()
+
+    worker = session.get(Worker, worker_id)
+    if worker is not None:
+        worker.last_seen_at = utcnow() - timedelta(seconds=ONLINE_S)
+        session.add(worker)
+        log.info("Worker %s said goodbye: nothing will be held for it", worker.name)
+    session.commit()
     return len(held)
 
 

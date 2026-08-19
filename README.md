@@ -88,6 +88,37 @@ le worker.
 
 Interface sur `http://<hôte>:8080`.
 
+### Ajouter une machine
+
+Un worker de plus, sur n'importe quelle autre machine, en une commande :
+
+```bash
+VS_API_URL=http://192.168.1.104:8080 VS_WORKER_NAME=desktop \
+  docker compose -f docker-compose.remote-worker.yml up -d
+```
+
+Rien à ouvrir de ce côté, rien à découvrir : le worker appelle le dispatcher, s'annonce
+et réclame du travail ; le dispatcher ne rappelle jamais. Le nom doit être **stable**,
+c'est ce qui rattache à la machine tout ce que ses vrais jobs ont mesuré. Ajouter le
+même override GPU que pour la stack principale (`-f docker-compose.nvidia.yml` ou
+`-f docker-compose.gpu.yml`).
+
+Le volume est ici un **volume de travail**, pas celui du dispatcher : il ne contient que
+ce dont cette machine a eu besoin. Le worker s'en aperçoit tout seul (l'API marque son
+volume, le worker envoie la marque qu'il arrive à lire, et l'égalité est tout le test),
+puis récupère ses entrées en HTTP et renvoie ses sorties pareil. Il garde en cache ce
+qu'il a déjà pris, donc un deuxième rendu de la même séquence ne retransfère rien, et il
+supprime ses plus vieux rushes pour rester sous `VS_WORKER_CACHE_BYTES`.
+
+**Le dispatcher décide seul où va chaque job**, sans jamais rien demander à
+l'utilisateur. Chaque worker mesure ses quatre débits au démarrage en exécutant les
+quatre vraies étapes sur un demi-seconde de rush embarqué dans l'image (4,4 s), et le
+dispatcher compare `ampleur / débit + transfert / lien`. Ça donne les décisions qu'on
+attend : une fusion reste sur la machine qui voit le volume, parce que déplacer 4 Go
+coûte dix fois plus que la fusion elle-même ; un rendu part chez la machine qui a déjà
+le master. Et ces débits ne restent pas des estimations, chaque job terminé les corrige
+(mesuré : 28,0 img/s annoncés par le benchmark, 24,9 img/s après deux vrais rendus).
+
 ### Le volume de données
 
 Un seul bind mount, `/data`. Garder `inbox/` et `raw/` sur le **même système de

@@ -73,6 +73,13 @@ class RegisterOut(BaseModel):
     shares_data: bool
 
 
+class ClaimIn(BaseModel):
+    # What this worker already holds, so a job whose master is already there is not
+    # priced as if it had to travel again. Empty from a worker that shares the volume:
+    # nothing travels for it in the first place.
+    cached: list[str] = Field(default_factory=list)
+
+
 class ClaimOut(BaseModel):
     job_id: int
     kind: str
@@ -160,7 +167,11 @@ def bandwidth(size: int = Query(default=BANDWIDTH_MAX, ge=1, le=BANDWIDTH_MAX)) 
 
 
 @router.post("/workers/{worker_id}/claim", response_model=None)
-def claim(worker_id: int, session: Session = Depends(get_session)) -> ClaimOut | Response:
+def claim(
+    worker_id: int,
+    payload: ClaimIn = ClaimIn(),
+    session: Session = Depends(get_session),
+) -> ClaimOut | Response:
     """Hand out one job, or 204 when the queue is empty.
 
     Plain polling on purpose: a homelab queue sees a handful of jobs a day, and one
@@ -171,7 +182,7 @@ def claim(worker_id: int, session: Session = Depends(get_session)) -> ClaimOut |
         # The database was wiped, or this is a stale process: re-register.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown worker, register again")
 
-    taken = dispatch.claim(session, worker)
+    taken = dispatch.claim(session, worker, payload.cached)
     if taken is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     job, spec = taken

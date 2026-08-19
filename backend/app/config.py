@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     # How many heavy jobs one worker runs at once. One on purpose: ffmpeg, mp4_merge
     # and Gyroflow each already saturate every core, so two at a time is slower.
     worker_concurrency: int = 1
+    # How much footage a worker that does not share the dispatcher's volume may keep
+    # cached. Set it a little under the size of the work volume you gave it; 0 disables
+    # eviction entirely, which only makes sense on a volume you are watching yourself.
+    # Ignored by a worker that reads the dispatcher's volume: it caches nothing, and
+    # deleting anything there would be deleting the originals.
+    worker_cache_bytes: int = 20_000_000_000
 
     # --- Server --------------------------------------------------------------
     api_host: str = "0.0.0.0"
