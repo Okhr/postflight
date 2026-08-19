@@ -33,6 +33,7 @@ services:
       VS_SCAN_INTERVAL_S: ${VS_SCAN_INTERVAL_S:-30}
       VS_STABILITY_CHECKS: ${VS_STABILITY_CHECKS:-2}
       VS_SPLIT_GAP_TOLERANCE_S: ${VS_SPLIT_GAP_TOLERANCE_S:-2.0}
+      VS_SPLIT_MIN_PART_BYTES: ${VS_SPLIT_MIN_PART_BYTES:-3000000000}
       # Deleting the parts after a merge is the dispatcher's call: its copy is the
       # one that matters, a worker only ever holds a copy of it.
       VS_PURGE_PARTS_AFTER_MERGE: ${VS_PURGE_PARTS_AFTER_MERGE:-false}
