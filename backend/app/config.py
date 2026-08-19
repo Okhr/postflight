@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     gyroflow_bin: str = "gyroflow"
     mp4_merge_bin: str = "mp4_merge"
 
+    # The rush the startup benchmark runs on, baked into the worker image. A real
+    # one: a render needs a gyro track, and no tool can synthesize or trim one.
+    # Missing (the API image, a dev checkout) simply leaves the worker unranked.
+    bench_clip: Path = Path("/opt/bench/clip.mp4")
+
     # auto | cuda | vaapi | cpu. `auto` probes each backend by really decoding an
     # HEVC 10-bit sample, NVDEC first (a discrete card beats an iGPU on a machine
     # that has both). Anything that fails or hangs is simply not used.

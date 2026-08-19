@@ -427,6 +427,62 @@ Le nom d'un worker est son identité (`VS_WORKER_NAME`) et doit être **stable**
 le hostname d'un conteneur a l'air stable et ne l'est pas, il change à chaque
 recréation et laisse une ligne `worker` orpheline derrière lui.
 
+### Le benchmark au démarrage : ranger les machines, pas prédire les durées
+
+Chaque worker mesure ses quatre débits **en exécutant les quatre vraies étapes** sur
+0,5 s de rush O3 embarqué dans l'image (`docker/bench/clip.mp4`, 9 Mo). Un vrai rush
+parce qu'un rendu exige une piste gyro et que personne ne sait en fabriquer ni en
+découper une. Mesuré le 2026-08-19 sur le poste RTX 3090 + i7-7700K :
+
+| | valeur |
+|---|---|
+| fusion `mp4_merge` | 114 Mo/s |
+| proxy | 61 img/s |
+| rendu | 28,5 img/s |
+| étalonnage | 27,8 img/s |
+| lien vers le dispatcher | 2981 Mo/s (deux conteneurs, même hôte) |
+| **coût total** | **4,4 s** |
+
+4,4 s, donc **aucun cache** : mesurer à nouveau coûte moins cher que raisonner sur la
+péremption d'un nombre stocké.
+
+**Ces chiffres classent les machines, ils ne prédisent pas les durées.** Le même code
+donne 28,5 img/s sur le clip et 22,7 img/s sur une séquence réelle de 272 s, 61 img/s
+en proxy contre 0,9x le temps réel. Un clip aussi court ne sort jamais du cache de
+pages et passe une part visible de sa vie dans le démarrage des processus. Sans
+importance pour choisir entre deux machines, et `dispatch.observe` remplace l'estimation
+par la vérité dès que de vrais jobs finissent : moyenne mobile (α = 0,3) sur le débit
+réel, en ignorant les jobs de moins de 300 images ou 200 Mo, qui mesureraient le même
+biais de démarrage que le benchmark.
+
+D'où **deux colonnes** sur `worker` : `rates` (le benchmark, réécrit à chaque
+enregistrement) et `observed` (ce que les vrais jobs ont prouvé, jamais touché par un
+enregistrement). Un redémarrage de conteneur ne doit pas jeter le seul chiffre qui
+vienne du vrai travail.
+
+Trois détails qui ont été mesurés, pas devinés :
+
+- **le débit se chronomètre entre la première et la dernière ligne de progression**,
+  pas depuis le lancement : Gyroflow passe 1,4 s d'un rendu de 3,4 s à charger ses
+  12344 profils d'objectif, et compter ce temps annoncerait une machine 40 % plus lente.
+- **plus court est plus répétable.** 0,5 s (30 images) donne 27,2 puis 26,8 img/s sur
+  deux passes ; un clip de 1,8 s donne 38,8 puis 36,4. Le court est à la fois plus léger
+  (9 Mo contre 25) et plus stable.
+- **la fusion mesurée est optimiste et on le sait** : 20 Mo ne quittent jamais le cache
+  de pages là où une vraie fusion de 4 Go est de l'I/O pur. Elle classe quand même, et
+  elle sert de seul test que `mp4_merge` fonctionne sur cette machine.
+- **un débit inconnu reste inconnu.** Une étape de benchmark qui échoue laisse son
+  débit à `null`, et le dispatcher traite ça comme une inconnue, jamais comme lent.
+  Le gating des capacités reste dans `capabilities.py` ; ce module ne fait que classer.
+
+### Qui voit quel volume : on compare, on ne configure pas
+
+Le dispatcher écrit un `.volume-id` (un uuid) dans son `data_dir` au démarrage. Le
+worker lit le sien et l'envoie à l'enregistrement ; l'égalité **est** le test de
+« partageons-nous les fichiers ». Pas un drapeau à régler par worker, parce que le sens
+qui casse est silencieux : un worker à qui on a dit à tort qu'il partage le volume va
+chercher des fichiers qui ne sont pas là et rate tous ses jobs.
+
 ### Deux images, un Dockerfile
 
 La scission ne vaut que dans un sens, et elle rapporte plus qu'il n'y paraît. Mesuré :

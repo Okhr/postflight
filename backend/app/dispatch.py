@@ -48,7 +48,7 @@ from .models import (
     Worker,
     utcnow,
 )
-from .paths import to_absolute, to_relative
+from .paths import read_volume_id, to_absolute, to_relative
 from .pipeline import enqueue_proxy
 from .services import grading as grading_service
 from .services import gyroflow as gyroflow_service
@@ -83,6 +83,25 @@ MAX_ATTEMPTS = 3
 # not there any more. Same number as the lease on purpose: one notion of "gone".
 ONLINE_S = LEASE_S
 
+# Weight of one real measurement against everything measured before it. 0.3 lets the
+# average follow a machine that genuinely changed (a GPU finally mapped in) within a
+# handful of jobs, without letting one unlucky job rewrite what is known about it.
+OBSERVE_ALPHA = 0.3
+
+# Under this, a job says more about process startup than about the machine. The
+# startup benchmark runs on 30 frames and is optimistic by a fixed-ish factor for
+# exactly that reason; a 30-frame cut would teach the average the same lie.
+OBSERVE_MIN_FRAMES = 300
+OBSERVE_MIN_MB = 200.0
+
+# Which rate ranks which kind of job, and in what unit.
+RATE_KEYS = {
+    JobKind.MERGE: "merge_mbps",
+    JobKind.PROXY: "proxy_fps",
+    JobKind.RENDER: "render_fps",
+    JobKind.GRADE: "grade_fps",
+}
+
 
 def is_online(worker: Worker) -> bool:
     return (utcnow() - as_utc(worker.last_seen_at)).total_seconds() < ONLINE_S
@@ -97,24 +116,59 @@ class PrepareError(RuntimeError):
 # --------------------------------------------------------------------------- #
 
 def upsert_worker(
-    session: Session, name: str, capabilities: dict[str, Any], concurrency: int
+    session: Session,
+    name: str,
+    capabilities: dict[str, Any],
+    concurrency: int,
+    rates: dict[str, Any] | None = None,
+    volume_id: str = "",
 ) -> Worker:
     """Register a worker, or update the one that already carries this name.
 
     Keyed by name and not by a generated id, so a worker that restarts is the same
     worker: its history stays attached to the machine rather than to the process.
+    That is also why `observed` is not touched here: it is what real jobs proved
+    about this machine, and a container restart must not throw it away.
     """
     worker = session.exec(select(Worker).where(Worker.name == name)).first()
     if worker is None:
         worker = Worker(name=name)
         log.info("Worker %s registered", name)
     worker.capabilities = capabilities
+    worker.rates = rates or {}
+    # Same volume as the dispatcher means files never have to travel. Measured by
+    # comparing marks on the two volumes rather than configured, because the failing
+    # direction of a wrong flag is silent: a worker told it shares the volume looks
+    # for files that are not there and fails every job it takes.
+    worker.shares_data = bool(volume_id) and volume_id == read_volume_id()
     worker.concurrency = max(1, concurrency)
     worker.last_seen_at = utcnow()
     session.add(worker)
     session.commit()
     session.refresh(worker)
+    log.info(
+        "Worker %s: shares_data=%s rates=%s",
+        name, worker.shares_data,
+        {k: round(v, 1) for k, v in (rates or {}).items() if isinstance(v, (int, float))},
+    )
     return worker
+
+
+def rate_for(worker: Worker, kind: JobKind) -> float | None:
+    """How fast this worker is at this kind of job, in the kind's own unit.
+
+    What real jobs measured beats the startup benchmark, which runs on half a second
+    of footage and overstates by a roughly fixed factor (measured: 28 img/s against
+    22.7 on a real sequence). Unknown stays unknown, and callers treat it as such: a
+    worker that could not be benchmarked must look neither infinitely fast nor
+    infinitely slow.
+    """
+    key = RATE_KEYS[kind]
+    observed = (worker.observed or {}).get(key)
+    if observed:
+        return float(observed)
+    value = (worker.rates or {}).get(key)
+    return float(value) if value else None
 
 
 # --------------------------------------------------------------------------- #
@@ -443,7 +497,74 @@ _APPLIERS = {
 }
 
 
-def complete(session: Session, job_id: int, worker_id: int, result: dict[str, Any]) -> bool:
+def _magnitude(session: Session, job: Job, result: dict[str, Any]) -> float | None:
+    """How much work the job actually was, in the unit its rate is measured in."""
+    if job.kind == JobKind.MERGE:
+        return (result.get("size_bytes") or 0) / (1 << 20)
+    if job.kind == JobKind.PROXY:
+        sequence = session.get(Sequence, job.payload.get("sequence_id") or job.sequence_id)
+        return float(sequence.frame_count) if sequence else None
+
+    render_id = job.payload.get("render_id") or job.render_id
+    if job.kind == JobKind.GRADE:
+        grade = session.get(Grade, job.payload.get("grade_id") or job.grade_id)
+        render_id = grade.render_id if grade else None
+    render = session.get(Render, render_id) if render_id else None
+    if render is None:
+        return None
+    return float(max(render.end_frame - render.start_frame + 1, 0))
+
+
+def observe(
+    session: Session, job: Job, worker_id: int, result: dict[str, Any], elapsed_s: float
+) -> None:
+    """Fold what a finished job measured into the worker's moving average.
+
+    This is the half of the ranking that is not a guess. The startup benchmark runs
+    on 30 frames and reports 28 img/s where a real sequence does 22.7; every real job
+    that completes replaces a little more of that estimate with the truth, at no cost,
+    since the worker had to report its elapsed time anyway.
+
+    `elapsed_s` is what the *worker* timed around the work itself, not what the
+    dispatcher can compute from the job row: on a worker that does not share the
+    volume, the row would also count the minutes spent fetching a 4 GB master, and
+    call the machine slow for having a thin cable.
+    """
+    if elapsed_s <= 0 or not worker_id:
+        return
+    worker = session.get(Worker, worker_id)
+    if worker is None:
+        return
+    magnitude = _magnitude(session, job, result)
+    if magnitude is None:
+        return
+    if magnitude < (OBSERVE_MIN_MB if job.kind == JobKind.MERGE else OBSERVE_MIN_FRAMES):
+        return
+
+    key = RATE_KEYS[job.kind]
+    sample = magnitude / elapsed_s
+    observed = dict(worker.observed or {})
+    previous = observed.get(key)
+    observed[key] = (
+        sample if not previous
+        else (1 - OBSERVE_ALPHA) * float(previous) + OBSERVE_ALPHA * sample
+    )
+    observed[f"{key}_n"] = int(observed.get(f"{key}_n") or 0) + 1
+    worker.observed = observed
+    session.add(worker)
+    log.info(
+        "Worker %s: %s now %.1f (this job %.1f, sample %d)",
+        worker.name, key, observed[key], sample, observed[f"{key}_n"],
+    )
+
+
+def complete(
+    session: Session,
+    job_id: int,
+    worker_id: int,
+    result: dict[str, Any],
+    elapsed_s: float = 0.0,
+) -> bool:
     """Record what a worker produced. False if the job is no longer its own."""
     job = _held_by(session, job_id, worker_id)
     if job is None:
@@ -459,6 +580,8 @@ def complete(session: Session, job_id: int, worker_id: int, result: dict[str, An
         log.exception("Job %s#%s: result could not be applied", job.kind.value, job.id)
         _fail(session, job, f"result could not be applied: {exc}")
         return True
+
+    observe(session, job, worker_id, result, elapsed_s)
 
     job.state = JobState.DONE
     job.progress = 1.0

@@ -216,6 +216,12 @@ class WorkerOut(BaseSchema):
     id: int
     name: str
     capabilities: dict[str, Any]
+    # What the startup benchmark measured, and what real jobs have measured since.
+    # Two fields because they age differently: the first is rewritten at every
+    # registration, the second only ever accumulates.
+    rates: dict[str, Any]
+    observed: dict[str, Any]
+    shares_data: bool
     concurrency: int
     last_seen_at: datetime
     online: bool

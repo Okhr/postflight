@@ -21,12 +21,41 @@ function decodeLabel(worker: WorkerInfo): string {
   return backend === "cpu" ? "CPU" : backend.toUpperCase();
 }
 
+// The four rates the dispatcher ranks a worker on, and what each is measured in.
+const RATES: [label: string, key: string, unit: string][] = [
+  ["proxy", "proxy_fps", "img/s"],
+  ["render", "render_fps", "img/s"],
+  ["grade", "grade_fps", "img/s"],
+  ["merge", "merge_mbps", "MB/s"],
+];
+
+/** One rate, preferring what real jobs measured over the startup benchmark.
+ *
+ *  The job count is worth showing: the benchmark runs on half a second of footage
+ *  and overstates by a fixed-ish factor, so "28 img/s" and "22.7 img/s (4 jobs)"
+ *  do not deserve to look alike.
+ */
+function rateLabel(worker: WorkerInfo, key: string, unit: string): string | null {
+  const observed = worker.observed?.[key];
+  const bench = (worker.rates as unknown as Record<string, number | null>)?.[key];
+  const value = observed ?? bench;
+  if (!value) return null;
+  const samples = worker.observed?.[`${key}_n`] ?? 0;
+  const shown = value < 10 ? value.toFixed(1) : Math.round(value).toString();
+  return `${shown} ${unit}${samples ? ` (${samples} job${samples > 1 ? "s" : ""})` : ""}`;
+}
+
 /** One line per worker, which is where the hardware actually lives. */
 function WorkerLine({ worker }: { worker: WorkerInfo }) {
   const caps = worker.capabilities;
   // Backends that were tried and refused, so a CPU fallback can be explained rather
   // than merely announced.
   const refused = Object.entries(caps.decode_probes ?? {}).filter(([, why]) => why);
+  const speeds = RATES.map(([label, key, unit]) => {
+    const shown = rateLabel(worker, key, unit);
+    return shown ? `${label} ${shown}` : null;
+  }).filter(Boolean);
+  const link = worker.rates?.link_mbps;
 
   return (
     <div className="mt-1.5 first:mt-0">
@@ -37,13 +66,19 @@ function WorkerLine({ worker }: { worker: WorkerInfo }) {
       </p>
       <p>decode: {decodeLabel(worker)}{caps.decode_device ? ` on ${caps.decode_device}` : ""}</p>
       <p>stabilize: {caps.stabilize_device || "CPU"}</p>
+      {speeds.length > 0 && <p>speed: {speeds.join(" · ")}</p>}
+      <p className="text-muted-foreground">
+        {worker.shares_data
+          ? "reads the dispatcher's volume, so nothing has to travel"
+          : `own volume${link ? `, link ${Math.round(link)} MB/s` : ""}`}
+      </p>
       {refused.length > 0 && (
         <p className="text-muted-foreground">
           refused:{" "}
           {refused.map(([name, why]) => `${name} (${why.split("\n")[0].slice(0, 70)})`).join("; ")}
         </p>
       )}
-      {caps.notes?.map((note) => (
+      {[...(caps.notes ?? []), ...(worker.rates?.notes ?? [])].map((note) => (
         <p key={note} className="text-amber-400">
           {note}
         </p>

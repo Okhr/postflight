@@ -15,6 +15,7 @@ from .api.routes import router
 from .api.worker_api import router as worker_router
 from .config import settings
 from .db import init_db, session_scope
+from .paths import ensure_volume_id
 from .pipeline import ingest_and_group
 from .services import gyroflow as gyroflow_service
 
@@ -51,6 +52,10 @@ async def lifespan(_app: FastAPI):
     )
     settings.ensure_dirs()
     init_db()
+    # Mark the volume, so a worker can tell by reading whether it is looking at the
+    # dispatcher's files or at a copy of its own. Written here rather than configured:
+    # see paths.read_volume_id.
+    volume = ensure_volume_id()
     # Templates are read here and travel inside each render spec: the dispatcher owns
     # the editable copies under `templates/`, and a worker has no database to look one
     # up in.
@@ -66,8 +71,8 @@ async def lifespan(_app: FastAPI):
         asyncio.create_task(_every(dispatch.REAP_INTERVAL_S, _reap_once, "lease reaping")),
     ]
     log.info(
-        "API ready, data_dir=%s (scanning every %.0fs)",
-        settings.data_dir, settings.scan_interval_s,
+        "API ready, data_dir=%s (volume %s, scanning every %.0fs)",
+        settings.data_dir, volume[:8] or "unmarked", settings.scan_interval_s,
     )
     try:
         yield

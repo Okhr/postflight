@@ -38,11 +38,13 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from functools import partial
 from typing import Any
 
 from .config import settings
 from .executor import SpecError, execute
-from .services import procs
+from .paths import read_volume_id
+from .services import bench, procs
 from .services.capabilities import detect
 
 log = logging.getLogger(__name__)
@@ -52,6 +54,14 @@ POLL_INTERVAL_S = 1.0
 # for the container, not for uvicorn to be listening.
 REGISTER_RETRY_S = 3.0
 HTTP_TIMEOUT_S = 30.0
+
+# The link probe transfers for a fixed *duration* rather than a fixed size. 8 MB
+# would finish inside TCP slow start on a gigabit LAN and report a link far slower
+# than it is; 64 MB would take a minute on a home uplink. One second of transfer,
+# whatever that turns out to be, answers both cases with one code path.
+LINK_PROBE_S = 1.0
+LINK_PROBE_MAX = 128 << 20
+LINK_READ_CHUNK = 1 << 18
 
 
 class TransportError(RuntimeError):
@@ -91,14 +101,54 @@ class Dispatcher:
         except (urllib.error.URLError, socket.timeout, OSError, json.JSONDecodeError) as exc:
             raise TransportError(str(exc)) from exc
 
-    def register(self, name: str, capabilities: dict[str, Any], concurrency: int) -> dict[str, Any]:
+    def register(
+        self,
+        name: str,
+        capabilities: dict[str, Any],
+        rates: dict[str, Any],
+        concurrency: int,
+        volume_id: str,
+    ) -> dict[str, Any]:
         code, body = self._post(
             "/api/workers/register",
-            {"name": name, "capabilities": capabilities, "concurrency": concurrency},
+            {
+                "name": name,
+                "capabilities": capabilities,
+                "rates": rates,
+                "concurrency": concurrency,
+                "volume_id": volume_id,
+            },
         )
         if code != 200:
             raise TransportError(f"register refused ({code}): {body.get('detail', '')}")
         return body
+
+    def link_mbps(self) -> float | None:
+        """Megabytes per second pulled from the dispatcher, or None if unmeasurable.
+
+        Half of what decides where a job runs: a machine twice as fast is not worth
+        using if getting the master to it costs more than the time it saves.
+        """
+        headers = {"X-Worker-Token": self.token} if self.token else {}
+        request = urllib.request.Request(
+            f"{self.base_url}/api/workers/bandwidth?size={LINK_PROBE_MAX}", headers=headers
+        )
+        received = 0
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:
+                started = time.monotonic()
+                while time.monotonic() - started < LINK_PROBE_S:
+                    block = response.read(LINK_READ_CHUNK)
+                    if not block:
+                        break
+                    received += len(block)
+                elapsed = time.monotonic() - started
+        except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout, OSError) as exc:
+            log.warning("Link speed not measured (%s)", exc)
+            return None
+        if not received or elapsed <= 0:
+            return None
+        return received / (1 << 20) / elapsed
 
     def claim(self, worker_id: int) -> dict[str, Any] | None:
         code, body = self._post(f"/api/workers/{worker_id}/claim", {})
@@ -119,9 +169,12 @@ class Dispatcher:
             raise TransportError(f"heartbeat refused ({code})")
         return bool(body.get("ok"))
 
-    def complete(self, job_id: int, worker_id: int, result: dict[str, Any]) -> bool:
+    def complete(
+        self, job_id: int, worker_id: int, result: dict[str, Any], elapsed_s: float = 0.0
+    ) -> bool:
         code, body = self._post(
-            f"/api/jobs/{job_id}/complete", {"worker_id": worker_id, "result": result}
+            f"/api/jobs/{job_id}/complete",
+            {"worker_id": worker_id, "result": result, "elapsed_s": elapsed_s},
         )
         if code != 200:
             raise TransportError(f"complete refused ({code})")
@@ -230,9 +283,13 @@ def run_job(client: Dispatcher, worker_id: int, claimed: dict[str, Any], lease: 
     job_id = claimed["job_id"]
     spec = claimed["spec"]
     log.info("Job %s#%s starting", claimed.get("kind"), job_id)
-    started = time.monotonic()
 
     with Heartbeat(client, job_id, worker_id, lease["renew_s"], lease["lease_s"]) as beat:
+        # Timed here and not around the whole block: the dispatcher folds this number
+        # into what it knows about this machine's speed, so it has to be the work and
+        # nothing else. Waiting for the heartbeat thread to notice it should stop is
+        # up to one renewal interval, which on a short job is a visible share of it.
+        started = time.monotonic()
         try:
             result = execute(spec, beat.report)
         except Exception as exc:  # noqa: BLE001 (a job that breaks must not take the worker down)
@@ -246,6 +303,7 @@ def run_job(client: Dispatcher, worker_id: int, claimed: dict[str, Any], lease: 
                 log.exception("Job %s raised", job_id)
             _report(client.fail, job_id, worker_id, message, what="failure")
             return
+        elapsed = time.monotonic() - started
 
     if beat.lost:
         # Finished, but somebody else owns the job now. Reporting would overwrite
@@ -253,8 +311,8 @@ def run_job(client: Dispatcher, worker_id: int, claimed: dict[str, Any], lease: 
         log.warning("Job %s finished after being taken away: result dropped", job_id)
         return
 
-    elapsed = time.monotonic() - started
-    if _report(client.complete, job_id, worker_id, result, what="result"):
+    reporter = partial(client.complete, elapsed_s=elapsed)
+    if _report(reporter, job_id, worker_id, result, what="result"):
         log.info("Job %s#%s done in %.1fs", claimed.get("kind"), job_id, elapsed)
 
 
@@ -297,18 +355,37 @@ def main() -> None:
     # Probing really decodes an HEVC 10-bit sample, so it costs a few seconds. Pay
     # it once, here, and hand the answer to the dispatcher: the hardware that
     # matters is the hardware that does the work.
-    capabilities = detect().to_dict()
+    caps = detect()
 
+    # And then run the four jobs for real on half a second of baked-in rush, which is
+    # the only thing that answers how *fast* this machine is. Measured 3.6 s all in,
+    # which is why there is no cache to invalidate: it is cheaper to measure again
+    # than to reason about when a stored number went stale.
+    benchmark = bench.measure(caps)
+
+    capabilities = caps.to_dict()
     worker_id = 0
     lease: dict[str, Any] = {}
     while not stop.is_set():
         try:
             if not worker_id:
-                lease = client.register(name, capabilities, settings.worker_concurrency)
+                # Re-measured at every registration rather than once: the link is the
+                # one property of a worker that can change without the process
+                # restarting, and it costs a second.
+                benchmark.link_mbps = client.link_mbps()
+                lease = client.register(
+                    name,
+                    capabilities,
+                    benchmark.to_dict(),
+                    settings.worker_concurrency,
+                    read_volume_id(),
+                )
                 worker_id = lease["worker_id"]
                 log.info(
-                    "Worker %s registered as #%s on %s (lease %.0fs)",
+                    "Worker %s registered as #%s on %s (lease %.0fs, shares_data=%s, link %s)",
                     name, worker_id, settings.api_url, lease["lease_s"],
+                    lease.get("shares_data"),
+                    f"{benchmark.link_mbps:.0f} MB/s" if benchmark.link_mbps else "?",
                 )
 
             claimed = client.claim(worker_id)

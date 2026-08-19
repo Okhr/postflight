@@ -16,7 +16,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
@@ -51,7 +52,13 @@ router = APIRouter(prefix="/api", tags=["workers"], dependencies=[Depends(requir
 class RegisterIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     capabilities: dict[str, Any] = Field(default_factory=dict)
+    # What the startup benchmark measured, one rate per job kind. See services/bench.
+    rates: dict[str, Any] = Field(default_factory=dict)
     concurrency: int = 1
+    # The mark on the data volume this worker sees, empty if it sees none. Compared
+    # with the dispatcher's own, and that comparison is the whole of how the system
+    # knows whether files have to travel.
+    volume_id: str = Field(default="", max_length=64)
 
 
 class RegisterOut(BaseModel):
@@ -60,6 +67,10 @@ class RegisterOut(BaseModel):
     # sides cannot disagree about when a lease is dead.
     lease_s: float
     renew_s: float
+    # What the dispatcher concluded about the volume. The worker needs to be told,
+    # because it is what decides whether it reads inputs where they are or fetches
+    # them over HTTP first.
+    shares_data: bool
 
 
 class ClaimOut(BaseModel):
@@ -77,6 +88,11 @@ class HeartbeatIn(BaseModel):
 class CompleteIn(BaseModel):
     worker_id: int
     result: dict[str, Any]
+    # Seconds the worker spent on the work itself, transfers excluded. The dispatcher
+    # cannot derive this from the job row: that would also count the time a remote
+    # worker spent pulling a 4 GB master, and call the machine slow for having a thin
+    # cable.
+    elapsed_s: float = 0.0
 
 
 class FailIn(BaseModel):
@@ -98,13 +114,49 @@ class AckOut(BaseModel):
 @router.post("/workers/register", response_model=RegisterOut)
 def register(payload: RegisterIn, session: Session = Depends(get_session)) -> RegisterOut:
     worker = dispatch.upsert_worker(
-        session, payload.name, payload.capabilities, payload.concurrency
+        session,
+        payload.name,
+        payload.capabilities,
+        payload.concurrency,
+        rates=payload.rates,
+        volume_id=payload.volume_id,
     )
     return RegisterOut(
         worker_id=worker.id or 0,
         lease_s=dispatch.LEASE_S,
         renew_s=dispatch.HEARTBEAT_S,
+        shares_data=worker.shares_data,
     )
+
+
+# How much the bandwidth probe is willing to send. The worker stops reading once it
+# has seen a second's worth, so this is a ceiling and not a cost.
+BANDWIDTH_CHUNK = 1 << 20
+BANDWIDTH_MAX = 128 << 20
+
+
+@router.get("/workers/bandwidth")
+def bandwidth(size: int = Query(default=BANDWIDTH_MAX, ge=1, le=BANDWIDTH_MAX)) -> StreamingResponse:
+    """Bytes to nowhere, so a worker can time how fast it pulls from the dispatcher.
+
+    That number is half of what decides where a job runs: a machine twice as fast is
+    not worth using if getting the master to it costs more than the time it saves.
+
+    Zeros rather than random bytes, and deliberately: nothing in this path is
+    compressed, and generating 128 MB of randomness would measure the dispatcher's CPU
+    instead of the link. The worker closes the connection when it has enough, which is
+    what keeps this bounded on a fast link and honest on a slow one.
+    """
+    block = b"\0" * BANDWIDTH_CHUNK
+
+    def stream():
+        sent = 0
+        while sent < size:
+            piece = block[: min(BANDWIDTH_CHUNK, size - sent)]
+            sent += len(piece)
+            yield piece
+
+    return StreamingResponse(stream(), media_type="application/octet-stream")
 
 
 @router.post("/workers/{worker_id}/claim", response_model=None)
@@ -140,7 +192,9 @@ def heartbeat(
 def complete(
     job_id: int, payload: CompleteIn, session: Session = Depends(get_session)
 ) -> AckOut:
-    ok = dispatch.complete(session, job_id, payload.worker_id, payload.result)
+    ok = dispatch.complete(
+        session, job_id, payload.worker_id, payload.result, payload.elapsed_s
+    )
     if not ok:
         log.warning("Job %s completed by worker %s, which no longer holds it", job_id, payload.worker_id)
     return AckOut(ok=ok)

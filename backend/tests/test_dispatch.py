@@ -20,11 +20,13 @@ from app.models import (
     Job,
     JobKind,
     JobState,
+    Render,
     Sequence,
     SequenceState,
     Worker,
     utcnow,
 )
+from app.paths import ensure_volume_id, read_volume_id
 from app.pipeline import enqueue_merge
 
 
@@ -405,3 +407,176 @@ def test_releasing_touches_only_that_workers_jobs(session: Session, sequence: Se
     assert dispatch.release(session, other.id) == 0
     session.refresh(job)
     assert job.state == JobState.RUNNING
+
+
+# --------------------------------------------------------------------------- #
+# Ranking: what the benchmark said, and what real jobs proved
+# --------------------------------------------------------------------------- #
+
+def test_a_real_job_beats_the_startup_benchmark(session: Session):
+    """The benchmark runs on 30 frames and overstates by a fixed-ish factor
+    (measured: 28 img/s against 22.7 on a real sequence). Once a real job has been
+    timed, that is the number worth using."""
+    worker = dispatch.upsert_worker(session, "proxima", {}, 1, rates={"render_fps": 28.0})
+    assert dispatch.rate_for(worker, JobKind.RENDER) == 28.0
+
+    worker.observed = {"render_fps": 22.7}
+    assert dispatch.rate_for(worker, JobKind.RENDER) == 22.7
+
+
+def test_an_unmeasured_worker_stays_unmeasured(session: Session):
+    """Neither fast nor slow: unknown, which is a case the caller has to handle."""
+    worker = dispatch.upsert_worker(session, "proxima", {}, 1)
+    assert dispatch.rate_for(worker, JobKind.RENDER) is None
+
+
+def test_registering_again_keeps_what_real_jobs_measured(session: Session):
+    """A container restart re-runs the benchmark. It must not throw away the moving
+    average, which is the only number that ever came from real work."""
+    worker = dispatch.upsert_worker(session, "proxima", {}, 1, rates={"render_fps": 28.0})
+    worker.observed = {"render_fps": 22.7, "render_fps_n": 4}
+    session.add(worker)
+    session.commit()
+
+    again = dispatch.upsert_worker(session, "proxima", {}, 1, rates={"render_fps": 30.0})
+    assert again.rates["render_fps"] == 30.0
+    assert again.observed["render_fps"] == 22.7
+
+
+def test_a_finished_job_teaches_the_worker_its_own_speed(
+    session: Session, sequence: Sequence
+):
+    worker = _worker(session, "proxima")
+    job = Job(kind=JobKind.PROXY, sequence_id=sequence.id, state=JobState.QUEUED)
+    session.add(job)
+    session.commit()
+    sequence.frame_count = 14_400  # four minutes at 59.94
+    sequence.merged_path = "merged/x.mp4"
+    session.add(sequence)
+    session.commit()
+
+    dispatch.claim(session, worker)
+    dispatch.complete(
+        session, job.id, worker.id,
+        {"proxy_path": "proxies/x.mp4", "proxy_width": 1706, "proxy_height": 960},
+        elapsed_s=600.0,
+    )
+
+    session.refresh(worker)
+    assert worker.observed["proxy_fps"] == pytest.approx(24.0)
+    assert worker.observed["proxy_fps_n"] == 1
+
+
+def test_a_second_measurement_moves_the_average_without_replacing_it(session: Session, sequence: Sequence):
+    """One unlucky job must not rewrite what a machine has proved, and a machine
+    that genuinely changed must still be followed within a handful of jobs."""
+    worker = _worker(session, "proxima")
+    worker.observed = {"render_fps": 20.0, "render_fps_n": 1}
+    session.add(worker)
+    session.commit()
+
+    render = Render(sequence_id=sequence.id, template="h_1080", start_frame=0, end_frame=999)
+    session.add(render)
+    session.commit()
+    job = Job(kind=JobKind.RENDER, render_id=render.id, state=JobState.RUNNING, worker_id=worker.id)
+    session.add(job)
+    session.commit()
+
+    dispatch.observe(session, job, worker.id, {}, elapsed_s=25.0)  # 1000 frames → 40/s
+    session.commit()
+
+    session.refresh(worker)
+    # 0.7 * 20 + 0.3 * 40
+    assert worker.observed["render_fps"] == pytest.approx(26.0)
+    assert worker.observed["render_fps_n"] == 2
+
+
+def test_a_job_too_small_to_mean_anything_is_not_learned_from(session: Session, sequence: Sequence):
+    """A 30-frame cut measures process startup, which is exactly the bias the
+    benchmark already has. Learning it would teach the same lie twice."""
+    worker = _worker(session, "proxima")
+    render = Render(sequence_id=sequence.id, template="h_1080", start_frame=0, end_frame=29)
+    session.add(render)
+    session.commit()
+    job = Job(kind=JobKind.RENDER, render_id=render.id, state=JobState.RUNNING, worker_id=worker.id)
+    session.add(job)
+    session.commit()
+
+    dispatch.observe(session, job, worker.id, {}, elapsed_s=1.0)
+    session.commit()
+
+    session.refresh(worker)
+    assert worker.observed == {}
+
+
+def test_a_job_with_no_measured_time_is_not_learned_from(session: Session, sequence: Sequence):
+    """A result posted without an elapsed time (an older worker) is still a valid
+    result; it just teaches nothing."""
+    worker = _worker(session, "proxima")
+    render = Render(sequence_id=sequence.id, template="h_1080", start_frame=0, end_frame=9999)
+    session.add(render)
+    session.commit()
+    job = Job(kind=JobKind.RENDER, render_id=render.id, state=JobState.RUNNING, worker_id=worker.id)
+    session.add(job)
+    session.commit()
+
+    dispatch.observe(session, job, worker.id, {}, elapsed_s=0.0)
+    session.commit()
+
+    session.refresh(worker)
+    assert worker.observed == {}
+
+
+# --------------------------------------------------------------------------- #
+# Whose files are these
+# --------------------------------------------------------------------------- #
+
+def test_a_worker_reading_the_dispatchers_volume_is_told_so(session: Session):
+    """Compared, never configured: a worker wrongly told it shares the volume goes
+    looking for files that are not there and fails every job it takes."""
+    ours = ensure_volume_id()
+    assert ours
+
+    shared = dispatch.upsert_worker(session, "local", {}, 1, volume_id=ours)
+    assert shared.shares_data is True
+
+    remote = dispatch.upsert_worker(session, "desktop", {}, 1, volume_id="something-else")
+    assert remote.shares_data is False
+
+    silent = dispatch.upsert_worker(session, "old", {}, 1)
+    assert silent.shares_data is False
+
+
+def test_marking_a_volume_twice_keeps_the_first_mark(session: Session):
+    """Otherwise every API restart would tell every worker its cache is worthless."""
+    first = ensure_volume_id()
+    assert ensure_volume_id() == first
+    assert read_volume_id() == first
+
+
+# --------------------------------------------------------------------------- #
+# The bandwidth probe
+# --------------------------------------------------------------------------- #
+
+def test_the_bandwidth_probe_sends_exactly_what_was_asked():
+    """A ceiling, not a cost: the worker closes the connection once it has timed a
+    second's worth, so what matters is that the stream is well-formed."""
+    import asyncio
+
+    from app.api.worker_api import bandwidth
+
+    async def drain(chunks) -> int:
+        # Starlette wraps the sync generator into an async one.
+        return sum([len(chunk) async for chunk in chunks])
+
+    response = bandwidth(size=(1 << 20) + 123)
+    assert asyncio.run(drain(response.body_iterator)) == (1 << 20) + 123
+
+
+def test_an_unreachable_dispatcher_measures_no_link():
+    """Unknown, not zero. A worker whose link could not be timed must not look
+    infinitely slow and drop out of the running."""
+    from app.worker import Dispatcher
+
+    # Port 1 is reserved and nothing listens there.
+    assert Dispatcher("http://127.0.0.1:1").link_mbps() is None

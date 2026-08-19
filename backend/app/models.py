@@ -237,6 +237,12 @@ class Worker(SQLModel, table=True):
     `capabilities` is the payload of `services.capabilities.detect()`, measured on
     the worker's own machine. It belongs here and not in the API's status, since the
     hardware that matters is the hardware that does the work.
+
+    Rates live in two columns on purpose. `rates` is the startup benchmark
+    (`services.bench`), rewritten at every registration; `observed` is the moving
+    average over real completed jobs, which registration must never touch or a
+    container restart would throw away everything the machine has proved about
+    itself. `dispatch.rate_for` prefers the second when it exists.
     """
 
     __tablename__ = "worker"
@@ -244,6 +250,12 @@ class Worker(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(index=True, unique=True)
     capabilities: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    rates: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    observed: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Whether this worker reads and writes the dispatcher's own data volume. When it
+    # does, a job costs no transfer at all; when it does not, every input has to
+    # travel. Decided by comparing volume ids, never configured (see paths.py).
+    shares_data: bool = False
     concurrency: int = 1
     first_seen_at: datetime = Field(default_factory=utcnow)
     last_seen_at: datetime = Field(default_factory=utcnow)

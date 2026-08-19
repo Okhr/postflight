@@ -196,10 +196,33 @@ export interface WorkerCapabilities {
   notes: string[];
 }
 
+/** One rate per job kind, in the kind's own unit. Null when it could not be measured,
+ *  which is not the same as slow: the dispatcher treats unknown as unknown. */
+export interface WorkerRates {
+  clip?: string;
+  clip_frames?: number;
+  merge_mbps: number | null;
+  proxy_fps: number | null;
+  render_fps: number | null;
+  grade_fps: number | null;
+  /** Megabytes per second pulled from the dispatcher. */
+  link_mbps: number | null;
+  elapsed_s?: number;
+  notes?: string[];
+  measured_at?: string;
+}
+
 export interface WorkerInfo {
   id: number;
   name: string;
   capabilities: WorkerCapabilities;
+  /** The startup benchmark: real jobs on half a second of baked-in rush. */
+  rates: WorkerRates;
+  /** The moving average over real completed jobs, which beats the benchmark.
+   *  Keys are the same, plus a `<key>_n` sample count. */
+  observed: Record<string, number>;
+  /** Whether this worker reads the dispatcher's own volume, so nothing has to travel. */
+  shares_data: boolean;
   concurrency: number;
   last_seen_at: string;
   /** A worker that stopped asking for work is gone: that is the whole health model. */

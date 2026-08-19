@@ -146,6 +146,17 @@ RUN curl -fsSL "https://github.com/gyroflow/mp4-merge/releases/download/v${MP4_M
       -o /usr/local/bin/mp4_merge \
  && chmod +x /usr/local/bin/mp4_merge
 
+# The rush the startup benchmark runs on, and it has to be a real one: a render needs
+# a gyro track, and nothing can synthesize or trim one. ffmpeg refuses to mux `djmd`
+# at all (codec `none`), and copying it into a MOV carries the bytes but loses the
+# track identity, after which Gyroflow reads no gyro whatsoever.
+#
+# 0.5 s of DJI O3 footage, 9 MB. Measured against a 1.8 s clip weighing 25 MB: the
+# short one reports the render at 27.2 then 26.8 img/s across two runs where the long
+# one reports 38.8 then 36.4, so it is both lighter and *more* repeatable. The whole
+# benchmark then costs 3.6 s, which is why nothing caches it.
+COPY docker/bench/clip.mp4 /opt/bench/clip.mp4
+
 ENV QT_QPA_PLATFORM=offscreen \
     RUSTICL_ENABLE=radeonsi
 
