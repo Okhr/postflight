@@ -14,6 +14,7 @@ which describes what the UI sees.
 from __future__ import annotations
 
 import logging
+from secrets import compare_digest
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
@@ -34,11 +35,17 @@ def require_worker_token(x_worker_token: str | None = Header(default=None)) -> N
 
     Left empty, these endpoints are open, which is what a worker sitting next to the
     dispatcher on a private volume needs. Set `VS_WORKER_TOKEN` on both sides before
-    the API is reachable by anything else.
+    the API is reachable by anything else, and note that this matters more since the
+    blob endpoints exist: they guard reading any footage on the volume and writing into
+    the directories the pipeline produces, not just asking for a job.
+
+    Compared with `compare_digest` rather than `!=`. Timing is not the threat model on a
+    private network, but this is the one place a secret is checked and the cost of doing
+    it properly is a line.
     """
     if not settings.worker_token:
         return
-    if x_worker_token != settings.worker_token:
+    if not x_worker_token or not compare_digest(x_worker_token, settings.worker_token):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid worker token")
 
 

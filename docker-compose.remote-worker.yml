@@ -39,6 +39,10 @@ services:
       # Required too, and it has to be stable: a name is what ties a worker's history
       # to its machine, including everything real jobs have measured about its speed.
       VS_WORKER_NAME: ${VS_WORKER_NAME:?set VS_WORKER_NAME to something stable for this machine}
+      # Set this, on both sides, as soon as the dispatcher is reachable by anything
+      # other than a private network. It guards the file endpoints too, which serve any
+      # footage on the volume and accept writes into the directories the pipeline
+      # produces. Empty leaves them open, which is fine on a LAN and only there.
       VS_WORKER_TOKEN: ${VS_WORKER_TOKEN:-}
       # How much footage this machine may keep. It evicts its oldest to stay under.
       VS_WORKER_CACHE_BYTES: ${VS_WORKER_CACHE_BYTES:-20000000000}
