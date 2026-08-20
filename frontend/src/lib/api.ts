@@ -48,12 +48,24 @@ export interface Render {
   finished_at: string | null;
 }
 
+export interface Folder {
+  id: number;
+  name: string;
+  /** Palette token from `lib/colors`, drawn when the folder is created. */
+  color: string;
+  parent_id: number | null;
+  /** Rushes filed directly here, not counting a child folder's. */
+  sequence_count: number;
+}
+
 export interface Sequence {
   id: number;
   key: string;
   label: string;
   /** Palette token from `lib/colors`, empty when untagged. */
   color: string;
+  /** Which folder it is filed in, null for none, which is where they start. */
+  folder_id: number | null;
   state: SequenceState;
   part_count: number;
   width: number;
@@ -305,11 +317,17 @@ export const api = {
   sequences: (state?: string) =>
     request<Sequence[]>(`/sequences${state ? `?state=${state}` : ""}`),
   sequence: (id: number) => request<SequenceDetail>(`/sequences/${id}`),
-  /** Rename a rush, tag it with a colour, or both. Omitted fields stay as they are. */
-  updateSequence: (id: number, changes: { label?: string; color?: string }) => {
+  /** Rename a rush, tag it, file it. Omitted fields stay as they are. */
+  updateSequence: (
+    id: number,
+    changes: { label?: string; color?: string; folderId?: number | null },
+  ) => {
     const query = new URLSearchParams();
     if (changes.label !== undefined) query.set("label", changes.label);
     if (changes.color !== undefined) query.set("color", changes.color);
+    // 0 is how the API hears "out of every folder": a query parameter cannot carry
+    // null in a way that differs from being left out.
+    if (changes.folderId !== undefined) query.set("folder_id", String(changes.folderId ?? 0));
     return request<Sequence>(`/sequences/${id}?${query}`, { method: "PATCH" });
   },
   retrySequence: (id: number) => request<Sequence>(`/sequences/${id}/retry`, { method: "POST" }),
@@ -325,6 +343,24 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ sequence_ids: sequenceIds, force }),
     }),
+  /** Take a merge apart: one rush per part, in place of the joined one. */
+  splitSequence: (id: number, force = false) =>
+    request<Sequence[]>(`/sequences/${id}/split?force=${force}`, { method: "POST" }),
+
+  folders: () => request<Folder[]>("/folders"),
+  createFolder: (name: string, parentId: number | null = null) =>
+    request<Folder>("/folders", {
+      method: "POST",
+      body: JSON.stringify({ name, parent_id: parentId }),
+    }),
+  renameFolder: (id: number, name: string) =>
+    request<Folder>(`/folders/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  /** Nothing is lost: what was inside comes back to the root. */
+  deleteFolder: (id: number) =>
+    request<{ deleted: string; rushes_freed: number; folders_freed: number }>(
+      `/folders/${id}`,
+      { method: "DELETE" },
+    ),
 
   saveCuts: (sequenceId: number, cuts: Array<{ label: string; start_frame: number; end_frame: number }>) =>
     request<Cut[]>(`/sequences/${sequenceId}/cuts`, {

@@ -1,93 +1,30 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Cpu, FolderInput, ServerOff } from "lucide-react";
+import { FolderInput } from "lucide-react";
 
 import { JobsBar } from "@/components/JobsBar";
+import { RushTree } from "@/components/RushTree";
+import { WorkersDialog } from "@/components/WorkersDialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, type WorkerInfo } from "@/lib/api";
+import { api } from "@/lib/api";
 import { LiveJobsProvider } from "@/lib/live";
+import { selectedRushId } from "@/lib/routing";
 import { cn } from "@/lib/utils";
 
-// The four processing steps, in the order they are walked through.
-const STEPS = [
-  { to: "/", step: 1, label: "Import", end: true },
-  { to: "/derush", step: 2, label: "Derush", end: false },
-  { to: "/stabilisation", step: 3, label: "Stabilize", end: false },
-  { to: "/color", step: 4, label: "Color", end: false },
+// The five pages, in the order the work walks through them. Merge sits between
+// import and derush because that is when a wrong group has to be caught: after the
+// parts are in, before anything has been marked on them.
+const PAGES = [
+  { to: "/", label: "Import", end: true, carriesRush: false },
+  { to: "/merge", label: "Merge", end: false, carriesRush: false },
+  { to: "/derush", label: "Derush", end: false, carriesRush: true },
+  { to: "/stabilisation", label: "Stabilize", end: false, carriesRush: true },
+  { to: "/color", label: "Color", end: false, carriesRush: false },
 ];
-
-function decodeLabel(worker: WorkerInfo): string {
-  const backend = worker.capabilities.decode_backend || "cpu";
-  return backend === "cpu" ? "CPU" : backend.toUpperCase();
-}
-
-// The four rates the dispatcher ranks a worker on, and what each is measured in.
-const RATES: [label: string, key: string, unit: string][] = [
-  ["proxy", "proxy_fps", "img/s"],
-  ["render", "render_fps", "img/s"],
-  ["grade", "grade_fps", "img/s"],
-  ["merge", "merge_mbps", "MB/s"],
-];
-
-/** One rate, preferring what real jobs measured over the startup benchmark.
- *
- *  The job count is worth showing: the benchmark runs on half a second of footage
- *  and overstates by a fixed-ish factor, so "28 img/s" and "22.7 img/s (4 jobs)"
- *  do not deserve to look alike.
- */
-function rateLabel(worker: WorkerInfo, key: string, unit: string): string | null {
-  const observed = worker.observed?.[key];
-  const bench = (worker.rates as unknown as Record<string, number | null>)?.[key];
-  const value = observed ?? bench;
-  if (!value) return null;
-  const samples = worker.observed?.[`${key}_n`] ?? 0;
-  const shown = value < 10 ? value.toFixed(1) : Math.round(value).toString();
-  return `${shown} ${unit}${samples ? ` (${samples} job${samples > 1 ? "s" : ""})` : ""}`;
-}
-
-/** One line per worker, which is where the hardware actually lives. */
-function WorkerLine({ worker }: { worker: WorkerInfo }) {
-  const caps = worker.capabilities;
-  // Backends that were tried and refused, so a CPU fallback can be explained rather
-  // than merely announced.
-  const refused = Object.entries(caps.decode_probes ?? {}).filter(([, why]) => why);
-  const speeds = RATES.map(([label, key, unit]) => {
-    const shown = rateLabel(worker, key, unit);
-    return shown ? `${label} ${shown}` : null;
-  }).filter(Boolean);
-  const link = worker.rates?.link_mbps;
-
-  return (
-    <div className="mt-1.5 first:mt-0">
-      <p className="font-medium">
-        {worker.name}
-        {!worker.online && <span className="text-muted-foreground"> (offline)</span>}
-        {worker.running > 0 && <span className="text-muted-foreground"> · busy</span>}
-      </p>
-      <p>decode: {decodeLabel(worker)}{caps.decode_device ? ` on ${caps.decode_device}` : ""}</p>
-      <p>stabilize: {caps.stabilize_device || "CPU"}</p>
-      {speeds.length > 0 && <p>speed: {speeds.join(" · ")}</p>}
-      <p className="text-muted-foreground">
-        {worker.shares_data
-          ? "shared volume"
-          : `own volume${link ? ` · ${Math.round(link)} MB/s link` : ""}`}
-      </p>
-      {refused.length > 0 && (
-        <p className="text-muted-foreground">
-          refused:{" "}
-          {refused.map(([name, why]) => `${name} (${why.split("\n")[0].slice(0, 70)})`).join("; ")}
-        </p>
-      )}
-      {[...(caps.notes ?? []), ...(worker.rates?.notes ?? [])].map((note) => (
-        <p key={note} className="text-amber-400">
-          {note}
-        </p>
-      ))}
-    </div>
-  );
-}
 
 export function Layout() {
+  const { pathname } = useLocation();
+  const rushId = selectedRushId(pathname);
   const { data: status } = useQuery({
     queryKey: ["status"],
     queryFn: api.status,
@@ -96,106 +33,64 @@ export function Layout() {
     refetchInterval: 10_000,
   });
 
-  // Hardware belongs to the workers, and each one measured its own by running the
-  // thing. The API has none worth reporting: it never decodes, warps or merges.
-  const workers = status?.workers ?? [];
-  const online = workers.filter((w) => w.online);
-  const lone = online.length === 1 ? online[0] : null;
-
   return (
     <TooltipProvider>
       <LiveJobsProvider>
-        <div className="min-h-screen">
-          <header className="border-b">
-            <div className="mx-auto flex max-w-7xl items-center gap-6 px-4 py-3">
-              <span className="text-sm font-semibold tracking-tight">video-stab</span>
+        <div className="flex min-h-screen">
+          <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col gap-2 border-r px-2 py-3">
+            <span className="px-2 text-sm font-semibold tracking-tight">video-stab</span>
 
-              <nav className="flex items-center gap-1 rounded-lg border p-1">
-                {STEPS.map(({ to, step, label, end }) => (
-                  <NavLink key={to} to={to} end={end}>
-                    {({ isActive }) => (
-                      <span
-                        className={cn(
-                          "inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors",
-                          isActive
-                            ? "bg-secondary text-secondary-foreground"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "tnum flex h-5 w-5 items-center justify-center rounded-full text-[11px]",
-                            isActive
-                              ? "bg-primary text-primary-foreground"
-                              : "bg-muted text-muted-foreground",
-                          )}
-                        >
-                          {step}
-                        </span>
-                        {label}
-                      </span>
-                    )}
-                  </NavLink>
-                ))}
-              </nav>
+            <WorkersDialog workers={status?.workers ?? []} />
 
-              <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
-                <Tooltip>
-                  <TooltipTrigger asChild>
+            {status && status.inbox_pending > 0 && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="flex items-center gap-2 px-2 text-sm text-muted-foreground">
+                    <FolderInput className="h-3.5 w-3.5" />
+                    {status.inbox_pending} in inbox
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Picked up on the next scan, which runs every 30 s.</p>
+                </TooltipContent>
+              </Tooltip>
+            )}
+
+            <RushTree />
+
+            <nav className="shrink-0 space-y-0.5 border-t pt-2">
+              {PAGES.map(({ to, label, end, carriesRush }) => (
+                <NavLink
+                  key={to}
+                  // A rush stays selected when moving between the steps that act on
+                  // one. Import and merge are about the collection, colour is about a
+                  // stabilized clip: none of the three takes a rush id.
+                  to={carriesRush && rushId ? `${to}/${rushId}` : to}
+                  end={end}
+                >
+                  {({ isActive }) => (
                     <span
                       className={cn(
-                        "inline-flex items-center gap-1.5",
-                        online.length === 0 && "text-amber-400",
+                        "block rounded-md px-2 py-1.5 text-sm transition-colors",
+                        isActive
+                          ? "bg-secondary text-secondary-foreground"
+                          : "text-muted-foreground hover:text-foreground",
                       )}
                     >
-                      {online.length === 0 ? (
-                        <>
-                          <ServerOff className="h-3.5 w-3.5" />
-                          no worker
-                        </>
-                      ) : (
-                        <>
-                          <Cpu className="h-3.5 w-3.5" />
-                          {lone
-                            ? `decode ${decodeLabel(lone)} · stabilize ${
-                                lone.capabilities.stabilize_on_gpu ? "GPU" : "CPU"
-                              }`
-                            : `${online.length} workers`}
-                        </>
-                      )}
+                      {label}
                     </span>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-sm">
-                    {workers.length === 0 ? (
-                      <p>No worker has registered. Check VS_API_URL.</p>
-                    ) : (
-                      workers.map((worker) => <WorkerLine key={worker.id} worker={worker} />)
-                    )}
-                  </TooltipContent>
-                </Tooltip>
+                  )}
+                </NavLink>
+              ))}
+            </nav>
+          </aside>
 
-                {status && status.inbox_pending > 0 && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="inline-flex items-center gap-1.5">
-                        <FolderInput className="h-3.5 w-3.5" />
-                        {status.inbox_pending} in inbox
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>Picked up on the next scan, which runs every 30 s.</p>
-                    </TooltipContent>
-                  </Tooltip>
-                )}
-              </div>
-            </div>
-          </header>
-
-          <JobsBar />
-
-          <main className="mx-auto max-w-7xl px-4 py-6">
-            <Outlet />
-          </main>
+          <div className="min-w-0 flex-1">
+            <JobsBar />
+            <main className="px-6 py-6">
+              <Outlet />
+            </main>
+          </div>
         </div>
       </LiveJobsProvider>
     </TooltipProvider>

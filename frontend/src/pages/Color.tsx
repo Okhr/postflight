@@ -70,10 +70,10 @@ export function Color() {
       <aside className="lg:sticky lg:top-4 lg:self-start">
         <div className="mb-2 flex items-baseline justify-between px-1">
           <h2 className="text-sm font-medium">Stabilized clips</h2>
-          <span className="tnum text-xs text-muted-foreground">{stabilized.length}</span>
+          <span className="tnum text-sm text-muted-foreground">{stabilized.length}</span>
         </div>
         {stabilized.length === 0 ? (
-          <p className="rounded-md border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+          <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
             Nothing stabilized yet. See <Link to="/stabilisation" className="underline">Stabilize</Link>.
           </p>
         ) : (
@@ -91,10 +91,10 @@ export function Color() {
                         : "border-transparent hover:bg-accent/50",
                     )}
                   >
-                    <span className="block truncate text-xs font-medium">
+                    <span className="block truncate text-sm font-medium">
                       {render.out_name ?? `render ${render.id}`}
                     </span>
-                    <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                    <span className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
                       {render.template}
                       {grade && grade.state !== "draft" && <StateBadge state={grade.state} />}
                       {grade?.state === "done" && "graded"}
@@ -197,7 +197,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="truncate text-sm font-semibold">{render?.out_name ?? `render ${renderId}`}</h1>
         {grade && grade.state !== "draft" && <StateBadge state={grade.state} />}
-        <span className="text-xs text-muted-foreground">
+        <span className="text-sm text-muted-foreground">
           {render && formatDuration(((render.end_frame - render.start_frame + 1) / 60) * 1000)} ·{" "}
           {render?.template}
           {analysis.frames ? ` · analysed on ${analysis.frames} frames` : ""}
@@ -217,7 +217,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
               style={{ aspectRatio: "16 / 9" }}
             />
             {showBefore && (
-              <span className="absolute left-2 top-2 rounded bg-black/70 px-2 py-0.5 text-xs text-white">
+              <span className="absolute left-2 top-2 rounded bg-black/70 px-2 py-0.5 text-sm text-white">
                 before
               </span>
             )}
@@ -247,7 +247,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
                 {reference.label}
               </Button>
             ))}
-            <span className="tnum ml-auto text-xs text-muted-foreground">
+            <span className="tnum ml-auto text-sm text-muted-foreground">
               frame at {(at / 1000).toFixed(1)}s
             </span>
           </CardContent>
@@ -272,7 +272,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
 
               {CONTROLS.map((control) => (
                 <div key={control.key} className="space-y-1">
-                  <div className="flex items-baseline justify-between text-xs">
+                  <div className="flex items-baseline justify-between text-sm">
                     <span>{control.label}</span>
                     <span className="tnum text-muted-foreground">
                       {typeof params[control.key] === "number"
@@ -324,7 +324,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
                 Render graded file
               </Button>
               {neutral && (
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                   Neutral look, nothing to apply.
                 </p>
               )}
@@ -335,7 +335,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
             <CardHeader className="pb-2">
               <CardTitle className="text-sm">Measured</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-1 text-[11px] text-muted-foreground">
+            <CardContent className="space-y-1 text-xs text-muted-foreground">
               <p>
                 Blacks at {analysis.y_low ?? "-"}, whites at {analysis.y_high ?? "-"} on a 64-940
                 scale
@@ -367,7 +367,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm">Graded file</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2 text-xs">
+              <CardContent className="space-y-2 text-sm">
                 {grade.state === "running" && (
                   <Progress value={grade.progress * 100} className="h-1.5" />
                 )}

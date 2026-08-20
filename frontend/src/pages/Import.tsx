@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Check, Combine, Play, RotateCcw, Scissors, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, Play, RotateCcw, Scissors, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { UploadZone } from "@/components/UploadZone";
@@ -24,7 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ApiError, api, type Job, type Sequence } from "@/lib/api";
+import { api, type Job, type Sequence } from "@/lib/api";
 import { etaLabel, formatBytes, formatDateTime, formatDuration } from "@/lib/format";
 import { useLiveJobs } from "@/lib/live";
 import { cn } from "@/lib/utils";
@@ -54,24 +54,23 @@ function StepCell({
       <div className="space-y-1">
         <div className="flex items-center justify-center gap-2">
           <Progress value={job.progress * 100} className="h-1.5 w-16" />
-          <span className="tnum text-xs text-muted-foreground">
+          <span className="tnum text-sm text-muted-foreground">
             {Math.round(job.progress * 100)}%
           </span>
         </div>
-        {eta && <p className="text-center text-[11px] text-muted-foreground">{eta}</p>}
+        {eta && <p className="text-center text-xs text-muted-foreground">{eta}</p>}
       </div>
     );
   }
   if (done) return <Check className="mx-auto h-4 w-4 text-emerald-400" />;
-  if (failed) return <span className="text-xs text-red-400">failed</span>;
-  if (job?.state === "queued") return <span className="text-xs text-muted-foreground">queued</span>;
-  return <span className="text-xs text-muted-foreground">-</span>;
+  if (failed) return <span className="text-sm text-red-400">failed</span>;
+  if (job?.state === "queued") return <span className="text-sm text-muted-foreground">queued</span>;
+  return <span className="text-sm text-muted-foreground">-</span>;
 }
 
 export function Import() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [selection, setSelection] = useState<number[]>([]);
   const [toDelete, setToDelete] = useState<Sequence | null>(null);
 
   const { data: status } = useQuery({
@@ -115,36 +114,10 @@ export function Import() {
   });
   const isStuck = (sequence: Sequence) => stuck.some((s) => s.id === sequence.id);
 
-  const toggle = (id: number) =>
-    setSelection((previous) =>
-      previous.includes(id) ? previous.filter((x) => x !== id) : [...previous, id],
-    );
-
   const merge = useMutation({
     mutationFn: api.retrySequence,
     onSuccess: () => queryClient.invalidateQueries(),
     onError: (error: Error) => toast.error(error.message),
-  });
-
-  const regroup = useMutation({
-    mutationFn: ({ ids, force }: { ids: number[]; force: boolean }) =>
-      api.regroupSequences(ids, force),
-    onSuccess: (sequence) => {
-      toast.success(`${sequence.part_count} files queued for merging`);
-      setSelection([]);
-      queryClient.invalidateQueries();
-    },
-    onError: (error: Error, variables) => {
-      // 409 = at least one rush is already ready; redoing it destroys its proxy
-      // and its zones, so ask for confirmation.
-      if (error instanceof ApiError && error.status === 409) {
-        if (window.confirm(`${error.message}\n\nRedo anyway? Marked zones on those rushes will be lost.`)) {
-          regroup.mutate({ ids: variables.ids, force: true });
-        }
-        return;
-      }
-      toast.error(error.message);
-    },
   });
 
   const remove = useMutation({
@@ -157,7 +130,6 @@ export function Import() {
           : `${data.deleted} removed, files kept on disk`,
       );
       setToDelete(null);
-      setSelection([]);
       queryClient.invalidateQueries();
     },
     onError: (error: Error) => toast.error(error.message),
@@ -196,22 +168,7 @@ export function Import() {
               <CardTitle className="text-base">Rushes</CardTitle>
             </div>
             <div className="flex items-center gap-2">
-              {selection.length >= 2 && (
-                <Button
-                  size="sm"
-                  disabled={regroup.isPending}
-                  onClick={() => regroup.mutate({ ids: selection, force: false })}
-                >
-                  <Combine className="h-4 w-4" />
-                  Join {selection.length} rushes
-                </Button>
-              )}
-              {selection.length > 0 && (
-                <Button size="sm" variant="ghost" onClick={() => setSelection([])}>
-                  Clear
-                </Button>
-              )}
-              {selection.length === 0 && stuck.length > 0 && (
+              {stuck.length > 0 && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -237,7 +194,6 @@ export function Import() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-8" />
                   <TableHead>Source files</TableHead>
                   <TableHead className="text-center">Filmed</TableHead>
                   <TableHead className="text-center">Length</TableHead>
@@ -249,7 +205,6 @@ export function Import() {
               </TableHeader>
               <TableBody>
                 {rows.map((sequence) => {
-                  const selected = selection.includes(sequence.id);
                   const step = steps.get(sequence.id) ?? {};
                   const merged = sequence.merged_name !== null;
                   const failed = sequence.state === "failed";
@@ -257,49 +212,31 @@ export function Import() {
                   return (
                     <TableRow
                       key={sequence.id}
-                      // A ready rush is there to be derushed: opening it is the
-                      // obvious gesture, so the row carries it. Selection lives on
-                      // the checkbox, which is the affordance that shows it exists.
+                      // A ready rush is there to be derushed, so the row carries it.
                       onClick={ready ? () => navigate(`/derush/${sequence.id}`) : undefined}
                       title={ready ? "Open in derush" : undefined}
-                      className={cn(ready && "cursor-pointer", selected && "bg-accent")}
+                      className={cn(ready && "cursor-pointer")}
                     >
-                      <TableCell onClick={(event) => event.stopPropagation()}>
-                        <button
-                          type="button"
-                          onClick={() => toggle(sequence.id)}
-                          title="Select, to force several rushes into one sequence"
-                          className={cn(
-                            "flex h-4 w-4 items-center justify-center rounded border",
-                            selected
-                              ? "border-primary bg-primary text-primary-foreground"
-                              : "border-input hover:border-primary",
-                          )}
-                        >
-                          {selected && <Check className="h-3 w-3" />}
-                        </button>
-                      </TableCell>
-
                       <TableCell className="max-w-[24rem]">
                         <ul className="space-y-0.5">
                           {sequence.part_names.map((name) => (
                             <li
                               key={name}
-                              className="truncate font-mono text-xs"
+                              className="truncate font-mono text-sm"
                               title={name}
                             >
                               {name}
                             </li>
                           ))}
                         </ul>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
+                        <p className="mt-0.5 text-sm text-muted-foreground">
                           {sequence.width}×{sequence.height} · {sequence.fps.toFixed(2)} fps
                           {!sequence.has_gyro && (
                             <span className="text-red-400"> · no gyro data</span>
                           )}
                         </p>
                         {sequence.error && (
-                          <p className="mt-1 line-clamp-2 text-xs text-red-400">{sequence.error}</p>
+                          <p className="mt-1 line-clamp-2 text-sm text-red-400">{sequence.error}</p>
                         )}
                       </TableCell>
 

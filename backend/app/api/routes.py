@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -18,6 +19,7 @@ from ..models import (
     Clip,
     ClipState,
     Cut,
+    Folder,
     Grade,
     GradeState,
     Job,
@@ -44,6 +46,7 @@ from ..pipeline import (
     unique_destination,
 )
 from ..services.grouping import sequence_hash
+from ..services.naming import sequence_key
 from ..services import grading as grading_service
 from ..services import gyro as gyro_service
 from ..services import gyroflow as gyroflow_service
@@ -103,6 +106,11 @@ def _render_out(render: Render, seq: Sequence | None = None) -> schemas.RenderOu
     )
 
 
+# The palette a new folder draws from. Tokens, not colours: what each one looks like
+# is decided in `frontend/src/lib/colors.ts`, which is the same list.
+FOLDER_COLORS = ["red", "amber", "emerald", "sky", "violet", "pink"]
+
+
 def _sequence_out(session: Session, seq: Sequence) -> schemas.SequenceOut:
     clips = session.exec(
         select(Clip).where(Clip.sequence_id == seq.id).order_by(Clip.part_index)  # type: ignore[arg-type]
@@ -113,6 +121,7 @@ def _sequence_out(session: Session, seq: Sequence) -> schemas.SequenceOut:
         key=seq.key,
         label=seq.label or seq.key,
         color=seq.color,
+        folder_id=seq.folder_id,
         state=seq.state.value,
         part_count=seq.part_count,
         width=seq.width,
@@ -385,6 +394,114 @@ def get_templates() -> list[schemas.TemplateOut]:
 # Sequences
 # --------------------------------------------------------------------------- #
 
+# --------------------------------------------------------------------------- #
+# Folders
+# --------------------------------------------------------------------------- #
+
+def _folder_out(session: Session, folder: Folder) -> schemas.FolderOut:
+    return schemas.FolderOut(
+        id=folder.id or 0,
+        name=folder.name,
+        color=folder.color,
+        parent_id=folder.parent_id,
+        sequence_count=_count(session, Sequence, folder_id=folder.id),
+    )
+
+
+def _get_folder(session: Session, folder_id: int) -> Folder:
+    folder = session.get(Folder, folder_id)
+    if folder is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown folder")
+    return folder
+
+
+def _check_nesting(session: Session, folder: Folder | None, parent_id: int | None) -> None:
+    """Two levels, and a folder is never its own ancestor."""
+    if parent_id is None:
+        return
+    parent = _get_folder(session, parent_id)
+    if folder is not None and parent.id == folder.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "a folder cannot hold itself")
+    if parent.parent_id is not None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{parent.name} is already inside a folder, and two levels is the limit",
+        )
+    if folder is not None and session.exec(
+        select(Folder).where(Folder.parent_id == folder.id)
+    ).first() is not None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{folder.name} holds folders of its own, so it cannot move into one",
+        )
+
+
+@router.get("/folders", response_model=list[schemas.FolderOut])
+def list_folders(session: Session = Depends(get_session)) -> list[schemas.FolderOut]:
+    folders = session.exec(select(Folder).order_by(Folder.name)).all()  # type: ignore[arg-type]
+    return [_folder_out(session, f) for f in folders]
+
+
+@router.post("/folders", response_model=schemas.FolderOut, status_code=status.HTTP_201_CREATED)
+def create_folder(
+    payload: schemas.FolderIn, session: Session = Depends(get_session)
+) -> schemas.FolderOut:
+    _check_nesting(session, None, payload.parent_id)
+    folder = Folder(
+        name=payload.name.strip(),
+        # Drawn, not chosen: naming the folder is the only thing worth asking for, and
+        # a colour picked at creation is one less dialog.
+        color=secrets.choice(FOLDER_COLORS),
+        parent_id=payload.parent_id,
+    )
+    session.add(folder)
+    session.commit()
+    session.refresh(folder)
+    return _folder_out(session, folder)
+
+
+@router.patch("/folders/{folder_id}", response_model=schemas.FolderOut)
+def update_folder(
+    folder_id: int, payload: schemas.FolderPatch, session: Session = Depends(get_session)
+) -> schemas.FolderOut:
+    folder = _get_folder(session, folder_id)
+    if payload.name is not None:
+        folder.name = payload.name.strip()
+    if payload.color is not None:
+        folder.color = payload.color
+    if "parent_id" in payload.model_fields_set:
+        _check_nesting(session, folder, payload.parent_id)
+        folder.parent_id = payload.parent_id
+    session.add(folder)
+    session.commit()
+    session.refresh(folder)
+    return _folder_out(session, folder)
+
+
+@router.delete("/folders/{folder_id}")
+def delete_folder(folder_id: int, session: Session = Depends(get_session)) -> dict:
+    """Remove the drawer, keep everything that was in it.
+
+    Rushes and child folders come back to the root. A folder holds no footage of its
+    own, so there is nothing here that could be lost, and making this destructive
+    would only invite a dialog that has nothing true to warn about.
+    """
+    folder = _get_folder(session, folder_id)
+    freed = 0
+    for sequence in session.exec(select(Sequence).where(Sequence.folder_id == folder.id)).all():
+        sequence.folder_id = None
+        session.add(sequence)
+        freed += 1
+    orphans = 0
+    for child in session.exec(select(Folder).where(Folder.parent_id == folder.id)).all():
+        child.parent_id = None
+        session.add(child)
+        orphans += 1
+    session.delete(folder)
+    session.commit()
+    return {"deleted": folder.name, "rushes_freed": freed, "folders_freed": orphans}
+
+
 @router.get("/sequences", response_model=list[schemas.SequenceOut])
 def list_sequences(
     state: str | None = None,
@@ -431,16 +548,23 @@ def update_sequence(
     sequence_id: int,
     label: str | None = Query(None, min_length=1, max_length=200),
     color: str | None = Query(None, max_length=20),
+    folder_id: int | None = Query(None, ge=0),
     session: Session = Depends(get_session),
 ) -> schemas.SequenceOut:
-    """Rename a rush, tag it with a colour, or both. Absent means unchanged."""
-    if label is None and color is None:
+    """Rename a rush, tag it with a colour, file it in a folder. Absent is unchanged.
+
+    `folder_id=0` takes it out of its folder: a query parameter cannot carry null in a
+    way that differs from being left out, and both meanings are wanted here.
+    """
+    if label is None and color is None and folder_id is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "nothing to update")
     seq = _get_sequence(session, sequence_id)
     if label is not None:
         seq.label = label
     if color is not None:
         seq.color = color
+    if folder_id is not None:
+        seq.folder_id = _get_folder(session, folder_id).id if folder_id else None
     seq.updated_at = utcnow()
     session.add(seq)
     session.commit()
@@ -523,6 +647,78 @@ def delete_sequence(
     return {"deleted": seq.key, "files_removed": removed}
 
 
+@router.post("/sequences/{sequence_id}/split", response_model=list[schemas.SequenceOut])
+def split_sequence(
+    sequence_id: int,
+    force: bool = False,
+    session: Session = Depends(get_session),
+) -> list[schemas.SequenceOut]:
+    """Undo a merge: one sequence per part, in place of the joined one.
+
+    The parts have to be given sequences of their own straight away rather than being
+    left loose, because loose contiguous clips are exactly what the scan regroups: let
+    go of them and the next tick puts the merge back.
+
+    The joined file and its proxy are deleted. They carry the content hash of the group
+    in their name, so leaving them would only leave files no row points at, and
+    rejoining the same parts finds them again by that name anyway.
+    """
+    seq = _get_sequence(session, sequence_id)
+    clips = session.exec(
+        select(Clip).where(Clip.sequence_id == seq.id).order_by(Clip.part_index)  # type: ignore[arg-type]
+    ).all()
+    if len(clips) < 2:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "nothing to split: this rush has a single part"
+        )
+    if seq.state == SequenceState.READY and not force:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{seq.label or seq.key} is ready; pass force=true to take it apart",
+        )
+
+    folder_id = seq.folder_id
+    ordered = list(clips)
+    delete_sequence(sequence_id, keep_raw=True, keep_derived=False, session=session)
+
+    created: list[Sequence] = []
+    for clip in ordered:
+        fresh = session.get(Clip, clip.id)
+        if fresh is None:
+            continue
+        key = sequence_key(fresh.filename)
+        if session.exec(select(Sequence).where(Sequence.key == key)).first() is not None:
+            key = f"{key}__s{fresh.id}"
+        single = Sequence(
+            key=key,
+            label=key,
+            folder_id=folder_id,
+            content_hash=sequence_hash([fresh.fingerprint]),
+            state=SequenceState.NEW,
+            part_count=1,
+            width=fresh.width,
+            height=fresh.height,
+            fps_num=fresh.fps_num,
+            fps_den=fresh.fps_den,
+            duration_ms=fresh.duration_ms,
+            size_bytes=fresh.size_bytes,
+            recorded_at=fresh.recorded_at,
+        )
+        session.add(single)
+        session.commit()
+        session.refresh(single)
+        fresh.sequence_id = single.id
+        fresh.part_index = 0
+        session.add(fresh)
+        session.commit()
+        adopt_existing_artifacts(session, single)
+        if single.state != SequenceState.READY:
+            enqueue_pending(session, single)
+        created.append(single)
+
+    return [_sequence_out(session, s) for s in created]
+
+
 @router.post("/sequences/regroup", response_model=schemas.SequenceOut)
 def regroup(payload: schemas.RegroupRequest, session: Session = Depends(get_session)) -> schemas.SequenceOut:
     """Join clips into a single sequence by hand.
@@ -554,6 +750,12 @@ def regroup(payload: schemas.RegroupRequest, session: Session = Depends(get_sess
 
     clips.sort(key=lambda c: (as_utc(c.recorded_at) or utcnow(), c.camera_index or 0, c.filename))
 
+    # The folder the joined rush lands in: the one the first part was filed in. A join
+    # is the inverse of a split, which keeps the folder, so this one has to as well or
+    # taking a group apart and putting it back would quietly empty a drawer.
+    first_home = session.get(Sequence, clips[0].sequence_id) if clips[0].sequence_id else None
+    folder_id = first_home.folder_id if first_home is not None else None
+
     touched_ids = {c.sequence_id for c in clips if c.sequence_id}
     for sid in touched_ids:
         old = session.get(Sequence, sid)
@@ -574,6 +776,7 @@ def regroup(payload: schemas.RegroupRequest, session: Session = Depends(get_sess
     seq = Sequence(
         key=key,
         label=payload.label or key,
+        folder_id=folder_id,
         content_hash=sequence_hash([c.fingerprint for c in clips]),
         state=SequenceState.NEW,
         part_count=len(clips),

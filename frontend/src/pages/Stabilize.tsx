@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Download, Trash2, Zap } from "lucide-react";
 import { toast } from "sonner";
 
-import { SequenceList, SequenceWork } from "@/components/SequenceList";
 import { StateBadge } from "@/components/StateBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -61,29 +60,24 @@ export function Stabilize() {
     });
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[17rem_minmax(0,1fr)]">
-      <SequenceList
-        title="Derushed rushes"
-        sequences={withZones}
-        activeId={selected}
-        hrefFor={(sequence) => `/stabilisation/${sequence.id}`}
-        meta={(sequence) => <SequenceWork sequence={sequence} />}
-        empty={
-          <>
-            No zone marked yet. Mark some in{" "}
-            <Link to="/derush" className="underline">
-              Derush
-            </Link>
-            .
-          </>
-        }
-      />
-
+    <div>
       <div className="min-w-0 space-y-4">
         {selected ? (
           <Launcher key={selected} sequenceId={selected} />
         ) : (
-          <p className="pt-2 text-sm text-muted-foreground">Pick a rush.</p>
+          <p className="text-sm text-muted-foreground">
+            {withZones.length === 0 ? (
+              <>
+                No zone marked yet. Mark some in{" "}
+                <Link to="/derush" className="underline">
+                  Derush
+                </Link>
+                .
+              </>
+            ) : (
+              "Pick a rush."
+            )}
+          </p>
         )}
 
         <RendersTable renders={renders ?? []} highlight={selected} />
@@ -157,7 +151,7 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-end gap-3">
           <div className="space-y-1.5">
-            <Label className="text-xs">Template</Label>
+            <Label className="text-sm">Template</Label>
             <Select value={template} onValueChange={setTemplate}>
               <SelectTrigger className="w-64">
                 <SelectValue placeholder="Choose…" />
@@ -172,7 +166,7 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
             </Select>
           </div>
           {chosen?.description && (
-            <p className="max-w-md pb-2 text-xs text-muted-foreground">{chosen.description}</p>
+            <p className="max-w-md pb-2 text-sm text-muted-foreground">{chosen.description}</p>
           )}
         </div>
 
@@ -224,9 +218,9 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
                         </span>
                       </TableCell>
                       <TableCell className="text-sm">{cut.label}</TableCell>
-                      <TableCell className="tnum text-xs">{cut.start_tc}</TableCell>
-                      <TableCell className="tnum text-xs">{cut.end_tc}</TableCell>
-                      <TableCell className="tnum text-right text-xs">
+                      <TableCell className="tnum text-sm">{cut.start_tc}</TableCell>
+                      <TableCell className="tnum text-sm">{cut.end_tc}</TableCell>
+                      <TableCell className="tnum text-right text-sm">
                         {formatDuration(cut.duration_ms)}
                       </TableCell>
                     </TableRow>
@@ -252,7 +246,7 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
           >
             Stabilize the whole sequence
           </Button>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-sm text-muted-foreground">
             {formatDuration(
               cuts
                 .filter((cut) => selection.includes(cut.id))
@@ -307,21 +301,21 @@ function RendersTable({ renders, highlight }: { renders: Render[]; highlight?: n
                   key={render.id}
                   className={cn(render.sequence_id === highlight && "bg-accent/40")}
                 >
-                  <TableCell className="max-w-[18rem] truncate text-xs">
+                  <TableCell className="max-w-[18rem] truncate text-sm">
                     {render.out_name ?? "-"}
                     {render.error && (
-                      <p className="mt-1 line-clamp-2 text-xs text-red-400">{render.error}</p>
+                      <p className="mt-1 line-clamp-2 text-sm text-red-400">{render.error}</p>
                     )}
                   </TableCell>
                   <TableCell>
                     <Link
                       to={`/stabilisation/${render.sequence_id}`}
-                      className="text-xs hover:underline"
+                      className="text-sm hover:underline"
                     >
                       {render.sequence_key}
                     </Link>
                   </TableCell>
-                  <TableCell className="text-xs">{render.template}</TableCell>
+                  <TableCell className="text-sm">{render.template}</TableCell>
                   <TableCell>
                     <StateBadge state={render.state} />
                   </TableCell>
@@ -330,25 +324,25 @@ function RendersTable({ renders, highlight }: { renders: Render[]; highlight?: n
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <Progress value={render.progress * 100} className="h-1.5" />
-                          <span className="tnum text-xs text-muted-foreground">
+                          <span className="tnum text-sm text-muted-foreground">
                             {Math.round(render.progress * 100)} %
                           </span>
                         </div>
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-xs text-muted-foreground">
                           {etaLabel(render.progress, render.started_at)}
                         </p>
                       </div>
                     ) : (
-                      <span className="text-xs text-muted-foreground">-</span>
+                      <span className="text-sm text-muted-foreground">-</span>
                     )}
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
+                  <TableCell className="text-sm text-muted-foreground">
                     {render.processing_device ?? "-"}
                   </TableCell>
-                  <TableCell className="tnum text-right text-xs">
+                  <TableCell className="tnum text-right text-sm">
                     {formatBytes(render.size_bytes)}
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
+                  <TableCell className="text-sm text-muted-foreground">
                     {formatDateTime(render.finished_at)}
                   </TableCell>
                   <TableCell>

@@ -24,7 +24,6 @@ import {
 import { toast } from "sonner";
 
 import { GyroChart, PLOT_HEIGHT } from "@/components/GyroChart";
-import { SequenceList, SequenceWork } from "@/components/SequenceList";
 import { StateBadge } from "@/components/StateBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -118,25 +117,19 @@ export function Derush() {
     });
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[17rem_minmax(0,1fr)]">
-      <SequenceList
-        title="Rushes"
-        sequences={usable}
-        activeId={Number.isFinite(sequenceId) ? sequenceId : undefined}
-        hrefFor={(sequence) => `/derush/${sequence.id}`}
-        meta={(sequence) => <SequenceWork sequence={sequence} />}
-        empty={
-          <>
-            No proxy available yet. Go to <Link to="/" className="underline">Import</Link> to merge
-            the rushes.
-          </>
-        }
-      />
-
+    <div>
       {Number.isFinite(sequenceId) ? (
         <Editor key={sequenceId} sequenceId={sequenceId} />
       ) : (
-        <p className="pt-2 text-sm text-muted-foreground">Pick a rush.</p>
+        <p className="text-sm text-muted-foreground">
+          {usable.length === 0 ? (
+            <>
+              No proxy yet. Import rushes from <Link to="/" className="underline">Import</Link>.
+            </>
+          ) : (
+            "Pick a rush."
+          )}
+        </p>
       )}
     </div>
   );
@@ -440,7 +433,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
       <div className="flex flex-wrap items-center gap-3">
         <RushIdentity sequence={sequence} />
         <StateBadge state={sequence.state} />
-        <span className="text-xs text-muted-foreground">
+        <span className="text-sm text-muted-foreground">
           {sequence.width}×{sequence.height} · {sequence.fps.toFixed(3)} fps ·{" "}
           {formatDuration(sequence.duration_ms)} · {sequence.frame_count} frames ·{" "}
           <span title={sequence.clips.map((clip) => clip.filename).join("\n")}>
@@ -606,7 +599,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
                       </div>
                     ))}
 
-                    <span className="pointer-events-none absolute left-1.5 truncate text-[10px] font-medium text-primary/90"
+                    <span className="pointer-events-none absolute left-1.5 truncate text-xs font-medium text-primary/90"
                       style={{ top: BAR_HEIGHT + 2 }}
                     >
                       {cut.label}
@@ -663,7 +656,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
 
             <span className="tnum ml-2 text-sm">
               {formatTimecode(frame, fpsNum, fpsDen)}
-              <span className="ml-2 text-xs text-muted-foreground">#{frame}</span>
+              <span className="ml-2 text-sm text-muted-foreground">#{frame}</span>
             </span>
 
             <div className="ml-auto flex items-center gap-2">
@@ -686,7 +679,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
 
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="secondary" onClick={() => setMarkIn(frame)}>
-              Start here <kbd className="ml-1 text-[10px] opacity-60">I</kbd>
+              Start here <kbd className="ml-1 text-xs opacity-60">I</kbd>
             </Button>
             <Button
               size="sm"
@@ -697,15 +690,15 @@ function Editor({ sequenceId }: { sequenceId: number }) {
               }
             >
               <Scissors className="h-4 w-4" />
-              Keep up to here <kbd className="ml-1 text-[10px] opacity-60">O</kbd>
+              Keep up to here <kbd className="ml-1 text-xs opacity-60">O</kbd>
             </Button>
             {markIn !== null && (
-              <span className="tnum text-xs text-amber-400">
+              <span className="tnum text-sm text-amber-400">
                 start set at {formatTimecode(markIn, fpsNum, fpsDen)}
               </span>
             )}
             <div className="ml-auto flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">
+              <span className="text-sm text-muted-foreground">
                 {cuts.length} zone{cuts.length > 1 ? "s" : ""} ·{" "}
                 {formatDuration((keptFrames * 1000 * fpsDen) / (fpsNum || 1))} kept
               </span>

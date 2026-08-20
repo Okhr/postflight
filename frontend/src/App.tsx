@@ -4,6 +4,7 @@ import { Layout } from "@/components/Layout";
 import { Color } from "@/pages/Color";
 import { Derush } from "@/pages/Derush";
 import { Import } from "@/pages/Import";
+import { Merge } from "@/pages/Merge";
 import { Stabilize } from "@/pages/Stabilize";
 
 export default function App() {
@@ -11,6 +12,7 @@ export default function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route path="/" element={<Import />} />
+        <Route path="/merge" element={<Merge />} />
         <Route path="/derush" element={<Derush />} />
         <Route path="/derush/:id" element={<Derush />} />
         <Route path="/stabilisation" element={<Stabilize />} />

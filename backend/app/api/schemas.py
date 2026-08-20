@@ -75,6 +75,7 @@ class SequenceOut(BaseSchema):
     key: str
     label: str
     color: str = ""
+    folder_id: int | None = None
     state: str
     part_count: int
     width: int
@@ -137,6 +138,34 @@ class RegroupRequest(BaseSchema):
     sequence_ids: list[int] = Field(default_factory=list)
     label: str | None = None
     force: bool = False
+
+
+class FolderOut(BaseSchema):
+    id: int
+    name: str
+    color: str = ""
+    parent_id: int | None = None
+    # Rushes filed directly here, not counting those in a child folder: a parent
+    # showing the total would double-count what the child already shows.
+    sequence_count: int = 0
+
+
+class FolderIn(BaseSchema):
+    name: str = Field(min_length=1, max_length=120)
+    parent_id: int | None = None
+
+
+class FolderPatch(BaseSchema):
+    """Absent means unchanged, which is why every field is optional.
+
+    `parent_id` has to tell "move it to the root" apart from "leave it where it is",
+    and both look like null here, so the route reads `model_fields_set` rather than
+    the value.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    color: str | None = None
+    parent_id: int | None = None
 
 
 class GradeOut(BaseSchema):

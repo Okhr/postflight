@@ -197,7 +197,7 @@ export function GyroChart({
   if (isLoading) {
     return (
       <p
-        className="flex items-center justify-center text-xs text-muted-foreground"
+        className="flex items-center justify-center text-sm text-muted-foreground"
         style={{ height: PLOT_HEIGHT }}
       >
         Reading telemetry…
@@ -207,7 +207,7 @@ export function GyroChart({
   if (error || !data || !active) {
     return (
       <p
-        className="flex items-center justify-center text-xs text-muted-foreground"
+        className="flex items-center justify-center text-sm text-muted-foreground"
         style={{ height: PLOT_HEIGHT }}
       >
         No gyro chart: {error instanceof Error ? error.message : "unavailable"}
@@ -286,7 +286,7 @@ export function GyroChart({
           />
         )}
 
-        <span className="pointer-events-none absolute left-1 top-0.5 text-[10px] text-muted-foreground">
+        <span className="pointer-events-none absolute left-1 top-0.5 text-xs text-muted-foreground">
           ±{bound} {active.unit}
         </span>
       </div>
@@ -295,7 +295,7 @@ export function GyroChart({
           a press into a scrub, so without stopping here, clicking a view switch or
           an axis toggle would also drag the playhead to the button's x position. */}
       <div
-        className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground"
+        className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
         onPointerDown={(event) => event.stopPropagation()}
       >
         {offered.length > 1 && (
@@ -306,7 +306,7 @@ export function GyroChart({
                 type="button"
                 onClick={() => setPicked(key)}
                 className={cn(
-                  "rounded px-1.5 py-0.5 text-[11px] transition-colors",
+                  "rounded px-1.5 py-0.5 text-xs transition-colors",
                   key === activeKey
                     ? "bg-secondary text-secondary-foreground"
                     : "hover:text-foreground",

@@ -670,6 +670,37 @@ Conséquences à ne pas oublier :
   démarrage, pas à la construction : la VM sans GPU et le poste à RTX 3090 font
   tourner les mêmes octets.
 
+## L'interface : une barre latérale, et une page par geste
+
+Refonte du 2026-08-20. La barre de gauche porte quatre choses, dans cet ordre : le nom,
+le compte de workers (cliquable, le détail des capacités est dans un dialogue et non
+plus dans une infobulle), l'arborescence des rushes, puis les cinq pages. shadcn de
+base uniquement, `dropdown-menu` ajouté pour les actions par ligne.
+
+**Les dossiers vont à deux niveaux, pas plus.** Un site, et une sortie dedans. La règle
+vit dans l'API et pas dans le modèle : une contrainte sur une table qui se référence
+elle-même ne voit pas le grand-parent. Un dossier ne contient aucune image, donc le
+supprimer ne perd rien et ce qu'il tenait revient à la racine. La couleur est **tirée au
+sort à la création** : nommer le dossier est la seule chose qui vaille une question.
+
+**Le rush sélectionné est dans l'URL**, `/derush/12` ou `/stabilisation/12`, et il suit
+quand on change d'étape. Attention : `useParams` dans l'élément d'une route parente ne
+voit pas le `:id` de l'enfant, il rend le match de la route parente. D'où
+`lib/routing.ts`, qui lit le chemin. La page couleur ne prend pas de rush, son `:id` est
+un rendu.
+
+**Une page merge, et c'est elle qui porte le groupage.** Elle montre l'écart entre la
+fin d'un rush et le début du suivant, ce qui est exactement ce que le chaînage
+automatique lit : sous la seconde en ambre, on voit d'un coup d'œil deux parts qui vont
+ensemble. Joindre à la main et dégrouper sont là, et la page import a perdu ses cases à
+cocher, qui faisaient le même travail deux fois.
+
+**Dégrouper redonne une séquence à chaque part tout de suite**, jamais des clips
+libres : des clips contigus sans séquence sont précisément ce que le scan regroupe, donc
+les lâcher remettrait la fusion au tic suivant. Et **joindre garde le dossier de la
+première part**, parce que dégrouper le garde : mesuré le 2026-08-20, ça ne le gardait
+pas, et défaire puis refaire un groupe vidait le dossier sans rien dire.
+
 ## Conventions
 
 - Les marks de derush sont stockés en **numéros de frame**, jamais en ms : à

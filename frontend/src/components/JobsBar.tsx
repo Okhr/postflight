@@ -28,7 +28,7 @@ export function JobsBar() {
       <div className="mx-auto max-w-7xl space-y-2 px-4 py-3">
         {running.map((job) => (
           <div key={job.id} className="space-y-1">
-            <div className="flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center justify-between gap-3 text-sm">
               <span className="flex items-center gap-2">
                 <StateBadge state={job.state} />
                 <span className="font-medium">{KIND_LABELS[job.kind] ?? job.kind}</span>
@@ -45,7 +45,7 @@ export function JobsBar() {
           </div>
         ))}
         {queued > 0 && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             {queued} job{queued > 1 ? "s" : ""} queued
           </p>
         )}

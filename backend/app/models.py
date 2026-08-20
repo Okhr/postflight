@@ -67,6 +67,27 @@ class GradeState(str, enum.Enum):
 # Tables
 # --------------------------------------------------------------------------- #
 
+class Folder(SQLModel, table=True):
+    """A drawer to put rushes in, and nothing more.
+
+    Two levels at most: a folder with a parent cannot have children. Deep trees are
+    a filing system, and what a season of flying needs is a place per outing under a
+    place per site. The nesting rule lives in the API, not here, because a check
+    constraint on a self-referencing table cannot see the grandparent.
+    """
+
+    __tablename__ = "folder"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    # A palette token, like a rush's colour: the API stores a word, the front decides
+    # what it looks like. Drawn at random on creation so a new folder is told apart
+    # from its neighbours without anyone having to choose.
+    color: str = ""
+    parent_id: Optional[int] = Field(default=None, foreign_key="folder.id", index=True)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class Sequence(SQLModel, table=True):
     """One continuous recording, possibly split across several files.
 
@@ -84,6 +105,9 @@ class Sequence(SQLModel, table=True):
     # A palette token, not a CSS colour: the front decides how it looks.
     color: str = ""
     state: SequenceState = Field(default=SequenceState.NEW, index=True)
+    # Which drawer it sits in. None is not an error state: a rush belongs nowhere
+    # until someone files it, and that is most of them most of the time.
+    folder_id: Optional[int] = Field(default=None, foreign_key="folder.id", index=True)
 
     # Content identity: hash of the ordered part fingerprints. The same parts in
     # the same order always merge to the same bytes, so an existing merged file can

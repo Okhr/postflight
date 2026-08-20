@@ -256,7 +256,7 @@ export function UploadZone() {
           <p className="text-sm">
             Drop files here, or <span className="underline">pick them</span>
           </p>
-          <p className="text-xs text-muted-foreground">{ACCEPTED.join(" · ")}</p>
+          <p className="text-sm text-muted-foreground">{ACCEPTED.join(" · ")}</p>
           <input
             ref={inputRef}
             type="file"
@@ -272,7 +272,7 @@ export function UploadZone() {
 
         {items.length > 0 && (
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <div className="flex items-center justify-between text-sm text-muted-foreground">
               <span>
                 {items.filter((it) => it.status === "done").length}/{moving.length} uploaded ·{" "}
                 {formatBytes(doneBytes)} / {formatBytes(totalBytes)}
@@ -315,7 +315,7 @@ export function UploadZone() {
                   <span className="min-w-0 flex-1">
                     <span
                       className={cn(
-                        "block truncate text-xs",
+                        "block truncate text-sm",
                         item.status === "skipped" && "text-muted-foreground line-through",
                       )}
                     >
@@ -325,14 +325,14 @@ export function UploadZone() {
                       <Progress value={item.progress * 100} className="mt-1 h-1" />
                     )}
                     {item.status === "skipped" && (
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-sm text-muted-foreground">
                         already imported
                         {item.known && item.known !== item.file.name && ` as ${item.known}`}
                       </span>
                     )}
-                    {item.error && <span className="text-xs text-red-400">{item.error}</span>}
+                    {item.error && <span className="text-sm text-red-400">{item.error}</span>}
                   </span>
-                  <span className="tnum shrink-0 text-xs text-muted-foreground">
+                  <span className="tnum shrink-0 text-sm text-muted-foreground">
                     {item.status === "uploading" && `${Math.round(item.progress * 100)} %`}
                     {item.status === "checking" && "checking…"}
                     {item.status !== "uploading" &&
@@ -344,7 +344,7 @@ export function UploadZone() {
             </ul>
 
             {pending.length > 0 && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 Keep this tab open while uploading.
               </p>
             )}
