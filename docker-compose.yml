@@ -1,5 +1,5 @@
-# video-stab stack. Two services out of the same image: the API, which is also the
-# dispatcher and serves the frontend, and a worker that executes the jobs.
+# video-stab stack. Two services, two images out of one Dockerfile: the API, which is
+# also the dispatcher and serves the frontend, and a worker that executes the jobs.
 #
 # The database belongs to the API alone. The worker holds none: it registers over
 # HTTP, asks for a job, and posts back what it measured. That is what lets a second
