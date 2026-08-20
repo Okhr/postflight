@@ -420,8 +420,41 @@ def _folder_out(session: Session, folder: Folder) -> schemas.FolderOut:
         name=folder.name,
         color=folder.color,
         parent_id=folder.parent_id,
+        position=folder.position,
         sequence_count=_count(session, Sequence, folder_id=folder.id),
     )
+
+
+def _siblings(session: Session, parent_id: int | None) -> list[Folder]:
+    """The folders sharing a parent, in the order they are shown."""
+    return list(
+        session.exec(
+            select(Folder)
+            .where(Folder.parent_id == parent_id)
+            .order_by(Folder.position, Folder.id)  # type: ignore[arg-type]
+        ).all()
+    )
+
+
+def _renumber(session: Session, parent_id: int | None) -> None:
+    """Close the gaps in a sibling group, keeping the order it is in."""
+    for rank, sibling in enumerate(_siblings(session, parent_id)):
+        sibling.position = rank
+        session.add(sibling)
+
+
+def _place(session: Session, folder: Folder, index: int) -> None:
+    """Put the folder at `index` among its siblings and renumber them all densely.
+
+    Rebuilding the whole list rather than shifting the neighbours: it is a handful of
+    rows, and it is the version that cannot leave two folders sharing a rank.
+    """
+    others = [f for f in _siblings(session, folder.parent_id) if f.id != folder.id]
+    # An index past the end means last, which is also how "no index given" arrives.
+    others.insert(max(0, min(index, len(others))), folder)
+    for rank, sibling in enumerate(others):
+        sibling.position = rank
+        session.add(sibling)
 
 
 def _get_folder(session: Session, folder_id: int) -> Folder:
@@ -454,7 +487,9 @@ def _check_nesting(session: Session, folder: Folder | None, parent_id: int | Non
 
 @router.get("/folders", response_model=list[schemas.FolderOut])
 def list_folders(session: Session = Depends(get_session)) -> list[schemas.FolderOut]:
-    folders = session.exec(select(Folder).order_by(Folder.name)).all()  # type: ignore[arg-type]
+    folders = session.exec(
+        select(Folder).order_by(Folder.position, Folder.id)  # type: ignore[arg-type]
+    ).all()
     return [_folder_out(session, f) for f in folders]
 
 
@@ -469,6 +504,12 @@ def create_folder(
         parent_id=payload.parent_id,
     )
     session.add(folder)
+    session.flush()
+    # Last among its siblings: a new folder appearing in the middle of an order someone
+    # arranged by hand would be the surprising choice. Through `_place` rather than by
+    # counting the siblings, so creating and moving share one way of assigning a rank,
+    # and the group comes out dense whatever state it was in.
+    _place(session, folder, 10**6)
     session.commit()
     session.refresh(folder)
     return _folder_out(session, folder)
@@ -483,9 +524,23 @@ def update_folder(
         folder.name = payload.name.strip()
     if payload.color is not None:
         folder.color = _color(payload.color)
+    left_behind: int | None = None
+    moved = False
     if "parent_id" in payload.model_fields_set:
         _check_nesting(session, folder, payload.parent_id)
+        moved = folder.parent_id != payload.parent_id
+        left_behind = folder.parent_id
         folder.parent_id = payload.parent_id
+
+    if moved or payload.position is not None:
+        # Always through `_place`, and always renumbering both groups it touched. The
+        # alternative, writing one rank and trusting the rest, is how two siblings end
+        # up sharing one: seen on 2026-08-20 with two root folders both at rank 1. The
+        # list it left has a hole in it too, which the next insertion would land on.
+        _place(session, folder, payload.position if payload.position is not None else 10**6)
+        if moved:
+            _renumber(session, left_behind)
+
     session.add(folder)
     session.commit()
     session.refresh(folder)
@@ -506,11 +561,18 @@ def delete_folder(folder_id: int, session: Session = Depends(get_session)) -> di
         sequence.folder_id = None
         session.add(sequence)
         freed += 1
-    orphans = 0
-    for child in session.exec(select(Folder).where(Folder.parent_id == folder.id)).all():
+    # The children come back to the root, after whatever is already there, and the
+    # whole root is renumbered: the rank the deleted folder held has to close up, or
+    # two folders end up sharing one. Their parent is cleared before the delete, since
+    # foreign keys are on and a row still pointing at it would refuse to go.
+    children = _siblings(session, folder.id)
+    orphans = len(children)
+    roots = [f for f in _siblings(session, None) if f.id != folder.id]
+    for child in children:
         child.parent_id = None
-        session.add(child)
-        orphans += 1
+    for rank, sibling in enumerate([*roots, *children]):
+        sibling.position = rank
+        session.add(sibling)
     session.delete(folder)
     session.commit()
     return {"deleted": folder.name, "rushes_freed": freed, "folders_freed": orphans}

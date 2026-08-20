@@ -145,6 +145,7 @@ class FolderOut(BaseSchema):
     name: str
     color: str = ""
     parent_id: int | None = None
+    position: int = 0
     # Rushes filed directly here, not counting those in a child folder: a parent
     # showing the total would double-count what the child already shows.
     sequence_count: int = 0
@@ -169,6 +170,9 @@ class FolderPatch(BaseSchema):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     color: str | None = None
     parent_id: int | None = None
+    # Where to land among the siblings it ends up with, counted from 0. Out of range is
+    # clamped rather than refused: a drop past the last row means last.
+    position: int | None = Field(default=None, ge=0)
 
 
 class GradeOut(BaseSchema):

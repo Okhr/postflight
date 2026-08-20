@@ -680,19 +680,41 @@ base uniquement, `dropdown-menu` ajouté pour les actions par ligne.
 **Les dossiers vont à deux niveaux, pas plus.** Un site, et une sortie dedans. La règle
 vit dans l'API et pas dans le modèle : une contrainte sur une table qui se référence
 elle-même ne voit pas le grand-parent. Un dossier ne contient aucune image, donc le
-supprimer ne perd rien et ce qu'il tenait revient à la racine. La couleur se choisit à
+supprimer ne perd rien : ses rushes retournent dans Global, ses sous-dossiers à la
+racine. La couleur se choisit à
 la création, parmi les six jetons de `lib/colors.ts`, avec un tirage au sort en
 présélection ; l'API **refuse** un jeton hors palette, parce que le front décide de son
 apparence et qu'un mot qu'il ne connaît pas donnerait une pastille invisible.
 
-**On déplace au glisser-déposer**, un rush comme un sous-dossier, et le corps de
-l'arborescence est le chemin de retour vers la racine. Deux détails qui ont demandé de
-regarder : `dataTransfer` **cache ses valeurs pendant `dragover`**, or c'est là qu'une
-cible doit décider si elle s'allume, donc ce qui est soulevé vit dans un état React et
-pas dans l'événement ; et une ligne qui accepte le lâcher doit arrêter la propagation,
-sinon le conteneur reçoit aussi le drop et défait le classement dans la même seconde.
-Les trois lâchers illégaux (un dossier dans lui-même, dans un enfant, ou un dossier qui
-a des enfants dans un autre) ne s'allument pas, et le glisser ne change rien.
+**Un rush est toujours dans un dossier.** Celui par défaut s'appelle **Global** et
+n'est pas une ligne en base : c'est ce à quoi ressemble `folder_id = null`. Donc il n'y
+a rien à protéger contre un renommage, un recoloriage, une suppression ou un glisser,
+puisque aucun de ces gestes n'existe pour lui. Toujours premier, et gris, parce que
+c'est le seul dossier dont personne n'a choisi la couleur.
+
+**On déplace au glisser-déposer**, un rush comme un sous-dossier, et **réordonner se
+distingue d'imbriquer par la cible** : lâcher sur une ligne veut dire « dedans », lâcher
+sur l'interstice entre deux lignes veut dire « à côté ». Les interstices n'existent que
+pendant le glisser d'un dossier. Les rangs (`folder.position`) sont **recalculés
+densément à chaque écriture**, création comprise : incrémenter n'est juste que si l'état
+l'était déjà, et un trou laissé par un départ est précisément ce sur quoi la prochaine
+insertion atterrit. Un rang n'a besoin d'être unique **qu'entre frères**.
+
+Trois pièges du glisser-déposer HTML5, tous mesurés le 2026-08-20 :
+
+- `dataTransfer` **cache ses valeurs pendant `dragover`**, or c'est là qu'une cible doit
+  décider si elle s'allume. Ce qui est soulevé vit donc dans un état React.
+- **`dragleave` se déclenche sur un parent dès que le pointeur entre dans son enfant.**
+  Le surlignage s'éteignait donc à l'instant où il s'allumait, alors que le lâcher
+  marchait, parce que `dragover` remonte de l'enfant. On ne l'éteint que si
+  `relatedTarget` n'est pas contenu dans la cible.
+- **`dragenter` doit être accepté aussi**, pas seulement `dragover` : c'est l'entrée qui
+  déclare l'élément zone de dépôt, et un pointeur qui entre puis s'arrête ne reçoit
+  jamais de `dragover`. La ligne d'insertion restait noire sous un lâcher qui marchait.
+
+Les lâchers illégaux ne s'allument pas et ne changent rien : un dossier dans lui-même,
+dans un enfant, un dossier qui a des enfants dans un autre, ou n'importe quel dossier
+dans Global.
 
 **Le rush sélectionné est dans l'URL**, `/derush/12` ou `/stabilisation/12`, et il suit
 quand on change d'étape. Attention : `useParams` dans l'élément d'une route parente ne
@@ -711,6 +733,27 @@ libres : des clips contigus sans séquence sont précisément ce que le scan reg
 les lâcher remettrait la fusion au tic suivant. Et **joindre garde le dossier de la
 première part**, parce que dégrouper le garde : mesuré le 2026-08-20, ça ne le gardait
 pas, et défaire puis refaire un groupe vidait le dossier sans rien dire.
+
+## L'auto-migration doit remplir, pas seulement ajouter
+
+`db.py` compare le schéma déclaré à la base et ajoute les colonnes manquantes en
+`ALTER TABLE ADD COLUMN`, sans Alembic. Le piège coûte un démarrage : **sans clause
+`DEFAULT`, SQLite remplit les lignes existantes avec `NULL`**, et une colonne que le
+modèle déclare entière se relit alors à `None`. L'échec ne se voit pas à l'écriture mais
+à la sortie, en `ValidationError` sur le schéma de réponse, donc en 500 sur une route
+qui n'a rien à se reprocher. Vu le 2026-08-20 avec `folder.position`.
+
+Corrigé en deux temps : la colonne est créée avec son défaut scalaire, **et** un passage
+de remplissage met à jour les `NULL` restants de toute colonne non nullable qui a un
+défaut constant, ce qui répare une base déjà abîmée par la version d'avant, au simple
+redémarrage.
+
+Deux détails : le littéral est rendu par SQLAlchemy en le liant **au type de la
+colonne**, sinon un membre d'enum n'a aucun rendu (`No literal value renderer is
+available for literal value <GradeState.DRAFT: 'draft'>`, qui empêchait l'API de
+démarrer) et une chaîne partirait sans guillemets. Et un défaut **appelable**
+(`created_at`) ne peut pas s'écrire en DDL : la colonne reste nulle sur les lignes
+antérieures, et c'est assumé.
 
 ## Conventions
 

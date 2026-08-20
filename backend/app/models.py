@@ -85,6 +85,10 @@ class Folder(SQLModel, table=True):
     # from its neighbours without anyone having to choose.
     color: str = ""
     parent_id: Optional[int] = Field(default=None, foreign_key="folder.id", index=True)
+    # Rank among its siblings, so the tree keeps the order they were arranged in. Held
+    # dense (0..n-1) and rewritten on every move: with a handful of folders that costs
+    # nothing, and it spares the drift a fractional index accumulates.
+    position: int = 0
     created_at: datetime = Field(default_factory=utcnow)
 
 

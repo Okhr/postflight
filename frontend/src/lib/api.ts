@@ -54,6 +54,8 @@ export interface Folder {
   /** Palette token from `lib/colors`, drawn when the folder is created. */
   color: string;
   parent_id: number | null;
+  /** Rank among its siblings, dense from 0. */
+  position: number;
   /** Rushes filed directly here, not counting a child folder's. */
   sequence_count: number;
 }
@@ -357,7 +359,13 @@ export const api = {
    *  is a move to the root, which is why it has to be spelled out to happen. */
   updateFolder: (
     id: number,
-    changes: { name?: string; color?: string; parentId?: number | null },
+    changes: {
+      name?: string;
+      color?: string;
+      parentId?: number | null;
+      /** Rank to land on among the siblings it ends up with. Past the last is last. */
+      position?: number;
+    },
   ) =>
     request<Folder>(`/folders/${id}`, {
       method: "PATCH",
@@ -365,6 +373,7 @@ export const api = {
         ...(changes.name !== undefined && { name: changes.name }),
         ...(changes.color !== undefined && { color: changes.color }),
         ...(changes.parentId !== undefined && { parent_id: changes.parentId }),
+        ...(changes.position !== undefined && { position: changes.position }),
       }),
     }),
   /** Nothing is lost: what was inside comes back to the root. */
