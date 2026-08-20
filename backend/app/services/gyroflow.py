@@ -1,14 +1,14 @@
 """Driving Gyroflow through its CLI.
 
 The discovery that simplifies everything: **`--preset` accepts a partial project
-JSON and it carries `trim_ranges_ms`**. Verified — a preset holding
+JSON and it carries `trim_ranges_ms`**. Verified: a preset holding
 `"trim_ranges_ms": [[100000, 110000]]` renders exactly 599 frames (10 s at 59.94).
 So there is no need to generate a full `.gyroflow` then patch it: a template plus
 the cut bounds, in a single command.
 
 Also measured: setting `output_width`/`output_height` is enough to change format.
 Asking for 1080x1920 from a 3840x2880 source makes Gyroflow derive a 1620x2880
-crop on its own — no need to touch the lens profile's `output_dimension`.
+crop on its own, with no need to touch the lens profile's `output_dimension`.
 """
 
 from __future__ import annotations

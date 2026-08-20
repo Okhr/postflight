@@ -298,7 +298,7 @@ async def upload_check(
 ) -> schemas.UploadCheckOut:
     """Tell whether a file is already imported, without sending it.
 
-    The body carries only the probe bytes the fingerprint needs — head chunk
+    The body carries only the probe bytes the fingerprint needs: head chunk
     followed by tail chunk, both derivable from `size`, 2 MiB at most. Sending
     4 GB only to have the scanner drop it in `.duplicates/` wastes the upload and
     twice the disk.
@@ -328,7 +328,7 @@ async def upload(filename: str, request: Request) -> schemas.UploadOut:
     Deliberately not multipart: FastAPI parses the whole body before calling the
     view, so a 4 GB rush would first be written in full to a temporary file and
     then copied over. Here we write straight to the destination, under a
-    `.partial` suffix the scanner ignores, and rename at the end — the file only
+    `.partial` suffix the scanner ignores, and rename at the end, so the file only
     looks complete once it is.
     """
     safe_name = Path(filename).name
@@ -470,7 +470,7 @@ def delete_sequence(
     filmstrip) stay: the derived ones carry the content hash in their name, so
     regrouping the same parts finds them again and skips the reprocessing
     entirely. `keep_derived=false` is the real cleanup, `keep_raw=false` the full
-    purge. Renders in `out/` always go — they belong to this sequence's cuts,
+    purge. Renders in `out/` always go: they belong to this sequence's cuts,
     which are being deleted.
     """
     seq = _get_sequence(session, sequence_id)
@@ -522,7 +522,7 @@ def regroup(payload: schemas.RegroupRequest, session: Session = Depends(get_sess
     Useful when a part showed up after its sequence had already been merged:
     automatic detection never touches a sequence that has been produced.
 
-    The caller names either clips or sequences whose parts should be joined — the
+    The caller names either clips or sequences whose parts should be joined. The
     UI only knows about sequences.
     """
     clips = [session.get(Clip, cid) for cid in payload.clip_ids]
@@ -996,7 +996,7 @@ async def get_gyro_chart(
     """Downsampled telemetry for the chart under the derush timeline.
 
     Built during the proxy step, but generated here on first request for
-    sequences that predate the feature — a dozen seconds, once. A chart written by
+    sequences that predate the feature, a dozen seconds, once. A chart written by
     an older version is rebuilt the same way rather than served in a shape the
     front no longer reads.
     """

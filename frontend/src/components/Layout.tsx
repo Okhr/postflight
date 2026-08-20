@@ -69,8 +69,8 @@ function WorkerLine({ worker }: { worker: WorkerInfo }) {
       {speeds.length > 0 && <p>speed: {speeds.join(" · ")}</p>}
       <p className="text-muted-foreground">
         {worker.shares_data
-          ? "reads the dispatcher's volume, so nothing has to travel"
-          : `own volume${link ? `, link ${Math.round(link)} MB/s` : ""}`}
+          ? "shared volume"
+          : `own volume${link ? ` · ${Math.round(link)} MB/s link` : ""}`}
       </p>
       {refused.length > 0 && (
         <p className="text-muted-foreground">
@@ -167,11 +167,7 @@ export function Layout() {
                   </TooltipTrigger>
                   <TooltipContent className="max-w-sm">
                     {workers.length === 0 ? (
-                      <p>
-                        Nothing has registered yet. A worker announces itself to this API
-                        on startup, so check that one is running and that VS_API_URL
-                        points here.
-                      </p>
+                      <p>No worker has registered. Check VS_API_URL.</p>
                     ) : (
                       workers.map((worker) => <WorkerLine key={worker.id} worker={worker} />)
                     )}

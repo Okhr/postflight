@@ -3,7 +3,7 @@
  *
  * A fixed palette stored as a token, not a CSS value: the API keeps a word, the
  * front decides what it looks like. Six hues, told apart at a glance even in a
- * list of thirty — and the classes are spelled out here so Tailwind keeps them.
+ * list of thirty, and the classes are spelled out here so Tailwind keeps them.
  */
 export interface RushColor {
   token: string;

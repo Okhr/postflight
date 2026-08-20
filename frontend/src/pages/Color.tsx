@@ -6,7 +6,7 @@ import { toast } from "sonner";
 
 import { StateBadge } from "@/components/StateBadge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -110,16 +110,7 @@ export function Color() {
       {selected ? (
         <Editor key={selected} renderId={selected} render={stabilized.find((r) => r.id === selected)} />
       ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Pick a clip</CardTitle>
-            <CardDescription>
-              Grading writes a new H.264 file next to the stabilized one, which stays untouched.
-              Gyroflow does no colour work, so this is a second encode — measured at 0.7x realtime,
-              against 0.26x had it been HEVC.
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        <p className="pt-2 text-sm text-muted-foreground">Pick a clip.</p>
       )}
     </div>
   );
@@ -273,14 +264,11 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
                 variant={params.auto_levels ? "default" : "outline"}
                 className="w-full"
                 onClick={() => set("auto_levels", !params.auto_levels)}
+                title="Stretches the unused luma range of this clip. A side that already clips is left alone."
               >
                 <Wand2 className="h-4 w-4" />
                 Auto levels
               </Button>
-              <p className="text-[11px] text-muted-foreground">
-                Reclaims the unused range measured on this clip, luma only — no white balance is
-                invented. A side that already clips is left alone.
-              </p>
 
               {CONTROLS.map((control) => (
                 <div key={control.key} className="space-y-1">
@@ -337,7 +325,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
               </Button>
               {neutral && (
                 <p className="text-[11px] text-muted-foreground">
-                  Nothing to apply: a neutral look would only re-encode the clip and cost quality.
+                  Neutral look, nothing to apply.
                 </p>
               )}
             </CardContent>
@@ -349,7 +337,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
             </CardHeader>
             <CardContent className="space-y-1 text-[11px] text-muted-foreground">
               <p>
-                Blacks at {analysis.y_low ?? "—"}, whites at {analysis.y_high ?? "—"} on a 64–940
+                Blacks at {analysis.y_low ?? "-"}, whites at {analysis.y_high ?? "-"} on a 64-940
                 scale
               </p>
               <p>
@@ -369,9 +357,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
                 </p>
               )}
               {analysis.looks_log && (
-                <p className="text-amber-400">
-                  Looks like a log profile — expect to raise contrast and saturation.
-                </p>
+                <p className="text-amber-400">Log profile</p>
               )}
             </CardContent>
           </Card>

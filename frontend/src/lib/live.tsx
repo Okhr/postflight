@@ -4,7 +4,7 @@
  * The API already streams the queued and running jobs over SSE; this puts that
  * one connection at the root and makes it drive the rest of the UI. When a job
  * appears, changes state or finishes, whatever is on screen describing the
- * pipeline is stale — so we invalidate it and it catches up at once, on any tab.
+ * pipeline is stale, so we invalidate it and it catches up at once, on any tab.
  *
  * Progress arrives every second too, but progress alone does not make a list
  * stale: we compare the identities and states only, or every bar tick would
@@ -53,7 +53,7 @@ export function LiveJobsProvider({ children }: { children: ReactNode }) {
     };
 
     // No close() on error: EventSource reconnects on its own, whereas closing
-    // here would freeze the UI after a single hiccup — an API restart is enough.
+    // here would freeze the UI after a single hiccup, and an API restart is enough.
     return () => source.close();
   }, [queryClient]);
 

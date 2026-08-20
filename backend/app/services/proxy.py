@@ -16,7 +16,7 @@ which is the lesson of the `scale_vaapi` hang above.
 
 Beware: even VAAPI *decoding* wedged the amdgpu driver on a real 3840x2880
 HEVC 10-bit stream (unkillable ffmpeg, GPU stuck). Hence `VS_HWACCEL=cpu` as the
-recommended default on that hardware — the 1.6x gain is not worth the risk.
+recommended default on that hardware: the 1.6x gain is not worth the risk.
 
 The filmstrip is extracted **from the proxy**, not the master: same picture, ten
 times cheaper to decode.

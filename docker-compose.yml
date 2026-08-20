@@ -60,7 +60,7 @@ services:
     command: ["worker"]
     restart: unless-stopped
     # Docker's default is 10s, then SIGKILL. A proxy or a render runs for minutes,
-    # so the default guaranteed that `compose down` killed ffmpeg mid-flight — which
+    # so the default guaranteed that `compose down` killed ffmpeg mid-flight, which
     # on AMD hardware left the GPU deadlocked on an orphaned VAAPI fence, machine
     # reboot only. The worker forwards SIGTERM to its child and waits; this gives it
     # the room to.

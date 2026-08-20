@@ -6,7 +6,7 @@ interface web. Une image Docker, deux services, déployable sur Portainer.
 ```
 inbox/     dépôt réseau surveillé (dump de la carte SD)
   ↓        ingestion : attente de stabilité de taille, ffprobe, empreinte
-raw/       masters intacts — jamais réencodés ni coupés
+raw/       masters intacts, jamais réencodés ni coupés
   ↓        fusion des parts d'un même vol (mp4_merge, sans perte, gyro conservé)
 merged/    un fichier continu par séquence
   ↓        proxy H.264 lisible dans le navigateur + pellicule
@@ -25,7 +25,7 @@ L'interface suit ces étapes : **1 Import**, **2 Derush**, **3 Stabilize**,
 Un rush DJI porte son gyro dans un flux `djmd` que **ffmpeg ne sait pas
 réécrire** : toute fusion ou coupe faite avec ffmpeg détruit la télémétrie et
 rend la stabilisation impossible. La fusion passe donc par `mp4_merge`, qui
-travaille au niveau des boxes mp4, et **le derush n'est que de la métadonnée** —
+travaille au niveau des boxes mp4, et **le derush n'est que de la métadonnée** :
 c'est Gyroflow qui coupe, pendant qu'il stabilise. Une seule passe lourde,
 uniquement sur les zones gardées, sans intermédiaire de plusieurs gigaoctets.
 
@@ -131,7 +131,7 @@ plusieurs gigaoctets. Compter environ 2x la taille des rushes tant que
 
 1. Vider la carte SD dans `inbox/`, de deux façons au choix :
    - **copie directe** dans le dossier réseau. Le dispatcher scanne toutes les 30 s
-     et n'ingère un fichier qu'après plusieurs scans à taille identique —
+     et n'ingère un fichier qu'après plusieurs scans à taille identique,
      inotify n'est pas fiable sur NFS/SMB et un rush de 4 Go met du temps à
      arriver.
    - **glisser-déposer** dans la zone du tableau de bord. Les fichiers partent
@@ -155,7 +155,7 @@ plusieurs gigaoctets. Compter environ 2x la taille des rushes tant que
    sélecteur de vitesse. `I` pose un début, `O` ferme la zone, `ctrl+S`
    enregistre. Sous le lecteur, la pellicule et la **courbe gyro** (vitesse
    angulaire X/Y/Z en °/s) partagent la même timeline, zoomable à la molette
-   jusqu'à ×24 — c'est là qu'on repère les passages calmes et les secousses.
+   jusqu'à ×24, c'est là qu'on repère les passages calmes et les secousses.
 4. Choisir un template et lancer le rendu. Un fichier par zone.
 5. Étalonner si besoin : six curseurs, un auto-niveaux mesuré sur le clip, un
    aperçu image fixe qui traverse exactement les filtres du rendu final. La
@@ -180,7 +180,7 @@ généré est conservé dans `projects/` : chaque rendu est rejouable à l'ident
 Chaque séquence porte le hash de ses parts (empreintes ordonnées), et ce hash est
 dans le nom des fichiers produits : `DJI_..._0044_D__934e00ad7607.mp4`. Une
 séquence supprimée puis reformée retrouve donc sa fusion et son proxy sur le
-disque et repasse à *prête* sans rien réencoder — mesuré à 186 ms au lieu de sept
+disque et repasse à *prête* sans rien réencoder, mesuré à 186 ms au lieu de sept
 minutes. Même principe pour l'étalonnage, dont le fichier porte en plus le hash du
 look. C'est aussi pourquoi supprimer une séquence ne supprime que sa ligne en
 base : `keep_derived=false` pour effacer les dérivés, `keep_raw=false` pour tout

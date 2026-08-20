@@ -83,15 +83,7 @@ export function Stabilize() {
         {selected ? (
           <Launcher key={selected} sequenceId={selected} />
         ) : (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Pick a rush</CardTitle>
-              <CardDescription>
-                Gyroflow cuts and stabilizes in a single pass, on the kept zones only: one output
-                file per zone, no multi-gigabyte intermediate.
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <p className="pt-2 text-sm text-muted-foreground">Pick a rush.</p>
         )}
 
         <RendersTable renders={renders ?? []} highlight={selected} />
@@ -290,10 +282,6 @@ function RendersTable({ renders, highlight }: { renders: Render[]; highlight?: n
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-base">Renders ({renders.length})</CardTitle>
-        <CardDescription>
-          Output goes to <code>out/</code>. The matching Gyroflow project is kept in{" "}
-          <code>projects/</code>, so any render can be replayed exactly.
-        </CardDescription>
       </CardHeader>
       <CardContent>
         {renders.length === 0 ? (
@@ -320,7 +308,7 @@ function RendersTable({ renders, highlight }: { renders: Render[]; highlight?: n
                   className={cn(render.sequence_id === highlight && "bg-accent/40")}
                 >
                   <TableCell className="max-w-[18rem] truncate text-xs">
-                    {render.out_name ?? "—"}
+                    {render.out_name ?? "-"}
                     {render.error && (
                       <p className="mt-1 line-clamp-2 text-xs text-red-400">{render.error}</p>
                     )}
@@ -351,11 +339,11 @@ function RendersTable({ renders, highlight }: { renders: Render[]; highlight?: n
                         </p>
                       </div>
                     ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
+                      <span className="text-xs text-muted-foreground">-</span>
                     )}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {render.processing_device ?? "—"}
+                    {render.processing_device ?? "-"}
                   </TableCell>
                   <TableCell className="tnum text-right text-xs">
                     {formatBytes(render.size_bytes)}

@@ -38,7 +38,7 @@ export function formatDuration(ms: number): string {
 }
 
 export function formatBytes(bytes: number | null | undefined): string {
-  if (!bytes) return "—";
+  if (!bytes) return "-";
   const units = ["o", "Ko", "Mo", "Go", "To"];
   let value = bytes;
   let unit = 0;
@@ -50,9 +50,9 @@ export function formatBytes(bytes: number | null | undefined): string {
 }
 
 export function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "—";
+  if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleString("fr-FR", {
     day: "2-digit",
     month: "2-digit",
@@ -63,7 +63,7 @@ export function formatDateTime(iso: string | null | undefined): string {
 }
 
 /**
- * Rough ETA from progress and elapsed time — a plain linear extrapolation.
+ * Rough ETA from progress and elapsed time, a plain linear extrapolation.
  *
  * Good enough because the two long steps advance almost linearly: ffmpeg walks
  * the frames at a steady rate, and so does Gyroflow. Below 2% it stays quiet,

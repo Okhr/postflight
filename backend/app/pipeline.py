@@ -293,7 +293,7 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
 
     Sequences still in `NEW` are torn down and rebuilt: nothing has been produced
     from them yet, and a late-arriving part must be able to join its group. A
-    sequence already merged is never touched automatically — the late part will
+    sequence already merged is never touched automatically: the late part will
     form its own sequence, to be joined by hand if needed.
     """
     unassigned = session.exec(
@@ -302,7 +302,7 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
     if not unassigned:
         # Nothing new to place: above all, do not tear down the pending groups.
         # Otherwise, while the worker is busy elsewhere, every scanner tick
-        # renumbers them and stacks one more merge — the queue grows forever.
+        # renumbers them and stacks one more merge, and the queue grows forever.
         return []
 
     # A merge already running is not pulled out from under the worker.
@@ -388,8 +388,8 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
 def adopt_existing_artifacts(session: Session, sequence: Sequence) -> bool:
     """Pick up what a previous run already produced for this content hash.
 
-    The point of naming files after the hash: a sequence torn down and rebuilt —
-    a late part, a manual join, a deletion followed by a rescan — finds its merged
+    The point of naming files after the hash: a sequence torn down and rebuilt (a
+    late part, a manual join, a deletion followed by a rescan) finds its merged
     file and its proxy still on disk and skips straight to the end. Merging 4 GB
     and encoding a proxy at 0.6x realtime is not worth redoing for bytes that are
     already there.

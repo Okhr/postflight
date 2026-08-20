@@ -1,6 +1,6 @@
 """Colour grading of a stabilized clip, into a separate file.
 
-Gyroflow does no colour work at all — its project holds `fov_scale`,
+Gyroflow does no colour work at all. Its project holds `fov_scale`,
 `lens_correction_amount`, `background_mode` and friends, and nothing else. So
 grading cannot ride along in the stabilization pass and needs a second encode.
 
@@ -155,7 +155,7 @@ def analyse(source: Path) -> Analysis:
 
     # A log profile keeps its blacks well above legal black and its whites well
     # below legal white, whatever the scene. Measured on this footage: y_low
-    # wanders between 152 and 273 and y_max touches 973, so it is *not* log —
+    # wanders between 152 and 273 and y_max touches 973, so it is *not* log:
     # the check is here for the day the camera is set to D-Log M.
     looks_log = (
         (y_low - LEGAL_BLACK) / LEGAL_SPAN > 0.12
@@ -205,14 +205,14 @@ def build_filters(params: dict, analysis: dict | None = None) -> list[str]:
 
     # Levels first: stretching a clip that sits in the middle of the range gives
     # every later step something to work with. Luma only, so contrast is recovered
-    # without inventing a white balance — a per-channel stretch on a frame that is
+    # without inventing a white balance: a per-channel stretch on a frame that is
     # half sky and half dry grass would turn it blue.
     #
     # `lutyuv` rather than `colorlevels`, which was the obvious candidate and is a
     # trap: colorlevels accepts YUV as well as RGB, and on a YUV frame its red,
     # green and blue points land on Y, U and V. Shifting the black point of chroma,
     # where neutral is the middle of the range and not zero, turns the picture
-    # black. Worse, it only did so *sometimes* — with another RGB filter in the
+    # black. Worse, it only did so *sometimes*: with another RGB filter in the
     # chain, ffmpeg inserted a conversion and the same parameters behaved.
     if values["auto_levels"] and analysis:
         low = max(0.0, (analysis.get("y_low", LEGAL_BLACK) - LEGAL_BLACK) / LEGAL_SPAN)

@@ -3,12 +3,12 @@
 Gyroflow's CLI exports parsed telemetry (`--export-metadata 2:file.json`), which
 is the only sane way in: the DJI `djmd` stream is proprietary, and Gyroflow's own
 telemetry-parser is precisely what knows how to read it. Measured on a 4-minute
-rush: 3.5 s and **61 MB** of JSON — which is why none of that ever reaches the
+rush: 3.5 s and **61 MB** of JSON, which is why none of that ever reaches the
 browser. We boil it down to a few dozen kilobytes here.
 
 DJI does not ship raw IMU samples: `raw_imu` comes back empty and the payload is
 477 083 orientation quaternions at ~1980 Hz. The gyroscope signal is recovered by
-differentiating them — the relative rotation between two consecutive samples,
+differentiating them: the relative rotation between two consecutive samples,
 divided by dt, is the angular velocity a gyroscope would have measured. Cameras
 that do expose raw IMU (GoPro `gpmd`) are read directly instead.
 
@@ -31,7 +31,7 @@ from ..config import settings
 log = logging.getLogger(__name__)
 
 # Points along the time axis. More than the ~900 px the chart is wide: it used to
-# serve a zoomable timeline, which is gone, so this is now just headroom — 6000
+# serve a zoomable timeline, which is gone, so this is now just headroom. 6000
 # buckets over 4 min is 40 ms each, and the payload runs 340 kB. Dropping to ~1500
 # would quarter that with nothing visible lost at this width; kept for now so a
 # future zoom needs no rebuild of every chart on disk.
@@ -45,7 +45,7 @@ CHART_FORMAT = 3
 
 # Full scale of the IMUs in these cameras. Measured on a real rush: the flight
 # itself peaks around 1100 deg/s (a flip at 51 s), while the last six samples of
-# the file reach 58 000 deg/s — end-of-stream garbage, 160 rotations per second.
+# the file reach 58 000 deg/s: end-of-stream garbage, 160 rotations per second.
 # Anything past full scale is not a measurement, so it is dropped rather than
 # clamped: clamped to 2000 it would still set the scale of the whole chart and
 # flatten the real flight. How many were dropped is reported, so nothing is
@@ -60,7 +60,7 @@ MAX_RATE_DPS = 2000.0
 #   the body frame (0.144 of the rotation tilts gravity, against 0.999 for X and
 #   0.994 for Y). Only the vertical axis behaves that way.
 # - **X is pitch**: at a 534 deg/s peak the horizon slides down the frame without
-#   rotating — that is a flip, not a roll.
+#   rotating, so that is a flip, not a roll.
 # - **Y is roll** by elimination, confirmed on a sustained stretch where the horizon
 #   visibly pivots. It is also the most frequently isolated axis (878 samples against
 #   213 for X), which is what an FPV flight looks like.
@@ -155,7 +155,7 @@ def _from_quaternions(quaternions: dict[str, list[float]]) -> tuple[list[Sample]
     """Differentiate orientation quaternions into angular velocity, in deg/s.
 
     Component order follows nalgebra's serialization, `[x, y, z, w]`. Getting that
-    wrong would only swap which axis is called X, Y or Z — the magnitudes are
+    wrong would only swap which axis is called X, Y or Z. The magnitudes are
     identical either way, since the relative rotation between two samples does not
     depend on the labelling.
 
@@ -225,7 +225,7 @@ def _envelope_view(
     points: int,
     decimals: int,
 ) -> dict:
-    """Min/max pair per bucket — for a signal whose spikes are the whole point.
+    """Min/max pair per bucket, for a signal whose spikes are the whole point.
 
     Decimating instead would erase exactly what one is looking for: measured, a real
     spike reads min -1584 / max +1874 deg/s where the bucket mean shows 178.
@@ -258,7 +258,7 @@ def _line_view(
     points: int,
     decimals: int,
 ) -> dict:
-    """One line per axis, the bucket's midpoint — for a signal that is smooth.
+    """One line per axis, the bucket's midpoint, for a signal that is smooth.
 
     Orientation components move slowly next to a 2 kHz sampling rate, so a min/max
     envelope would draw two lines on top of each other and double the payload for
@@ -291,7 +291,7 @@ def build_chart(
     - **rate**: angular velocity, deg/s. Spikes mark the shaky passages, which is
       what one derushes on. For a DJI file it is derived, not measured.
     - **quaternion**: the raw orientation components x/y/z/w, exactly what Gyroflow
-      plots in its view mode 3 — and the only thing it *can* plot on these files,
+      plots in its view mode 3, and the only thing it *can* plot on these files,
       since its gyro view reads `raw_imu`, which DJI leaves empty.
     """
     scratch = settings.tmp_dir / f"{dest.stem}.telemetry.json"

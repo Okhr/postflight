@@ -44,7 +44,7 @@ def _add_missing_columns(engine: Engine) -> None:
 
     `create_all` does nothing to an existing table. Rather than pulling in
     Alembic for a homelab app, we diff against the declared schema and add what
-    is missing — SQLite takes `ALTER TABLE ADD COLUMN` without rewriting the table.
+    is missing. SQLite takes `ALTER TABLE ADD COLUMN` without rewriting the table.
     """
     from sqlalchemy import inspect, text
 

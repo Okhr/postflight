@@ -4,7 +4,7 @@ import { CheckCircle2, CircleAlert, Loader2, SkipForward, Upload, X } from "luci
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
@@ -22,7 +22,7 @@ interface Item {
   error?: string;
   /** Name this file already carries in the library, when it is a duplicate. */
   known?: string;
-  /** Name the server stored it under — what to look for in the rush list. */
+  /** Name the server stored it under, which is what to look for in the rush list. */
   landedAs?: string;
 }
 
@@ -156,8 +156,8 @@ export function UploadZone() {
         if (skipped > 0) {
           toast.info(
             skipped === 1
-              ? "Already imported — nothing uploaded"
-              : `${skipped} files already imported — nothing uploaded`,
+              ? "Already imported"
+              : `${skipped} files already imported`,
           );
         }
         return;
@@ -176,7 +176,7 @@ export function UploadZone() {
         if (scan.rejected.length) parts.push(`${scan.rejected.length} already stabilized, set aside`);
         if (scan.failed.length) parts.push(`${scan.failed.length} unreadable`);
         if (skipped) parts.push(`${skipped} already imported`);
-        toast.success(`${sent} file(s) uploaded — ${parts.join(", ") || "nothing new"}`);
+        toast.success(`${sent} file(s) uploaded: ${parts.join(", ") || "nothing new"}`);
       } catch (error) {
         toast.error(
           `Upload done but the scan failed: ${
@@ -202,7 +202,7 @@ export function UploadZone() {
   );
 
   // A finished transfer whose file now shows up in the rush list below has nothing
-  // left to say: drop its line. Skipped files stay — their line *is* the reason
+  // left to say: drop its line. Skipped files stay, since their line *is* the reason
   // nothing was sent, and pruning it would leave that unexplained.
   useEffect(() => {
     setItems((previous) => {
@@ -226,10 +226,6 @@ export function UploadZone() {
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-base">Drop rushes</CardTitle>
-        <CardDescription>
-          Files land in <code>inbox/</code> and go through the pipeline on their own. Copying them
-          straight into the network folder amounts to the same thing.
-        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <div
@@ -260,9 +256,7 @@ export function UploadZone() {
           <p className="text-sm">
             Drop files here, or <span className="underline">pick them</span>
           </p>
-          <p className="text-xs text-muted-foreground">
-            Several at once, {ACCEPTED.join(" / ")} — uploaded one after another
-          </p>
+          <p className="text-xs text-muted-foreground">{ACCEPTED.join(" · ")}</p>
           <input
             ref={inputRef}
             type="file"

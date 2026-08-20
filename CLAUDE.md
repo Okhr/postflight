@@ -9,6 +9,18 @@ worker`), déployables sur Portainer.
 tout le texte de l'interface sont **en anglais**. Ce fichier, le README et les
 réponses en conversation restent **en français**.
 
+**Interface** : elle doit être claire au point de ne pas avoir besoin de texte. Une
+carte porte un titre et des données, pas un paragraphe qui explique l'implémentation.
+Ce qui mérite une explication est soit une infobulle, soit un dialogue destructif (le
+seul endroit où la prose est due, parce que deux options destructives diffèrent d'une
+façon que les boutons ne portent pas). Balayé le 2026-08-20 : neuf paragraphes de
+`CardDescription`, la légende clavier permanente du derush et deux lignes d'indice
+retirés, parce qu'ils décrivaient le fonctionnement à quelqu'un qui le connaît déjà.
+
+**Aucun tiret cadratin, jamais**, ni dans le code, ni dans les commentaires, ni dans la
+doc, ni dans l'interface. Point, virgule, deux-points ou parenthèses. Un `-` simple pour
+la valeur absente dans un tableau.
+
 ## Les quatre faits à ne pas redécouvrir
 
 1. **ffmpeg ne peut ni fusionner ni couper un rush DJI sans détruire le gyro.**
@@ -213,7 +225,7 @@ D'où le modèle de `services/capabilities.py` : **on sonde en exécutant**.
   TimelineGyroChart.rs`) : quatre modes, gyro X/Y/Z (défaut), accéléromètre,
   magnétomètre, quaternions x/y/z/w + quaternions lissés. Les trois premiers lisent
   `raw_imu`, et `gyro_source/mod.rs::raw_imu()` **n'en dérive rien depuis les
-  quaternions** — donc sur un fichier O4 son mode par défaut est vide, et le mode
+  quaternions**, donc sur un fichier O4 son mode par défaut est vide, et le mode
   quaternions est le seul qu'il puisse afficher. Couleurs des axes brutes :
   `#8f4c4c` / `#4c8f4d` / `#4c7c8f` / `#8f4c8f`, identiques en thème clair et
   sombre. Il normalise l'échelle sur **tout le fichier** (`normalize_height`), pas
@@ -226,7 +238,7 @@ D'où le modèle de `services/capabilities.py` : **on sonde en exécutant**.
 - **les axes sont identifiés, sur O4P** (2026-08-14) : `x` = tangage, `y` = roulis,
   `z` = lacet. Trois mesures concordantes. La gravité exprimée dans le repère du
   drone tranche le lacet sans ambiguïté : tourner autour de `z` n'incline la gravité
-  que pour 0,144 de la rotation, contre 0,999 pour `x` et 0,994 pour `y` — seul
+  que pour 0,144 de la rotation, contre 0,999 pour `x` et 0,994 pour `y` : seul
   l'axe vertical se comporte ainsi. Ensuite l'image : au pic de 534 °/s sur `x`,
   l'horizon **descend sans pivoter**, c'est un flip donc du tangage ; sur une plage
   soutenue de `y` il **pivote**, donc du roulis. `y` est aussi l'axe le plus souvent
@@ -238,10 +250,10 @@ D'où le modèle de `services/capabilities.py` : **on sonde en exécutant**.
   rotation, pas des angles.
 - **les derniers échantillons du fichier sont du rebut** : mesuré, 6 échantillons
   à 58 000 °/s (160 tours par seconde) sur la toute dernière milliseconde. Écrêter
-  ne suffit pas — à 2000 °/s ils fixent encore l'échelle du graphe. On les écarte
+  ne suffit pas, à 2000 °/s ils fixent encore l'échelle du graphe. On les écarte
   au-delà de la pleine échelle du capteur, en publiant le compte (`dropped`).
 - ce qui part au navigateur porte **deux vues** sur la même télémétrie, 340 Ko pour
-  4 min : la vitesse angulaire en **enveloppe min/max par bucket** (6000 buckets —
+  4 min : la vitesse angulaire en **enveloppe min/max par bucket** (6000 buckets,
   la décimation effacerait justement les pics qu'on cherche) et les composantes du
   quaternion en **ligne simple**, l'orientation étant lisse à 2 kHz (mesuré : saut
   maximal de 0,0066 entre buckets voisins, et **aucun basculement de signe** dans
@@ -252,7 +264,7 @@ D'où le modèle de `services/capabilities.py` : **on sonde en exécutant**.
 ## Étalonnage : un second encodage, et un piège de filtre
 
 Gyroflow ne fait **rien** en couleur (ses params : `fov_scale`,
-`lens_correction_amount`, `background_mode`, `adaptive_zoom_*` — aucune LUT). Donc
+`lens_correction_amount`, `background_mode`, `adaptive_zoom_*`, aucune LUT). Donc
 l'étalonnage ne peut pas être embarqué dans la passe de stabilisation.
 
 Mesuré sur un clip réel de 10 s en 1080p60 :
@@ -261,8 +273,8 @@ Mesuré sur un clip réel de 10 s en 1080p60 :
 |---|---|
 | HEVC 10-bit `medium` | 0.17x temps réel |
 | HEVC 10-bit `superfast` | 0.26x |
-| **H.264 8-bit `veryfast`** | **0.71x** — le choix retenu |
-| une image filtrée en JPEG | **0.32 s** — d'où l'aperçu live |
+| **H.264 8-bit `veryfast`** | **0.71x**, le choix retenu |
+| une image filtrée en JPEG | **0.32 s**, d'où l'aperçu live |
 
 L'aperçu est une vraie image ffmpeg, pas une réimplémentation en shader : ce qu'on
 voit traverse exactement les filtres du rendu final, aucune parité à maintenir.
@@ -270,7 +282,7 @@ voit traverse exactement les filtres du rendu final, aucune parité à maintenir
 **`colorlevels` est un piège.** Il accepte le YUV autant que le RGB, et sur une
 image YUV ses points « rouge/vert/bleu » tombent sur **Y/U/V** : décaler le point
 noir de la chroma, dont le neutre est au milieu de la plage et non à zéro, rend
-l'image entièrement noire. Pire, ça ne se produit qu'**une fois sur deux** — avec
+l'image entièrement noire. Pire, ça ne se produit qu'**une fois sur deux** : avec
 un autre filtre RGB dans la chaîne, ffmpeg insère une conversion et les mêmes
 paramètres se comportent normalement. L'étirement de niveaux passe donc par
 `lutyuv=y='...'`, qui ne touche que la luma (ce qu'on veut : pas de balance des
@@ -285,7 +297,7 @@ Mesuré : une plage de 600 frames exactes (`trim_ranges_ms` de 100100 à 110110)
 ressort en **603 frames**, une de 300 en 303. Gyroflow planifie le bon compte
 (`Rendering progress: 599/599`) puis l'encodeur en écrit deux ou trois de plus.
 50 ms, et **dans le bon sens** : on ne perd jamais l'instant marqué. Volontairement
-non compensé — un correctif en dur se casserait au prochain changement de version
+non compensé : un correctif en dur se casserait au prochain changement de version
 ou de fps.
 
 ## Détection des splits

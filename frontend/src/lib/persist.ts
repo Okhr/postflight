@@ -3,7 +3,7 @@ import { useCallback, useState } from "react";
 /**
  * useState that survives a reload, kept in localStorage.
  *
- * For view preferences only — which curve is shown, which axes are hidden, what
+ * For view preferences only: which curve is shown, which axes are hidden, what
  * playback speed. Never for content: the database owns that, and a stale copy in a
  * browser would be a second source of truth.
  *
@@ -44,7 +44,7 @@ export function usePersistentState<T>(key: string, fallback: T) {
 }
 
 /**
- * Same, for a Set. JSON has no set type, so it travels as an array — which also
+ * Same, for a Set. JSON has no set type, so it travels as an array, which also
  * keeps what is written readable in devtools.
  */
 export function usePersistentSet(key: string, fallback: string[] = []) {

@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * What a rush already has to show for itself: marked zones, and clips produced
- * from them. Chips rather than a grey sentence — the whole point of the side list
+ * from them. Chips rather than a grey sentence: the whole point of the side list
  * is telling at a glance which rushes have been dealt with.
  */
 export function SequenceWork({ sequence }: { sequence: Sequence }) {

@@ -113,7 +113,7 @@ def sequence_hash(fingerprints: list[str]) -> str:
 
     Deliberately cheap: no need to read the merged file, or even to have produced
     it. The same parts in the same order always yield the same merged bytes, so
-    this answers "have we already merged exactly this?" before doing any work — and
+    this answers "have we already merged exactly this?" before doing any work, and
     it stays stable when the sequence row is deleted and rebuilt.
 
     Order matters: two parts joined the other way round are a different video.

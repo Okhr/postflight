@@ -12,7 +12,7 @@ class BaseSchema(BaseModel):
     """Put the UTC timezone back on dates read from SQLite.
 
     Without it the date goes out as ISO with no suffix and the browser reads it as
-    local time — a two-hour offset shown on rushes in summer.
+    local time, a two-hour offset shown on rushes in summer.
     """
 
     @model_validator(mode="after")

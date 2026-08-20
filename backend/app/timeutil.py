@@ -1,7 +1,7 @@
 """Dates are all UTC, but SQLite does not keep the timezone.
 
 A value read back from the database therefore comes out *naive*. Comparing a
-stored date with a fresh one raises TypeError — and grouping parts does nothing
+stored date with a fresh one raises TypeError, and grouping parts does nothing
 else. So we normalize systematically before comparing and before serializing.
 """
 

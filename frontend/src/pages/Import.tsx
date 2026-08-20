@@ -6,7 +6,7 @@ import { toast } from "sonner";
 
 import { UploadZone } from "@/components/UploadZone";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -36,7 +36,7 @@ function isPending(sequence: Sequence) {
 
 /**
  * State of one step on one row: done, running (with its progress), queued, or
- * failed. Progress comes from the job, existence from the sequence itself — a job
+ * failed. Progress comes from the job, existence from the sequence itself: a job
  * that is gone does not un-produce what it made.
  */
 function StepCell({
@@ -65,7 +65,7 @@ function StepCell({
   if (done) return <Check className="mx-auto h-4 w-4 text-emerald-400" />;
   if (failed) return <span className="text-xs text-red-400">failed</span>;
   if (job?.state === "queued") return <span className="text-xs text-muted-foreground">queued</span>;
-  return <span className="text-xs text-muted-foreground">—</span>;
+  return <span className="text-xs text-muted-foreground">-</span>;
 }
 
 export function Import() {
@@ -88,7 +88,7 @@ export function Import() {
   });
 
   // Pushed, not polled: the stream carries exactly the queued and running jobs,
-  // which is all a row needs to show — progress, queued, or nothing.
+  // which is all a row needs to show: progress, queued, or nothing.
   const jobs = useLiveJobs();
 
   const rows = sequences ?? [];
@@ -105,7 +105,7 @@ export function Import() {
 
   // A rush that is unfinished *and* has nothing in flight: the pipeline enqueues
   // on its own, so this only happens after a failure or a dropped job. That is the
-  // only case where the resume button means anything — showing it while a job is
+  // only case where the resume button means anything. Showing it while a job is
   // running just makes people wonder what it would do.
   const stuck = pending.filter((sequence) => {
     const step = steps.get(sequence.id) ?? {};
@@ -153,8 +153,8 @@ export function Import() {
     onSuccess: (data, variables) => {
       toast.success(
         variables.purge
-          ? `${data.deleted} deleted — ${data.files_removed.length} file(s) removed from disk`
-          : `${data.deleted} removed — files kept on disk`,
+          ? `${data.deleted} deleted, ${data.files_removed.length} file(s) removed from disk`
+          : `${data.deleted} removed, files kept on disk`,
       );
       setToDelete(null);
       setSelection([]);
@@ -194,9 +194,6 @@ export function Import() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <CardTitle className="text-base">Rushes</CardTitle>
-              <CardDescription>
-                Parts of the same flight are detected and joined losslessly, gyro data kept.
-              </CardDescription>
             </div>
             <div className="flex items-center gap-2">
               {selection.length >= 2 && (
@@ -218,7 +215,7 @@ export function Import() {
                 <Button
                   size="sm"
                   variant="outline"
-                  title="These rushes are unfinished with nothing running — start their missing step"
+                  title="Start the missing step on every unfinished rush"
                   disabled={merge.isPending}
                   onClick={() => stuck.forEach((sequence) => merge.mutate(sequence.id))}
                 >
@@ -271,7 +268,7 @@ export function Import() {
                         <button
                           type="button"
                           onClick={() => toggle(sequence.id)}
-                          title="Select — to force several rushes into one sequence"
+                          title="Select, to force several rushes into one sequence"
                           className={cn(
                             "flex h-4 w-4 items-center justify-center rounded border",
                             selected
@@ -346,7 +343,7 @@ export function Import() {
                               title={
                                 failed
                                   ? "Retry the step that failed"
-                                  : "Nothing running for this rush — start its missing step"
+                                  : "Start the missing step"
                               }
                               disabled={merge.isPending}
                               onClick={() => merge.mutate(sequence.id)}
@@ -375,12 +372,6 @@ export function Import() {
             </Table>
           )}
 
-          {rows.length > 0 && (
-            <p className="mt-3 text-xs text-muted-foreground">
-              Click a ready rush to derush it. Tick two rows or more to force them into a single
-              sequence — for a part that arrived after its flight was already processed.
-            </p>
-          )}
         </CardContent>
       </Card>
 
@@ -398,8 +389,8 @@ export function Import() {
  * Two ways out, because they are not the same act.
  *
  * Measured, not assumed: keeping the raw files leaves the clips in the database,
- * merely detached, so the next scan regroups them and the rush is back within 30 s
- * — already merged, since the artifacts carry the content hash. That makes it a
+ * merely detached, so the next scan regroups them and the rush is back within 30 s,
+ * already merged, since the artifacts carry the content hash. That makes it a
  * reset of the grouping, not a removal. And renders always go, whatever is kept:
  * they belong to the zones being deleted.
  */
@@ -431,20 +422,16 @@ function DeleteDialog({
 
         <div className="space-y-3 text-sm">
           <p className="text-muted-foreground">
-            <span className="font-medium text-foreground">Reset grouping</span> — drops the
-            grouping and the marked zones. Source files, merge and proxy stay, so the next scan
-            brings this rush back within 30 s, already merged, without re-encoding anything. Use it
-            to redo a grouping that came out wrong.
+            <span className="font-medium text-foreground">Reset grouping</span> keeps the files.
+            The next scan brings this rush back, already merged.
           </p>
           <p className="text-muted-foreground">
-            <span className="font-medium text-foreground">Delete the files</span> — masters, merge
-            and proxy erased. Frees {formatBytes(sequence?.size_bytes)} or so, but re-importing
-            means merging and encoding all over again.
+            <span className="font-medium text-foreground">Delete the files</span> frees{" "}
+            {formatBytes(sequence?.size_bytes)}. Re-importing re-encodes everything.
           </p>
           {(sequence?.render_count ?? 0) > 0 && (
             <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-300">
-              Either way, the {sequence?.render_count} stabilized clip(s) are erased — they belong
-              to the zones being dropped.
+              Either way, {sequence?.render_count} stabilized clip(s) are erased.
             </p>
           )}
         </div>

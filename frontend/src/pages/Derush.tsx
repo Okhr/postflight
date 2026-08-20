@@ -58,7 +58,7 @@ const SPEEDS = [0.25, 0.5, 1, 2, 4];
 // corner of the track at frame 0.
 const BAR_HEIGHT = 24;
 // Ruler steps, in seconds. The one picked is the smallest that keeps the labels
-// down to a dozen across the width — no need to measure the box for that.
+// down to a dozen across the width, so there is no need to measure the box.
 const TICK_STEPS_S = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 // Height the overlays cover: bar plus plot, stopping above the axis legend the
 // chart draws under itself.
@@ -106,7 +106,7 @@ export function Derush() {
   // Derushing happens on the proxy: a rush without one has nothing to show.
   //
   // Sorted by the date the rush was *filmed*, oldest first, which is the order one
-  // walks a session in. The API returns newest first — right for the import list,
+  // walks a session in. The API returns newest first, which is right for the import list,
   // but there it reads as upload order. A rush whose date could not be read goes
   // last rather than to 1970.
   const usable = (sequences ?? [])
@@ -136,15 +136,7 @@ export function Derush() {
       {Number.isFinite(sequenceId) ? (
         <Editor key={sequenceId} sequenceId={sequenceId} />
       ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Pick a rush</CardTitle>
-            <CardDescription>
-              Mark the zones worth keeping. Nothing is cut here: the bounds are stored as frame
-              numbers and handed to Gyroflow when it stabilizes.
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        <p className="pt-2 text-sm text-muted-foreground">Pick a rush.</p>
       )}
     </div>
   );
@@ -344,10 +336,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">{sequence.label}</CardTitle>
-          <CardDescription>
-            The proxy is not ready yet — derushing happens on it, not on the 4:3 HEVC 10-bit master
-            that no browser can play.
-          </CardDescription>
+          <CardDescription>The proxy is not ready yet.</CardDescription>
         </CardHeader>
         <CardContent className="flex items-center gap-3">
           <StateBadge state={sequence.state} />
@@ -362,7 +351,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
   const widthPercent = (frames: number) => (lastFrame ? (frames / lastFrame) * 100 : 0);
 
   /**
-   * The stretches no zone keeps, as frame pairs — what gets dimmed.
+   * The stretches no zone keeps, as frame pairs. This is what gets dimmed.
    *
    * Gyroflow greys out what its single trim range excludes; with several zones the
    * equivalent is the complement of their union. Empty while no zone exists: the
@@ -400,14 +389,14 @@ function Editor({ sequenceId }: { sequenceId: number }) {
    *
    * Zones stay in order and never overlap: an edge stops at its neighbour
    * rather than crossing it, which would produce two ranges Gyroflow renders
-   * twice over the same frames. The video follows the edge being dragged —
+   * twice over the same frames. The video follows the edge being dragged,
    * that is the whole point of having handles rather than typing timecodes.
    */
   /**
    * Start a drag, whatever was grabbed.
    *
    * The track captures the pointer even when the press landed on a handle, so
-   * moves and the release keep arriving here after the cursor has left the box —
+   * moves and the release keep arriving here after the cursor has left the box,
    * otherwise a drag would freeze at the edge and, worse, never end.
    */
   const beginDrag = (event: ReactPointerEvent, next: Drag) => {
@@ -496,7 +485,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
           <div className="space-y-2">
             {/* Gyroflow's timeline, in shadcn clothes: the gyro curves *are* the
                 timeline, with a trim bar across the top carrying the handles. No
-                frame thumbnails — the curves are what tells a calm pass from a
+                frame thumbnails: the curves are what tells a calm pass from a
                 shaky one, and the player above shows the picture. */}
             <div
               ref={trackRef}
@@ -573,7 +562,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
                       style={{ top: BAR_HEIGHT }}
                     />
 
-                    {/* The same zone in the trim bar, solid — this is the part one
+                    {/* The same zone in the trim bar, solid. This is the part one
                         grabs, and the only place a click is not a scrub. */}
                     <div
                       className={cn(
@@ -643,9 +632,6 @@ function Editor({ sequenceId }: { sequenceId: number }) {
               </div>
             </div>
 
-            <p className="text-[11px] text-muted-foreground">
-              drag to scrub · zone edges to trim
-            </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -734,11 +720,6 @@ function Editor({ sequenceId }: { sequenceId: number }) {
             </div>
           </div>
 
-          <p className="text-xs text-muted-foreground">
-            <kbd>space</kbd> play · <kbd>←</kbd>/<kbd>→</kbd> one frame ·{" "}
-            <kbd>shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd> one second · <kbd>I</kbd> start ·{" "}
-            <kbd>O</kbd> end · <kbd>esc</kbd> cancel · <kbd>ctrl</kbd>+<kbd>S</kbd> save
-          </p>
         </CardContent>
       </Card>
 
@@ -748,10 +729,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
         </CardHeader>
         <CardContent>
           {cuts.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No zone yet. Set a start with <kbd>I</kbd>, then an end with <kbd>O</kbd> — then
-              drag the band on the track to move it, or its edges to trim it.
-            </p>
+            <p className="text-sm text-muted-foreground">Nothing kept yet.</p>
           ) : (
             <Table>
               <TableHeader>
@@ -826,7 +804,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
 /**
  * Name and colour tag of the current rush, editable in place.
  *
- * The key a rush is born with — `DJI_20260811144828_0044_D` — says when it was
+ * The key a rush is born with (`DJI_20260811144828_0044_D`) says when it was
  * filmed and nothing about what is in it. Over a session of thirty, a name and a
  * colour are what make one findable again.
  *

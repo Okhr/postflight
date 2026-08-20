@@ -12,17 +12,17 @@ import { cn } from "@/lib/utils";
  * Two views, because Gyroflow has two that matter and they answer different
  * questions:
  *
- * - **Quaternions** — the raw orientation components x/y/z/w. This is Gyroflow's
+ * - **Quaternions**: the raw orientation components x/y/z/w. This is Gyroflow's
  *   view mode 3, and on a DJI file it is the *only* thing it can draw: its
  *   gyroscope view reads `raw_imu`, which DJI leaves empty.
- * - **Gyroscope** — angular velocity in deg/s, derived here by differentiating
+ * - **Gyroscope**: angular velocity in deg/s, derived here by differentiating
  *   those quaternions. Not something Gyroflow plots for these files, but the spikes
  *   are what mark a shaky pass, which is what one derushes on.
  *
  * The two are drawn differently on purpose. Angular velocity is an **envelope**
  * (min and max per bucket): at ~2000 Hz over four minutes there are 477 000 samples
  * for about 900 pixels, and decimating would drop the very spikes one is looking
- * for. Orientation is smooth at that rate, so it is a plain line — two bounds would
+ * for. Orientation is smooth at that rate, so it is a plain line, and two bounds would
  * sit on top of each other and double the payload.
  *
  * Drawn in data space (`viewBox` of `points` by 100): the vertical scale is an SVG
@@ -49,7 +49,7 @@ interface ChartView {
   label: string;
   unit: string;
   axes: string[];
-  /** Real names for the axes when the camera's frame was identified — Pitch,
+  /** Real names for the axes when the camera's frame was identified: Pitch,
    *  Roll, Yaw. Empty when it was not, and then the axes stay X/Y/Z. */
   axis_labels?: Record<string, string>;
   kind: "envelope" | "line";
@@ -86,7 +86,7 @@ const MARGIN = 2;
  * Path in data units: y is the value itself, straight up.
  *
  * The vertical scale is applied as an SVG transform on the group, not baked into
- * the coordinates — that is what lets the scale follow the visible window without
+ * the coordinates. That is what lets the scale follow the visible window without
  * rebuilding paths of 6000 points on every wheel tick.
  */
 function linePath(values: number[]): string {
@@ -126,7 +126,7 @@ export function GyroChart({
   sequenceId: number;
   lastFrame: number;
   frame: number;
-  /** Left out when the caller draws its own — the derush timeline owns one
+  /** Left out when the caller draws its own: the derush timeline owns one
    *  playhead across the whole track rather than one per row. */
   onSeek?: (frame: number) => void;
   showPlayhead?: boolean;
