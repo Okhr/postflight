@@ -10,9 +10,22 @@ from __future__ import annotations
 import pytest
 from sqlmodel import Session
 
-from app import db
+from app import db, pipeline
 from app.config import settings
 from app.models import Clip, ClipState, Sequence, SequenceState
+
+
+@pytest.fixture(autouse=True)
+def _no_upload_in_flight():
+    """The upload counters are module-level, and one of them is a bare timestamp.
+
+    `_seen_sizes` and `_completed_uploads` are keyed by absolute path, so a fresh
+    `tmp_path` keeps tests out of each other's way. The settle timestamp is a scalar,
+    so a test that finishes an upload silences the scan in every test after it.
+    """
+    pipeline._uploads_in_flight = 0
+    pipeline._last_upload_at = 0.0
+    yield
 
 
 @pytest.fixture

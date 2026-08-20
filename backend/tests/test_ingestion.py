@@ -211,6 +211,74 @@ def test_a_clip_with_no_usable_start_time_is_refused_with_a_reason(
     assert not (settings.raw_dir / "MYSTERY.mp4").exists()
 
 
+def test_a_scheduled_scan_waits_for_an_upload_still_on_the_wire(
+    session: Session, monkeypatch
+):
+    """The bug of 2026-08-20, in one test. Part one had landed, part two was still
+    streaming, and the 30 s scan fell between the two: part one was ingested alone,
+    merged in 0.3 s because a lone part is a hardlink, and part two could no longer
+    join it. So the scheduled scan ingests nothing while an upload is counted."""
+    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result())
+    _drop("DJI_20260809144616_0034_D.MP4")
+
+    pipeline.upload_started()
+    try:
+        assert pipeline.scan_inbox(session).ingested == []
+        assert not (settings.raw_dir / "DJI_20260809144616_0034_D.MP4").exists()
+    finally:
+        pipeline.upload_finished()
+
+    monkeypatch.setattr(pipeline, "UPLOAD_SETTLE_S", 0.0)  # the batch is really over
+    assert len(pipeline.scan_inbox(session).ingested) == 1
+
+
+def test_the_gap_between_two_files_of_one_batch_is_still_the_batch(
+    session: Session, monkeypatch
+):
+    """Nothing is on the wire between two files: the uploader is reading 2 MiB of the
+    next one to check it for duplicates. A scan landing in that gap would ingest the
+    part that has arrived and merge it alone, which is the bug with a narrower window
+    rather than the bug fixed."""
+    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result())
+    _drop("DJI_20260809144616_0034_D.MP4")
+
+    pipeline.upload_started()
+    pipeline.upload_finished()  # file one done, file two not started
+    assert pipeline.uploads_in_flight() == 0
+    assert pipeline.uploading() is True
+    assert pipeline.scan_inbox(session).ingested == []
+
+    monkeypatch.setattr(pipeline, "UPLOAD_SETTLE_S", 0.0)
+    assert len(pipeline.scan_inbox(session).ingested) == 1
+
+
+def test_a_scan_asked_for_by_hand_is_never_held_back(session: Session, monkeypatch):
+    """It is an explicit "now", and the uploader only fires it once its own transfers
+    are done."""
+    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result())
+    _drop("DJI_0327.MP4")
+
+    pipeline.upload_started()
+    try:
+        assert len(pipeline.scan_inbox(session, immediate=True).ingested) == 1
+    finally:
+        pipeline.upload_finished()
+
+
+def test_a_failed_upload_does_not_silence_the_scan_forever(session: Session, monkeypatch):
+    """A leaked count would be worse than the bug it fixes: nothing would ever be
+    ingested again for as long as the process lives."""
+    monkeypatch.setattr(pipeline, "probe", lambda _p: _probe_result())
+    monkeypatch.setattr(pipeline, "UPLOAD_SETTLE_S", 0.0)
+    pipeline.upload_started()
+    pipeline.upload_finished()
+    pipeline.upload_finished()  # one too many, as a crash between the two could cause
+    assert pipeline.uploads_in_flight() == 0
+
+    _drop("DJI_0327.MP4")
+    assert len(pipeline.scan_inbox(session).ingested) == 1
+
+
 def test_the_two_sidelines_do_not_collide(session: Session, monkeypatch):
     """Duplicates and gyro-less files each have their own folder, and a scan sees
     neither of them."""
@@ -321,56 +389,67 @@ def test_a_real_split_pair_chains_even_when_the_mtime_was_lost(tmp_path, monkeyp
             )
         )
 
-    groups = chain_clips(infos, 2.0)
+    groups = chain_clips(infos, settings.split_gap_tolerance_s)
     assert len(groups) == 1, "the real pair must be recognized as one recording"
 
 
 # --------------------------------------------------------------------------- #
-# The part size, which is what really separates a split from a restart
+# The gap, which is the whole test now
 # --------------------------------------------------------------------------- #
 
-LIMIT = 3_000_000_000
-SPLIT_SIZE = 3_765_216_866  # measured, the size at which the camera closes a file
+# What the default has to separate, measured on the 179 consecutive pairs of a real
+# O3 collection. These assert against the shipped default rather than a literal,
+# because the default is now the only thing standing between a genuine split and two
+# unrelated flights.
+TOLERANCE = settings.split_gap_tolerance_s
 
 
-def _sized(cid: int, start: datetime, duration_ms: float, index: int, size: int) -> ClipInfo:
+def _part(cid: int, start: datetime, duration_ms: float, index: int) -> ClipInfo:
     return ClipInfo(
         id=cid, filename=f"DJI_{300 + cid:04d}.MP4", recorded_at=start,
         duration_ms=duration_ms, width=3840, height=2160, fps_num=60000, fps_den=1001,
-        codec="h264", size_bytes=size, camera_index=index, group_key="",
+        codec="h264", camera_index=index, group_key="",
     )
 
 
 def test_a_genuine_split_is_chained():
-    """The real DJI_0330 to DJI_0331 pair: 3.765 Go, 194.6 s, followed 0.44 s later."""
-    first = _sized(1, BASE, 194_600.0, 330, SPLIT_SIZE)
-    second = _sized(2, BASE + timedelta(milliseconds=195_040), 77_900.0, 331, 1_531_658_711)
-    assert len(chain_clips([first, second], 2.0, LIMIT)) == 1
+    """The real DJI_0330 to DJI_0331 pair: 194.6 s, followed 0.44 s later."""
+    first = _part(1, BASE, 194_600.0, 330)
+    second = _part(2, BASE + timedelta(milliseconds=195_040), 77_900.0, 331)
+    assert len(chain_clips([first, second], TOLERANCE)) == 1
+
+
+def test_the_widest_genuine_gap_still_chains():
+    """The worst of the 51 real splits: 0.79 s. Anything tighter than this in the
+    default would start losing pairs that belong together."""
+    first = _part(1, BASE, 193_700.0, 285)
+    second = _part(2, BASE + timedelta(milliseconds=194_490), 42_000.0, 286)
+    assert len(chain_clips([first, second], TOLERANCE)) == 1
 
 
 def test_a_quick_restart_is_not_glued_to_the_next_flight():
-    """The 9 pairs the timing alone got wrong. Worst real case: a first part of
-    1.398 Go, so nowhere near the file limit, followed 1.11 s later. The gap says
-    contiguous, the size says the pilot stopped recording, and the size is right."""
-    first = _sized(1, BASE, 60_000.0, 345, 1_398_000_000)
-    second = _sized(2, BASE + timedelta(milliseconds=61_110), 60_000.0, 346, 900_000_000)
-    assert len(chain_clips([first, second], 2.0, LIMIT)) == 2
+    """The closest of the 9 pairs the old 2 s tolerance got wrong: the pilot stopped
+    and took off again 1.11 s later. Two flights, and gluing them smooths one gyro
+    curve across the seam and derushes them as one rush."""
+    first = _part(1, BASE, 60_000.0, 345)
+    second = _part(2, BASE + timedelta(milliseconds=61_110), 60_000.0, 346)
+    assert len(chain_clips([first, second], TOLERANCE)) == 2
 
 
 def test_a_three_part_recording_still_chains_end_to_end():
-    """Two consecutive splits, which the collection really contains (DJI_0285 to 0287).
-    Parts 1 and 2 both hit the limit, only the last one is short."""
-    one = _sized(1, BASE, 193_700.0, 285, SPLIT_SIZE)
-    two = _sized(2, BASE + timedelta(milliseconds=193_960), 193_700.0, 286, SPLIT_SIZE)
-    three = _sized(3, BASE + timedelta(milliseconds=387_920), 42_000.0, 287, 800_000_000)
-    groups = chain_clips([one, two, three], 2.0, LIMIT)
+    """Two consecutive splits, which the collection really contains (DJI_0285 to 0287)."""
+    one = _part(1, BASE, 193_700.0, 285)
+    two = _part(2, BASE + timedelta(milliseconds=193_960), 193_700.0, 286)
+    three = _part(3, BASE + timedelta(milliseconds=387_920), 42_000.0, 287)
+    groups = chain_clips([one, two, three], TOLERANCE)
     assert len(groups) == 1
     assert [c.id for c in groups[0]] == [1, 2, 3]
 
 
-def test_an_unknown_size_falls_back_on_the_timing_alone():
-    """Same convention as a missing camera index: a signal we do not have must not
-    block, or a source that reports no size could never be chained at all."""
-    first = _sized(1, BASE, 194_600.0, 330, 0)
-    second = _sized(2, BASE + timedelta(milliseconds=195_040), 77_900.0, 331, 0)
-    assert len(chain_clips([first, second], 2.0, LIMIT)) == 1
+def test_a_short_o4_pair_chains_on_timing_alone():
+    """The pair that exposed the size condition: 3.76 Go and 2.49 Go, 0.361 s apart,
+    which the O3 threshold had no business judging. Nothing about how big a part is
+    enters the decision any more."""
+    first = _part(1, BASE, 222_639.083, 34)
+    second = _part(2, BASE + timedelta(milliseconds=223_000), 147_147.0, 35)
+    assert len(chain_clips([first, second], TOLERANCE)) == 1

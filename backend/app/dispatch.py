@@ -577,6 +577,16 @@ def heartbeat(
     job = _held_by(session, job_id, worker_id)
     if job is None:
         return False
+
+    # A heartbeat is a worker saying it is alive, so it is what `online` should read.
+    # Registering and claiming used to be the only two things that touched this, and a
+    # worker with every slot busy stops asking for work: it went dark in the interface
+    # for the whole length of a job, which is exactly when it is most obviously there.
+    worker = session.get(Worker, worker_id)
+    if worker is not None:
+        worker.last_seen_at = utcnow()
+        session.add(worker)
+
     job.progress = max(0.0, min(1.0, progress))
     if message:
         job.message = message[:300]

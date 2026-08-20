@@ -39,6 +39,8 @@ from ..pipeline import (
     enqueue_proxy,
     ingest_and_group,
     mark_upload_complete,
+    upload_finished,
+    upload_started,
     unique_destination,
 )
 from ..services.grouping import sequence_hash
@@ -344,6 +346,10 @@ async def upload(filename: str, request: Request) -> schemas.UploadOut:
     destination = unique_destination(settings.inbox_dir, safe_name)
     partial = destination.with_name(destination.name + ".partial")
 
+    # Announced before the first byte and cleared whatever happens: while this is
+    # counted, the scheduled scan holds off, so the parts of one flight are ingested
+    # together instead of the first one being merged alone.
+    upload_started()
     written = 0
     try:
         handle = await run_in_threadpool(partial.open, "wb")
@@ -357,6 +363,8 @@ async def upload(filename: str, request: Request) -> schemas.UploadOut:
     except Exception:
         partial.unlink(missing_ok=True)
         raise
+    finally:
+        upload_finished()
 
     if written == 0:
         partial.unlink(missing_ok=True)

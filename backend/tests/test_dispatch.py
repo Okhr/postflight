@@ -193,6 +193,44 @@ def test_a_heartbeat_renews_the_lease_and_records_progress(
     assert job.lease_expires_at >= first_deadline
 
 
+def test_a_busy_worker_stays_online_on_its_heartbeat_alone(
+    session: Session, sequence: Sequence
+):
+    """It stops asking for work while its only slot is taken, and asking for work used
+    to be the only thing that proved it was alive. So a worker went dark in the
+    interface for the whole length of a job: seen on 2026-08-20, a proxy running at
+    52% under a header reading "no worker"."""
+    job = enqueue_merge(session, sequence)
+    worker = _worker(session, "nas")
+    dispatch._take(session, job.id, worker.id)
+
+    worker.last_seen_at = utcnow() - timedelta(seconds=dispatch.ONLINE_S * 2)
+    session.add(worker)
+    session.commit()
+    assert dispatch.is_online(worker) is False
+
+    dispatch.heartbeat(session, job.id, worker.id, 0.52, "encoding")
+    session.refresh(worker)
+    assert dispatch.is_online(worker) is True
+
+
+def test_a_heartbeat_from_a_worker_that_lost_the_job_proves_nothing(
+    session: Session, sequence: Sequence
+):
+    """The lease went elsewhere, so this one is being told to stop. Marking it alive
+    would be reading a claim it no longer holds as evidence."""
+    job = enqueue_merge(session, sequence)
+    holder, other = _worker(session, "nas"), _worker(session, "proxima")
+    dispatch._take(session, job.id, holder.id)
+    other.last_seen_at = utcnow() - timedelta(seconds=dispatch.ONLINE_S * 2)
+    session.add(other)
+    session.commit()
+
+    assert dispatch.heartbeat(session, job.id, other.id, 0.5, "") is False
+    session.refresh(other)
+    assert dispatch.is_online(other) is False
+
+
 def test_a_worker_that_lost_the_job_is_told_to_stop(session: Session, sequence: Sequence):
     """False on a heartbeat is how fencing works: the job was requeued elsewhere,
     and two encoders writing the same output is what this prevents."""

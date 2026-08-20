@@ -62,6 +62,22 @@ _seen_sizes: dict[str, tuple[int, int]] = {}
 # Files dropped by the upload endpoint: complete by construction.
 _completed_uploads: set[str] = set()
 
+# Uploads still streaming in. The scheduled scan must not ingest while one is on the
+# wire: the file arriving may be the next part of a flight whose first part has already
+# landed, and ingesting that first part alone merges it (a lone part is a hardlink, so
+# it is done in 0.3 s) and locks the second one out of its sequence. Measured on
+# 2026-08-20: two parts 0.36 s apart became two sequences because the 30 s scan fell
+# between their uploads, 13:29:15 against an upload that finished at 13:29:20.
+_uploads_in_flight = 0
+_last_upload_at = 0.0
+
+# How long the inbox is left alone after the last upload finished. An uploader sends
+# its files one after another and checks each for duplicates in between, so there is a
+# gap of a few hundred milliseconds where nothing is on the wire and the batch is not
+# over. Holding off through it costs nothing: the uploader triggers its own scan as
+# soon as it is really done.
+UPLOAD_SETTLE_S = 10.0
+
 
 def _candidate_files() -> list[Path]:
     if not settings.inbox_dir.is_dir():
@@ -92,6 +108,32 @@ def mark_upload_complete(path: Path) -> None:
     fired right after it come up empty.
     """
     _completed_uploads.add(str(path))
+
+
+def upload_started() -> None:
+    global _uploads_in_flight
+    _uploads_in_flight += 1
+
+
+def upload_finished() -> None:
+    """Always call this, including when the upload failed or the client vanished.
+
+    A leaked count would silence the scheduled scan for as long as the process lives.
+    """
+    global _uploads_in_flight, _last_upload_at
+    _uploads_in_flight = max(0, _uploads_in_flight - 1)
+    _last_upload_at = time.monotonic()
+
+
+def uploads_in_flight() -> int:
+    return _uploads_in_flight
+
+
+def uploading() -> bool:
+    """Is a batch of uploads still going on, counting the gaps between its files?"""
+    if _uploads_in_flight:
+        return True
+    return bool(_last_upload_at) and time.monotonic() - _last_upload_at < UPLOAD_SETTLE_S
 
 
 def _is_stable(path: Path) -> bool:
@@ -170,8 +212,14 @@ def scan_inbox(session: Session, immediate: bool = False) -> ScanResult:
     `immediate` serves the scan triggered from the UI: nobody wants to wait
     several cycles before seeing anything happen.
     """
-    is_ready = _is_quiescent if immediate else _is_stable
     result = ScanResult()
+    if not immediate and uploading():
+        # Let the batch land whole. A scan asked for by hand is never held back: it is
+        # an explicit "now", and it runs after the uploader's own transfers are done.
+        log.debug("scan held back: %d upload(s) in flight", _uploads_in_flight)
+        return result
+
+    is_ready = _is_quiescent if immediate else _is_stable
     for path in _candidate_files():
         if not is_ready(path):
             log.debug("not stable yet: %s", path.name)
@@ -282,7 +330,6 @@ def _clip_info(clip: Clip) -> ClipInfo:
         fps_num=clip.fps_num,
         fps_den=clip.fps_den,
         codec=clip.codec,
-        size_bytes=clip.size_bytes,
         camera_index=clip.camera_index,
         group_key=parsed.group_key,
     )
@@ -342,7 +389,6 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
     for group in chain_clips(
         [_clip_info(c) for c in candidates],
         settings.split_gap_tolerance_s,
-        settings.split_min_part_bytes,
     ):
         clips = [session.get(Clip, info.id) for info in group]
         clips = [c for c in clips if c is not None]

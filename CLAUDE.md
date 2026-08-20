@@ -306,16 +306,14 @@ La détection intégrée à Gyroflow ne marche pas sur les noms O3/O4 : son moti
 `/(DJI_\d+_(\d+)\.MP4)$/` visait les DJI Action et échoue sur le suffixe `_D`.
 La nôtre (`services/grouping.py`) :
 
-- index caméra consécutifs **et** `start(n+1) - (start(n) + durée(n)) < 2 s`
-  (mesuré : 0.36 s d'écart sur une vraie paire)
+- index caméra consécutifs **et** `start(n+1) - (start(n) + durée(n)) <= 1 s`
+  (mesuré : 0,36 s d'écart sur une vraie paire)
 - **deux sources pour l'heure de départ** : le nom (exact, UTC), puis le
   `creation_time` du conteneur. Aucune des deux, aucun repli : le fichier est
   **refusé** avec la raison. Voir ci-dessous.
-- **la taille de la part est une condition nécessaire**, pas un simple indice : une
-  part qui n'a pas approché la limite de fichier s'est arrêtée parce qu'on a arrêté
-  d'enregistrer. Seuil `split_min_part_bytes`, 3 Go par défaut.
+- **et rien d'autre.** Le timing est tout le test.
 
-### La taille sépare, l'écart presque pas
+### L'écart sépare, à condition de le serrer
 
 Mesuré le 2026-08-19 sur les 179 paires consécutives de la collection O3 réelle :
 
@@ -324,18 +322,56 @@ Mesuré le 2026-08-19 sur les 179 paires consécutives de la collection O3 réel
 | **51 vraies découpes** | 3,763 à 3,770 Go | 193,7 à 196,8 s | 0,12 à **0,79 s** |
 | **9 paires collées à tort** | jusqu'à **1,398 Go** | variable | **1,11** à 1,96 s |
 
-L'écart ne laisse que **0,32 s** entre les deux populations, la taille laisse un
-**facteur 2,7**. Avec le seul timing et une tolérance de 2 s, 9 paires de vols sans
-rapport sur 60 étaient fusionnées, puis lissées comme une seule courbe et derushées
-comme un seul rush. D'où la condition sur la taille, avec un seuil à 3 Go qui garde
-les 51 vraies (min 3,763 Go) et écarte les 9 fausses (max 1,398 Go).
+Les deux populations ne se chevauchent pas : **0,79 s d'un côté, 1,11 s de l'autre**.
+Une tolérance à **1 s** tombe dedans, garde les 51 vraies et écarte les 9 fausses.
+C'était 2 s, et à 2 s il fallait un second signal pour rattraper les 9.
 
-Le seuil reste un réglage : la limite appartient à la caméra et à la carte, pas à
-nous. Vérifié sur O3 uniquement ; la paire O4 documentée plus haut (222,639 s) tombe
-sur le même ordre de grandeur à ~135 Mb/s, mais n'a pas été remesurée.
+Ce second signal était la taille de la part 1, avec un seuil à 3 Go : une part qui n'a
+pas approché la limite de fichier s'est arrêtée parce qu'on a arrêté d'enregistrer.
+**Retiré le 2026-08-20**, choix de florian : le seuil appartient à la caméra et à la
+carte, pas à nous, et il faisait dépendre les paires O4 d'un nombre mesuré sur des
+fichiers O3. Le facteur de séparation était plus confortable (2,7 contre 1,4 pour
+l'écart), mais un nombre confortable et faux ailleurs ne vaut pas un nombre juste et
+serré. Le recours en cas d'erreur est la page merge, qui défait et refait un groupe à
+la main.
 
-Une part de taille inconnue (`size_bytes` à 0) ne bloque pas : même convention que
-l'index caméra absent, un signal qu'on n'a pas ne doit pas empêcher le chaînage.
+À ne pas confondre avec la vraie cause du bug du 2026-08-20 : sur la paire O4 qui a
+déclenché tout ça, la taille passait déjà (3,76 Go). Voir ci-dessous.
+
+### Le scan qui tombe entre deux uploads
+
+Bug mesuré le 2026-08-20, et il n'était pas dans le groupage.
+
+```
+13:29:08.607  Received  0034_D.MP4  (3588.6 Mo)
+13:29:15.597  Ingested  0034_D  → 1 sequence created   ← scan périodique (30 s)
+13:29:20.734  Received  0035_D.MP4  (2372.1 Mo)        ← upload 2 encore en vol
+13:29:20.822  Ingested  0035_D  → 1 sequence created
+```
+
+Deux parts séparées de 0,361 s sont devenues deux séquences parce que le scan des 30 s
+est tombé **pendant** l'upload de la seconde. Il a ingéré la part 1 seule, l'a groupée,
+et le worker l'a fusionnée avant que la part 2 arrive : une part unique est un
+hardlink, donc c'est fait en 0,3 s. La part 2 a trouvé une séquence déjà `MERGED`, que
+le groupage ne touche jamais automatiquement.
+
+Corrigé : le scan **planifié** n'ingère rien tant qu'un upload est en vol, ni pendant
+les `UPLOAD_SETTLE_S` (10 s) qui suivent le dernier, parce qu'un uploadeur enchaîne ses
+fichiers et lit 2 Mio de chacun pour le contrôle de doublon, donc il existe un creux de
+quelques centaines de millisecondes où rien n'est sur le fil et où le lot n'est pas
+fini. Un scan **demandé à la main** n'est jamais retenu.
+
+Contre-épreuve, avec le scan forcé à 2 s pour rendre la course certaine :
+
+```
+13:58:47.205  Received  0034_D          ← les scans de 13:58:49 et 13:58:51
+13:58:50.545  Received  0035_D             n'ont rien ingéré
+13:59:01.189  Ingested  0034_D  ┐ un seul scan, 10,6 s après le dernier upload
+13:59:01.242  Ingested  0035_D  ┘
+13:59:01.278  Scan: 2 clip(s) ingested, 1 sequence(s) created
+```
+
+Une séquence, 2 parts, 369,786 s (222,639 + 147,147 exactement), fusionnée et proxyée.
 
 ### Trois nommages, et un seul porte un horodatage
 
@@ -447,6 +483,13 @@ Le battement de cœur est **découplé de la progression** : le callback de
 l'executor n'écrit qu'une variable, un thread poste. Donc un dispatcher lent ne
 ralentit pas un rendu, et un rendu silencieux garde son bail. Un *process* bloqué
 est un autre problème, déjà traité par les timeouts de `procs.run_with_progress`.
+
+Et **c'est le battement qui prouve qu'un worker est là**, pas la demande de job.
+Corrigé le 2026-08-20 : `last_seen_at` n'était écrit qu'à l'enregistrement et à la
+prise d'un job. Un worker dont tous les créneaux sont pris cesse de demander du
+travail, donc il passait hors ligne au bout de `ONLINE_S` et l'interface affichait
+« no worker » au-dessus d'un proxy à 52 %. Un battement venant d'un worker qui a perdu
+le bail ne compte pas : c'est justement celui à qui on dit d'arrêter.
 
 Le nom d'un worker est son identité (`VS_WORKER_NAME`) et doit être **stable** :
 le hostname d'un conteneur a l'air stable et ne l'est pas, il change à chaque

@@ -19,15 +19,14 @@ class Settings(BaseSettings):
     # inotify is unreliable on NFS/SMB, so we watch for stability instead.
     stability_checks: int = 2
     video_extensions: str = ".mp4,.mov"
-    # Two parts of the same recording are contiguous within this gap.
-    split_gap_tolerance_s: float = 2.0
-    # A part is only a candidate for having been continued if it got close to the
-    # camera's file limit. Measured on a real O3 collection: every genuine split has
-    # a first part of 3.763 to 3.770 Go, and every pair wrongly glued by the timing
-    # alone has one of 1.398 Go at most. 3 Go sits in the middle with a wide margin on
-    # both sides, and stays a setting because the limit belongs to the camera and the
-    # card, not to us.
-    split_min_part_bytes: int = 3_000_000_000
+    # Two parts of the same recording are contiguous within this gap, and that is the
+    # only test. Measured on the 179 consecutive pairs of a real O3 collection: the 51
+    # genuine splits follow within 0.79 s at the very most, and the closest unrelated
+    # flight is 1.11 s behind. One second sits in that gap. It was 2 s, which glued 9
+    # pairs of unrelated flights, and a size condition used to catch them; that
+    # condition rested on a file limit belonging to the camera and the card, so it is
+    # the tolerance that carries this now.
+    split_gap_tolerance_s: float = 1.0
     # Delete the parts from raw/ after a verified merge (the merge is lossless).
     purge_parts_after_merge: bool = False
 
