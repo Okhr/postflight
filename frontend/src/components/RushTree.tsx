@@ -223,6 +223,8 @@ function FolderShell({
   name: string;
   color: string | null;
   open: boolean;
+  /** How much it holds. Not shown: what it decides is whether there is anything to
+   *  unfold at all. */
   count: number;
   onToggle: () => void;
   takes: boolean;
@@ -280,9 +282,6 @@ function FolderShell({
           />
           <Dot token={color} />
           <span className="truncate font-medium">{name}</span>
-          <span className="tnum ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
-            {count || ""}
-          </span>
         </button>
         {actions}
       </div>

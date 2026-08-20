@@ -724,6 +724,10 @@ sans que personne le voie. Mesuré le 2026-08-20 avec la réponse retenue par le
 dossier visible en **70 ms**, pastille changée en **29 ms**, rush déplacé en **136 ms**,
 le tout requête toujours en vol ; et un refus fait disparaître le dossier fantôme.
 
+**Aucun compteur dans l'arborescence**, ni le total en tête ni le contenu de chaque
+dossier : un nombre à côté d'une liste qu'on voit ne dit rien. Le chevron suffit à dire
+qu'un dossier replié contient quelque chose.
+
 La contrepartie assumée : la règle de placement du serveur est **répétée côté client**
 (`place()` dans `RushTree.tsx`), sinon un lâcher ne peut pas atterrir tout de suite. Les
 deux ne peuvent divergir que jusqu'au refetch, ce qui rend la duplication supportable.
