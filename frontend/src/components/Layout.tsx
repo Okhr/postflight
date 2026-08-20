@@ -11,12 +11,9 @@ import { LiveJobsProvider } from "@/lib/live";
 import { selectedRushId } from "@/lib/routing";
 import { cn } from "@/lib/utils";
 
-// The five pages, in the order the work walks through them. Merge sits between
-// import and derush because that is when a wrong group has to be caught: after the
-// parts are in, before anything has been marked on them.
+// The four pages, in the order the work walks through them.
 const PAGES = [
   { to: "/", label: "Import", end: true, carriesRush: false },
-  { to: "/merge", label: "Merge", end: false, carriesRush: false },
   { to: "/derush", label: "Derush", end: false, carriesRush: true },
   { to: "/stabilisation", label: "Stabilize", end: false, carriesRush: true },
   { to: "/color", label: "Color", end: false, carriesRush: false },
@@ -63,8 +60,8 @@ export function Layout() {
                 <NavLink
                   key={to}
                   // A rush stays selected when moving between the steps that act on
-                  // one. Import and merge are about the collection, colour is about a
-                  // stabilized clip: none of the three takes a rush id.
+                  // one. Import is about the collection, colour is about a stabilized
+                  // clip: neither takes a rush id.
                   to={carriesRush && rushId ? `${to}/${rushId}` : to}
                   end={end}
                 >

@@ -191,8 +191,9 @@ purger.
 - Le niveau de lissage et l'offset de recadrage vertical sont dans les templates ;
   ils gagneraient à être réglables par zone dans l'UI.
 - Le regroupement automatique ne touche jamais une séquence déjà fusionnée. Une
-  part arrivée en retard forme sa propre séquence, à recoller via
-  `POST /api/sequences/regroup`.
+  part arrivée en retard forme sa propre séquence, et il n'existe aucun geste
+  manuel pour recoller : il faut supprimer les deux séquences, ce qui rend leurs
+  clips libres, et laisser le scan suivant les regrouper.
 - Pas d'authentification : à placer derrière un reverse proxy si l'accès sort du
   réseau local.
 

@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { api, type Folder, type Sequence } from "@/lib/api";
-import { RUSH_COLORS, rushColor } from "@/lib/colors";
+import { FOLDER_COLORS, folderColor } from "@/lib/colors";
 import { formatDuration } from "@/lib/format";
 import { usePersistentSet } from "@/lib/persist";
 import { rushHref, selectedRushId } from "@/lib/routing";
@@ -53,7 +53,7 @@ function leaving(event: React.DragEvent): boolean {
 }
 
 function Dot({ token }: { token: string | null }) {
-  const color = token === null ? null : rushColor(token);
+  const color = token === null ? null : folderColor(token);
   return (
     <span
       className={cn(
@@ -68,7 +68,7 @@ function Dot({ token }: { token: string | null }) {
 function Swatches({ value, onPick }: { value: string; onPick: (token: string) => void }) {
   return (
     <span className="flex items-center gap-1.5">
-      {RUSH_COLORS.map((color) => (
+      {FOLDER_COLORS.map((color) => (
         <button
           key={color.token}
           type="button"
@@ -195,7 +195,6 @@ function RushRow({
         onClick={() => navigate(rushHref(pathname, sequence.id))}
         className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left"
       >
-        {sequence.color && <Dot token={sequence.color} />}
         <span className="truncate">{sequence.label}</span>
         <span className="tnum ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
           {sequence.state === "ready" ? formatDuration(sequence.duration_ms) : sequence.state}
@@ -536,7 +535,7 @@ export function RushTree() {
   const [creating, setCreating] = useState<{ parent: Folder | null } | null>(null);
   const [deleting, setDeleting] = useState<Folder | null>(null);
   const [name, setName] = useState("");
-  const [color, setColor] = useState(RUSH_COLORS[0].token);
+  const [color, setColor] = useState(FOLDER_COLORS[0].token);
   const [dragged, setDragged] = useState<Dragged>(null);
 
   const { data: sequences } = useQuery({
@@ -656,7 +655,7 @@ export function RushTree() {
     setName("");
     // Preselected at random, so a folder made without a thought still comes out told
     // apart from its neighbours.
-    setColor(RUSH_COLORS[Math.floor(Math.random() * RUSH_COLORS.length)].token);
+    setColor(FOLDER_COLORS[Math.floor(Math.random() * FOLDER_COLORS.length)].token);
     setCreating({ parent });
   };
 

@@ -105,8 +105,9 @@ class Sequence(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     key: str = Field(index=True, unique=True)          # derived from the first part name
     label: str = ""
-    # Free-form tag the user pins on a rush to find it again in a long session.
-    # A palette token, not a CSS colour: the front decides how it looks.
+    # Dead since 2026-08-20: only folders carry a colour now. The column stays
+    # because it is NOT NULL with no DDL default, so dropping it from the model
+    # would break every insert on an existing database.
     color: str = ""
     state: SequenceState = Field(default=SequenceState.NEW, index=True)
     # Which drawer it sits in. None is not an error state: a rush belongs nowhere

@@ -46,7 +46,6 @@ import {
 } from "@/components/ui/table";
 import { api, mediaUrl, type Cut, type SequenceDetail } from "@/lib/api";
 import { usePersistentState } from "@/lib/persist";
-import { RUSH_COLORS } from "@/lib/colors";
 import { formatDuration, formatTimecode, frameToSeconds, secondsToFrame } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -795,15 +794,11 @@ function Editor({ sequenceId }: { sequenceId: number }) {
 }
 
 /**
- * Name and colour tag of the current rush, editable in place.
+ * Name of the current rush, editable in place.
  *
  * The key a rush is born with (`DJI_20260811144828_0044_D`) says when it was
- * filmed and nothing about what is in it. Over a session of thirty, a name and a
- * colour are what make one findable again.
- *
- * The swatches sit out in the open rather than behind a popover: seven small
- * targets cost less room than the button that would hide them, and tagging is one
- * click instead of two.
+ * filmed and nothing about what is in it. Over a session of thirty, a name is what
+ * makes one findable again.
  */
 function RushIdentity({ sequence }: { sequence: SequenceDetail }) {
   const queryClient = useQueryClient();
@@ -811,8 +806,7 @@ function RushIdentity({ sequence }: { sequence: SequenceDetail }) {
   const [draft, setDraft] = useState(sequence.label);
 
   const update = useMutation({
-    mutationFn: (changes: { label?: string; color?: string }) =>
-      api.updateSequence(sequence.id, changes),
+    mutationFn: (changes: { label?: string }) => api.updateSequence(sequence.id, changes),
     onSuccess: () => {
       setEditing(false);
       queryClient.invalidateQueries({ queryKey: ["sequence", sequence.id] });
@@ -861,28 +855,6 @@ function RushIdentity({ sequence }: { sequence: SequenceDetail }) {
           <Pencil className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-60" />
         </button>
       )}
-
-      <span className="flex items-center gap-1">
-        {RUSH_COLORS.map((color) => (
-          <button
-            key={color.token}
-            type="button"
-            title={`Tag ${color.label}`}
-            disabled={update.isPending}
-            onClick={() =>
-              // Clicking the tag it already carries takes it off.
-              update.mutate({ color: sequence.color === color.token ? "" : color.token })
-            }
-            className={cn(
-              "h-3.5 w-3.5 rounded-full transition-transform hover:scale-125",
-              color.dot,
-              sequence.color === color.token
-                ? "ring-2 ring-foreground ring-offset-1 ring-offset-background"
-                : "opacity-40 hover:opacity-100",
-            )}
-          />
-        ))}
-      </span>
     </span>
   );
 }

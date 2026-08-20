@@ -35,9 +35,7 @@ from ..models import (
 from ..paths import exists as path_exists, to_absolute
 from ..pipeline import (
     PRIORITY_MANUAL,
-    adopt_existing_artifacts,
     enqueue_merge,
-    enqueue_pending,
     enqueue_proxy,
     ingest_and_group,
     mark_upload_complete,
@@ -45,13 +43,10 @@ from ..pipeline import (
     upload_started,
     unique_destination,
 )
-from ..services.grouping import sequence_hash
-from ..services.naming import sequence_key
 from ..services import grading as grading_service
 from ..services import gyro as gyro_service
 from ..services import gyroflow as gyroflow_service
 from ..services.probe import fingerprint_lengths, fingerprint_parts
-from ..timeutil import as_utc
 from . import media, schemas
 
 log = logging.getLogger(__name__)
@@ -623,22 +618,19 @@ def get_sequence(sequence_id: int, session: Session = Depends(get_session)) -> s
 def update_sequence(
     sequence_id: int,
     label: str | None = Query(None, min_length=1, max_length=200),
-    color: str | None = Query(None, max_length=20),
     folder_id: int | None = Query(None, ge=0),
     session: Session = Depends(get_session),
 ) -> schemas.SequenceOut:
-    """Rename a rush, tag it with a colour, file it in a folder. Absent is unchanged.
+    """Rename a rush, file it in a folder. Absent is unchanged.
 
     `folder_id=0` takes it out of its folder: a query parameter cannot carry null in a
     way that differs from being left out, and both meanings are wanted here.
     """
-    if label is None and color is None and folder_id is None:
+    if label is None and folder_id is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "nothing to update")
     seq = _get_sequence(session, sequence_id)
     if label is not None:
         seq.label = label
-    if color is not None:
-        seq.color = color
     if folder_id is not None:
         seq.folder_id = _get_folder(session, folder_id).id if folder_id else None
     seq.updated_at = utcnow()
@@ -721,164 +713,6 @@ def delete_sequence(
     session.delete(seq)
     session.commit()
     return {"deleted": seq.key, "files_removed": removed}
-
-
-@router.post("/sequences/{sequence_id}/split", response_model=list[schemas.SequenceOut])
-def split_sequence(
-    sequence_id: int,
-    force: bool = False,
-    session: Session = Depends(get_session),
-) -> list[schemas.SequenceOut]:
-    """Undo a merge: one sequence per part, in place of the joined one.
-
-    The parts have to be given sequences of their own straight away rather than being
-    left loose, because loose contiguous clips are exactly what the scan regroups: let
-    go of them and the next tick puts the merge back.
-
-    The joined file and its proxy are deleted. They carry the content hash of the group
-    in their name, so leaving them would only leave files no row points at, and
-    rejoining the same parts finds them again by that name anyway.
-    """
-    seq = _get_sequence(session, sequence_id)
-    clips = session.exec(
-        select(Clip).where(Clip.sequence_id == seq.id).order_by(Clip.part_index)  # type: ignore[arg-type]
-    ).all()
-    if len(clips) < 2:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "nothing to split: this rush has a single part"
-        )
-    if seq.state == SequenceState.READY and not force:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"{seq.label or seq.key} is ready; pass force=true to take it apart",
-        )
-
-    folder_id = seq.folder_id
-    ordered = list(clips)
-    delete_sequence(sequence_id, keep_raw=True, keep_derived=False, session=session)
-
-    created: list[Sequence] = []
-    for clip in ordered:
-        fresh = session.get(Clip, clip.id)
-        if fresh is None:
-            continue
-        key = sequence_key(fresh.filename)
-        if session.exec(select(Sequence).where(Sequence.key == key)).first() is not None:
-            key = f"{key}__s{fresh.id}"
-        single = Sequence(
-            key=key,
-            label=key,
-            folder_id=folder_id,
-            content_hash=sequence_hash([fresh.fingerprint]),
-            state=SequenceState.NEW,
-            part_count=1,
-            width=fresh.width,
-            height=fresh.height,
-            fps_num=fresh.fps_num,
-            fps_den=fresh.fps_den,
-            duration_ms=fresh.duration_ms,
-            size_bytes=fresh.size_bytes,
-            recorded_at=fresh.recorded_at,
-        )
-        session.add(single)
-        session.commit()
-        session.refresh(single)
-        fresh.sequence_id = single.id
-        fresh.part_index = 0
-        session.add(fresh)
-        session.commit()
-        adopt_existing_artifacts(session, single)
-        if single.state != SequenceState.READY:
-            enqueue_pending(session, single)
-        created.append(single)
-
-    return [_sequence_out(session, s) for s in created]
-
-
-@router.post("/sequences/regroup", response_model=schemas.SequenceOut)
-def regroup(payload: schemas.RegroupRequest, session: Session = Depends(get_session)) -> schemas.SequenceOut:
-    """Join clips into a single sequence by hand.
-
-    Useful when a part showed up after its sequence had already been merged:
-    automatic detection never touches a sequence that has been produced.
-
-    The caller names either clips or sequences whose parts should be joined. The
-    UI only knows about sequences.
-    """
-    clips = [session.get(Clip, cid) for cid in payload.clip_ids]
-    if any(c is None for c in clips):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown clip in the list")
-    clips = [c for c in clips if c is not None]
-
-    known = {c.id for c in clips}
-    for sid in payload.sequence_ids:
-        if session.get(Sequence, sid) is None:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown sequence {sid}")
-        for clip in session.exec(select(Clip).where(Clip.sequence_id == sid)).all():
-            if clip.id not in known:
-                known.add(clip.id)
-                clips.append(clip)
-
-    if len(clips) < 2:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "at least two parts are needed to join"
-        )
-
-    clips.sort(key=lambda c: (as_utc(c.recorded_at) or utcnow(), c.camera_index or 0, c.filename))
-
-    # The folder the joined rush lands in: the one the first part was filed in. A join
-    # is the inverse of a split, which keeps the folder, so this one has to as well or
-    # taking a group apart and putting it back would quietly empty a drawer.
-    first_home = session.get(Sequence, clips[0].sequence_id) if clips[0].sequence_id else None
-    folder_id = first_home.folder_id if first_home is not None else None
-
-    touched_ids = {c.sequence_id for c in clips if c.sequence_id}
-    for sid in touched_ids:
-        old = session.get(Sequence, sid)
-        if old is None:
-            continue
-        if old.state == SequenceState.READY and not payload.force:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                f"sequence {old.key} is already ready; pass force=true to redo it",
-            )
-        delete_sequence(sid, keep_raw=True, session=session)
-
-    first = clips[0]
-    key = f"{Path(first.filename).stem}"
-    if session.exec(select(Sequence).where(Sequence.key == key)).first() is not None:
-        key = f"{key}__r{first.id}"
-
-    seq = Sequence(
-        key=key,
-        label=payload.label or key,
-        folder_id=folder_id,
-        content_hash=sequence_hash([c.fingerprint for c in clips]),
-        state=SequenceState.NEW,
-        part_count=len(clips),
-        width=first.width,
-        height=first.height,
-        fps_num=first.fps_num,
-        fps_den=first.fps_den,
-        duration_ms=sum(c.duration_ms for c in clips),
-        size_bytes=sum(c.size_bytes for c in clips),
-        recorded_at=first.recorded_at,
-    )
-    session.add(seq)
-    session.commit()
-    session.refresh(seq)
-    for index, clip in enumerate(clips):
-        clip.sequence_id = seq.id
-        clip.part_index = index
-        session.add(clip)
-    session.commit()
-
-    # Same parts, same order, same merge: if that file is still on disk from a
-    # previous run, the whole heavy part is already done.
-    adopt_existing_artifacts(session, seq)
-    if seq.state != SequenceState.READY:
-        enqueue_pending(session, seq)
-    return _sequence_out(session, seq)
 
 
 # --------------------------------------------------------------------------- #

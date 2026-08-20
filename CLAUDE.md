@@ -332,8 +332,9 @@ pas approché la limite de fichier s'est arrêtée parce qu'on a arrêté d'enre
 carte, pas à nous, et il faisait dépendre les paires O4 d'un nombre mesuré sur des
 fichiers O3. Le facteur de séparation était plus confortable (2,7 contre 1,4 pour
 l'écart), mais un nombre confortable et faux ailleurs ne vaut pas un nombre juste et
-serré. Le recours en cas d'erreur est la page merge, qui défait et refait un groupe à
-la main.
+serré. Il n'y a aucun recours manuel (voir plus bas) : deux parts séparées à tort se
+recollent en supprimant les deux séquences, ce qui rend leurs clips libres et laisse le
+scan suivant les regrouper. Deux vols collés à tort, eux, n'ont pas de recours.
 
 À ne pas confondre avec la vraie cause du bug du 2026-08-20 : sur la paire O4 qui a
 déclenché tout ça, la taille passait déjà (3,76 Go). Voir ci-dessous.
@@ -674,7 +675,7 @@ Conséquences à ne pas oublier :
 
 Refonte du 2026-08-20. La barre de gauche porte quatre choses, dans cet ordre : le nom,
 le compte de workers (cliquable, le détail des capacités est dans un dialogue et non
-plus dans une infobulle), l'arborescence des rushes, puis les cinq pages. shadcn de
+plus dans une infobulle), l'arborescence des rushes, puis les quatre pages. shadcn de
 base uniquement, `dropdown-menu` ajouté pour les actions par ligne.
 
 **Les dossiers vont à deux niveaux, pas plus.** Un site, et une sortie dedans. La règle
@@ -739,17 +740,21 @@ voit pas le `:id` de l'enfant, il rend le match de la route parente. D'où
 `lib/routing.ts`, qui lit le chemin. La page couleur ne prend pas de rush, son `:id` est
 un rendu.
 
-**Une page merge, et c'est elle qui porte le groupage.** Elle montre l'écart entre la
-fin d'un rush et le début du suivant, ce qui est exactement ce que le chaînage
-automatique lit : sous la seconde en ambre, on voit d'un coup d'œil deux parts qui vont
-ensemble. Joindre à la main et dégrouper sont là, et la page import a perdu ses cases à
-cocher, qui faisaient le même travail deux fois.
+**Pas de page merge, et aucun groupage à la main.** Elle a existé une journée, le
+2026-08-20 : l'écart entre deux rushs consécutifs, joindre, dégrouper. Retirée le même
+jour, choix de florian, le groupage automatique est le seul chemin. Partis avec elle :
+`POST /sequences/regroup`, `POST /sequences/{id}/split`, et le soin qu'ils prenaient de
+garder le dossier de la première part. Si un groupe est faux, le seul recours est de
+supprimer les séquences en cause, ce qui rend leurs clips libres (les masters restent
+sur le disque) et laisse le prochain scan les regrouper. Il rend le même verdict, donc
+ça répare une paire séparée à tort, jamais deux vols collés.
 
-**Dégrouper redonne une séquence à chaque part tout de suite**, jamais des clips
-libres : des clips contigus sans séquence sont précisément ce que le scan regroupe, donc
-les lâcher remettrait la fusion au tic suivant. Et **joindre garde le dossier de la
-première part**, parce que dégrouper le garde : mesuré le 2026-08-20, ça ne le gardait
-pas, et défaire puis refaire un groupe vidait le dossier sans rien dire.
+**La pastille de couleur n'appartient qu'aux dossiers.** Un rush en portait une aussi,
+posée depuis la page derush. Retirée le 2026-08-20 : dans une liste où le nom et la
+durée sont déjà là, la couleur d'un rush ne distinguait rien, alors que celle d'un
+dossier est ce qui le fait reconnaître d'un coup d'œil. La colonne `sequence.color`
+**reste en base** : elle est NOT NULL sans défaut DDL, donc la retirer du modèle
+casserait chaque insertion sur une base existante.
 
 ## L'auto-migration doit remplir, pas seulement ajouter
 

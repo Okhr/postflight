@@ -74,7 +74,6 @@ class SequenceOut(BaseSchema):
     id: int
     key: str
     label: str
-    color: str = ""
     folder_id: int | None = None
     state: str
     part_count: int
@@ -129,15 +128,6 @@ class RenderRequest(BaseSchema):
     cut_ids: list[int] | None = None
     whole_sequence: bool = False
     overrides: dict[str, Any] = Field(default_factory=dict)
-
-
-class RegroupRequest(BaseSchema):
-    # Two possible inputs: the clips directly, or the sequences whose parts should
-    # be joined (what the UI does, since it only ever handles sequences).
-    clip_ids: list[int] = Field(default_factory=list)
-    sequence_ids: list[int] = Field(default_factory=list)
-    label: str | None = None
-    force: bool = False
 
 
 class FolderOut(BaseSchema):
