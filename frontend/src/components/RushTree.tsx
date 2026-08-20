@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, FolderPlus, MoreHorizontal } from "lucide-react";
+import { ChevronRight, FolderPlus, Palette, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -15,43 +15,106 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { api, type Folder, type Sequence } from "@/lib/api";
-import { rushColor } from "@/lib/colors";
+import { RUSH_COLORS, rushColor } from "@/lib/colors";
 import { formatDuration } from "@/lib/format";
 import { usePersistentSet } from "@/lib/persist";
 import { rushHref, selectedRushId } from "@/lib/routing";
 import { cn } from "@/lib/utils";
 
-function Dot({ token }: { token: string }) {
+/** What is being dragged. Kept in state rather than read from the drop event:
+ *  `dataTransfer` hides its values during `dragover`, and whether a drop is legal
+ *  has to be known then, which is when the target decides to light up. */
+type Dragged = { kind: "rush" | "folder"; id: number } | null;
+
+function Dot({ token, className }: { token: string; className?: string }) {
   const color = rushColor(token);
-  return <span className={cn("h-2 w-2 shrink-0 rounded-full", color?.dot ?? "bg-muted")} />;
+  return (
+    <span
+      className={cn("h-2 w-2 shrink-0 rounded-full", color?.dot ?? "bg-muted", className)}
+    />
+  );
 }
 
-function RushRow({ sequence, folders }: { sequence: Sequence; folders: Folder[] }) {
+/** The six palette tokens as swatches. Used at creation and to recolour. */
+function Swatches({
+  value,
+  onPick,
+}: {
+  value: string;
+  onPick: (token: string) => void;
+}) {
+  return (
+    <span className="flex items-center gap-1.5">
+      {RUSH_COLORS.map((color) => (
+        <button
+          key={color.token}
+          type="button"
+          onClick={() => onPick(color.token)}
+          aria-label={color.label}
+          className={cn(
+            "h-5 w-5 rounded-full border-2 transition-colors",
+            color.dot,
+            value === color.token ? "border-foreground" : "border-transparent",
+          )}
+        />
+      ))}
+    </span>
+  );
+}
+
+/** A hover action on a row: an icon, and nothing else until it is hovered. */
+function RowIcon({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100"
+    >
+      {children}
+    </button>
+  );
+}
+
+function RushRow({
+  sequence,
+  dragged,
+  setDragged,
+}: {
+  sequence: Sequence;
+  dragged: Dragged;
+  setDragged: (dragged: Dragged) => void;
+}) {
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const active = selectedRushId(pathname) === sequence.id;
-
-  const file = useMutation({
-    mutationFn: (folderId: number | null) => api.updateSequence(sequence.id, { folderId }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["sequences"] }),
-    onError: (error: Error) => toast.error(error.message),
-  });
+  const lifted = dragged?.kind === "rush" && dragged.id === sequence.id;
 
   return (
     <div
+      draggable
+      onDragStart={() => setDragged({ kind: "rush", id: sequence.id })}
+      onDragEnd={() => setDragged(null)}
       className={cn(
         "group flex items-center gap-1.5 rounded-md pl-2 pr-1 text-sm transition-colors",
         active ? "bg-accent" : "hover:bg-accent/50",
+        lifted && "opacity-40",
       )}
     >
       <button
@@ -62,47 +125,9 @@ function RushRow({ sequence, folders }: { sequence: Sequence; folders: Folder[] 
         {sequence.color && <Dot token={sequence.color} />}
         <span className="truncate">{sequence.label}</span>
         <span className="tnum ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
-          {sequence.state === "ready"
-            ? formatDuration(sequence.duration_ms)
-            : sequence.state}
+          {sequence.state === "ready" ? formatDuration(sequence.duration_ms) : sequence.state}
         </span>
       </button>
-
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100"
-            aria-label={`Actions for ${sequence.label}`}
-          >
-            <MoreHorizontal className="h-3.5 w-3.5" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Move to</DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              {folders.map((folder) => (
-                <DropdownMenuItem
-                  key={folder.id}
-                  disabled={folder.id === sequence.folder_id}
-                  onSelect={() => file.mutate(folder.id)}
-                >
-                  <Dot token={folder.color} />
-                  {folder.name}
-                </DropdownMenuItem>
-              ))}
-              {folders.length > 0 && <DropdownMenuSeparator />}
-              <DropdownMenuItem
-                disabled={sequence.folder_id === null}
-                onSelect={() => file.mutate(null)}
-              >
-                No folder
-              </DropdownMenuItem>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        </DropdownMenuContent>
-      </DropdownMenu>
     </div>
   );
 }
@@ -114,8 +139,12 @@ function FolderRow({
   collapsed,
   onToggle,
   onRename,
+  onRecolour,
   onDelete,
   onAddChild,
+  onDrop,
+  dragged,
+  setDragged,
 }: {
   folder: Folder;
   /** All of them, so a row can find its own children rather than be handed them. */
@@ -124,17 +153,57 @@ function FolderRow({
   collapsed: Set<string>;
   onToggle: (key: string) => void;
   onRename: (folder: Folder) => void;
+  onRecolour: (folder: Folder, token: string) => void;
   onDelete: (folder: Folder) => void;
   onAddChild: (parent: Folder) => void;
+  onDrop: (dragged: Dragged, into: number | null) => void;
+  dragged: Dragged;
+  setDragged: (dragged: Dragged) => void;
 }) {
+  const [over, setOver] = useState(false);
   const open = !collapsed.has(String(folder.id));
   const kids = folders.filter((f) => f.parent_id === folder.id);
   const mine = rushes.filter((s) => s.folder_id === folder.id);
   const held = mine.length + kids.length;
+  const root = folder.parent_id === null;
+
+  // Two levels is the whole rule, so a folder only ever drops into a root one, and
+  // never into itself or into a folder it already sits in.
+  const takes =
+    dragged !== null &&
+    (dragged.kind === "rush"
+      ? rushes.find((s) => s.id === dragged.id)?.folder_id !== folder.id
+      : root &&
+        dragged.id !== folder.id &&
+        folders.find((f) => f.id === dragged.id)?.parent_id !== folder.id &&
+        !folders.some((f) => f.parent_id === dragged.id));
 
   return (
     <div>
-      <div className="group flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-accent/50">
+      <div
+        draggable
+        onDragStart={() => setDragged({ kind: "folder", id: folder.id })}
+        onDragEnd={() => setDragged(null)}
+        onDragOver={(event) => {
+          if (!takes) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setOver(true);
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(event) => {
+          if (!takes) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setOver(false);
+          onDrop(dragged, folder.id);
+        }}
+        className={cn(
+          "group flex items-center gap-1 rounded-md pr-1 transition-colors",
+          over ? "bg-primary/20 ring-1 ring-primary" : "hover:bg-accent/50",
+          dragged?.kind === "folder" && dragged.id === folder.id && "opacity-40",
+        )}
+      >
         <button
           type="button"
           onClick={() => onToggle(String(folder.id))}
@@ -157,27 +226,34 @@ function FolderRow({
           <DropdownMenuTrigger asChild>
             <button
               type="button"
+              title="Colour"
+              aria-label={`Colour of ${folder.name}`}
+              onClick={(event) => event.stopPropagation()}
               className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100"
-              aria-label={`Actions for ${folder.name}`}
             >
-              <MoreHorizontal className="h-3.5 w-3.5" />
+              <Palette className="h-3.5 w-3.5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => onRename(folder)}>Rename</DropdownMenuItem>
-            {/* Two levels is the limit, so only a root folder offers this. */}
-            {folder.parent_id === null && (
-              <DropdownMenuItem onSelect={() => onAddChild(folder)}>
-                New folder inside
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => onDelete(folder)}>Delete</DropdownMenuItem>
+          <DropdownMenuContent align="end" className="p-2">
+            <Swatches value={folder.color} onPick={(token) => onRecolour(folder, token)} />
           </DropdownMenuContent>
         </DropdownMenu>
+
+        <RowIcon label="Rename" onClick={() => onRename(folder)}>
+          <Pencil className="h-3.5 w-3.5" />
+        </RowIcon>
+        {/* Two levels is the limit, so only a root folder offers this. */}
+        {root && (
+          <RowIcon label="New folder inside" onClick={() => onAddChild(folder)}>
+            <FolderPlus className="h-3.5 w-3.5" />
+          </RowIcon>
+        )}
+        <RowIcon label="Delete" onClick={() => onDelete(folder)}>
+          <Trash2 className="h-3.5 w-3.5" />
+        </RowIcon>
       </div>
 
-      {open && (kids.length > 0 || mine.length > 0) && (
+      {open && held > 0 && (
         <div className="ml-3 border-l pl-1">
           {kids.map((child) => (
             <FolderRow
@@ -188,19 +264,27 @@ function FolderRow({
               collapsed={collapsed}
               onToggle={onToggle}
               onRename={onRename}
+              onRecolour={onRecolour}
               onDelete={onDelete}
               onAddChild={onAddChild}
+              onDrop={onDrop}
+              dragged={dragged}
+              setDragged={setDragged}
             />
           ))}
           {mine.map((sequence) => (
-            <RushRow key={sequence.id} sequence={sequence} folders={folders} />
+            <RushRow
+              key={sequence.id}
+              sequence={sequence}
+              dragged={dragged}
+              setDragged={setDragged}
+            />
           ))}
         </div>
       )}
     </div>
   );
 }
-
 
 /** The rush tree: folders two deep, and every rush that is not in one below them. */
 export function RushTree() {
@@ -210,6 +294,9 @@ export function RushTree() {
   const [creating, setCreating] = useState<{ parent: Folder | null } | null>(null);
   const [deleting, setDeleting] = useState<Folder | null>(null);
   const [name, setName] = useState("");
+  const [color, setColor] = useState(RUSH_COLORS[0].token);
+  const [dragged, setDragged] = useState<Dragged>(null);
+  const [overRoot, setOverRoot] = useState(false);
 
   const { data: sequences } = useQuery({
     queryKey: ["sequences"],
@@ -218,9 +305,12 @@ export function RushTree() {
   });
   const { data: folders } = useQuery({ queryKey: ["folders"], queryFn: api.folders });
 
-  const done = () => {
+  const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["folders"] });
     queryClient.invalidateQueries({ queryKey: ["sequences"] });
+  };
+  const done = () => {
+    refresh();
     setRenaming(null);
     setCreating(null);
     setDeleting(null);
@@ -229,18 +319,35 @@ export function RushTree() {
   const failed = (error: Error) => toast.error(error.message);
 
   const create = useMutation({
-    mutationFn: () => api.createFolder(name.trim(), creating?.parent?.id ?? null),
+    mutationFn: () => api.createFolder(name.trim(), creating?.parent?.id ?? null, color),
     onSuccess: done,
     onError: failed,
   });
   const rename = useMutation({
-    mutationFn: () => api.renameFolder(renaming?.id ?? 0, name.trim()),
+    mutationFn: () => api.updateFolder(renaming?.id ?? 0, { name: name.trim() }),
     onSuccess: done,
+    onError: failed,
+  });
+  const recolour = useMutation({
+    mutationFn: ({ id, token }: { id: number; token: string }) =>
+      api.updateFolder(id, { color: token }),
+    onSuccess: refresh,
     onError: failed,
   });
   const remove = useMutation({
     mutationFn: () => api.deleteFolder(deleting?.id ?? 0),
     onSuccess: done,
+    onError: failed,
+  });
+  // A rush and a folder move through different endpoints, and the result of neither is
+  // read: the tree refetches, which is also what keeps the counts right.
+  const move = useMutation<void, Error, { item: Dragged; into: number | null }>({
+    mutationFn: async ({ item, into }) => {
+      if (item === null) return;
+      if (item.kind === "rush") await api.updateSequence(item.id, { folderId: into });
+      else await api.updateFolder(item.id, { parentId: into });
+    },
+    onSuccess: refresh,
     onError: failed,
   });
 
@@ -251,20 +358,57 @@ export function RushTree() {
     (s) => s.folder_id === null || !all.some((f) => f.id === s.folder_id),
   );
 
+  const drop = (item: Dragged, into: number | null) => {
+    setDragged(null);
+    if (item !== null) move.mutate({ item, into });
+  };
+
+  // The tree's own body is the way back out of a folder, for a rush and for a
+  // subfolder alike. A row that takes the drop stops the event, so this only ever
+  // sees what was dropped on the empty space around them.
+  const rootTakes =
+    dragged !== null &&
+    (dragged.kind === "rush"
+      ? rushes.find((s) => s.id === dragged.id)?.folder_id !== null
+      : all.find((f) => f.id === dragged.id)?.parent_id !== null);
+
+  const openCreate = (parent: Folder | null) => {
+    setName("");
+    // Preselected at random, so a folder made without a thought still comes out told
+    // apart from its neighbours.
+    setColor(RUSH_COLORS[Math.floor(Math.random() * RUSH_COLORS.length)].token);
+    setCreating({ parent });
+  };
+
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div
+      className={cn(
+        "min-h-0 flex-1 overflow-y-auto rounded-md transition-colors",
+        overRoot && "bg-primary/10 ring-1 ring-primary",
+      )}
+      onDragOver={(event) => {
+        if (!rootTakes) return;
+        event.preventDefault();
+        setOverRoot(true);
+      }}
+      onDragLeave={() => setOverRoot(false)}
+      onDrop={(event) => {
+        if (!rootTakes) return;
+        event.preventDefault();
+        setOverRoot(false);
+        drop(dragged, null);
+      }}
+    >
       <div className="mb-1 flex items-center justify-between pl-2 pr-1">
         <span className="text-sm font-medium text-muted-foreground">Rushes</span>
         <span className="flex items-center gap-1">
           <span className="tnum text-xs text-muted-foreground">{rushes.length}</span>
           <button
             type="button"
-            onClick={() => {
-              setName("");
-              setCreating({ parent: null });
-            }}
-            className="rounded p-0.5 text-muted-foreground hover:text-foreground"
+            onClick={() => openCreate(null)}
+            title="New folder"
             aria-label="New folder"
+            className="rounded p-0.5 text-muted-foreground hover:text-foreground"
           >
             <FolderPlus className="h-3.5 w-3.5" />
           </button>
@@ -283,16 +427,22 @@ export function RushTree() {
             setName(f.name);
             setRenaming(f);
           }}
+          onRecolour={(f, token) => recolour.mutate({ id: f.id, token })}
           onDelete={setDeleting}
-          onAddChild={(parent) => {
-            setName("");
-            setCreating({ parent });
-          }}
+          onAddChild={openCreate}
+          onDrop={drop}
+          dragged={dragged}
+          setDragged={setDragged}
         />
       ))}
 
       {loose.map((sequence) => (
-        <RushRow key={sequence.id} sequence={sequence} folders={all} />
+        <RushRow
+          key={sequence.id}
+          sequence={sequence}
+          dragged={dragged}
+          setDragged={setDragged}
+        />
       ))}
 
       {rushes.length === 0 && (
@@ -316,6 +466,7 @@ export function RushTree() {
             </DialogTitle>
           </DialogHeader>
           <form
+            className="space-y-4"
             onSubmit={(event) => {
               event.preventDefault();
               if (!name.trim()) return;
@@ -326,9 +477,9 @@ export function RushTree() {
               autoFocus
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Pierrevert, August 2026, ..."
             />
-            <DialogFooter className="mt-4">
+            {!renaming && <Swatches value={color} onPick={setColor} />}
+            <DialogFooter>
               <Button type="submit" size="sm" disabled={!name.trim()}>
                 {renaming ? "Rename" : "Create"}
               </Button>

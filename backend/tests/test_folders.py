@@ -24,9 +24,32 @@ def _folder(session: Session, name: str, parent_id: int | None = None) -> schema
 # The shape of the tree
 # --------------------------------------------------------------------------- #
 
-def test_a_new_folder_draws_a_colour(session: Session):
-    """Nobody is asked to pick one: naming it is the only thing worth a prompt."""
+def test_a_new_folder_draws_a_colour_when_none_is_given(session: Session):
+    """So a folder made in a hurry still comes out told apart from its neighbours."""
     assert _folder(session, "Pierrevert").color in routes.FOLDER_COLORS
+
+
+def test_a_chosen_colour_is_kept(session: Session):
+    created = routes.create_folder(schemas.FolderIn(name="Pierrevert", color="violet"), session)
+    assert created.color == "violet"
+
+
+def test_a_colour_outside_the_palette_is_refused(session: Session):
+    """The front decides what each token looks like, so one it has no entry for would
+    come out as no colour at all. Better a 400 than a folder with an invisible dot."""
+    with pytest.raises(HTTPException) as raised:
+        routes.create_folder(schemas.FolderIn(name="Pierrevert", color="chartreuse"), session)
+    assert raised.value.status_code == 400
+
+    folder = _folder(session, "Manosque")
+    with pytest.raises(HTTPException):
+        routes.update_folder(folder.id, schemas.FolderPatch(color="#ff0000"), session)
+
+
+def test_the_colour_can_be_changed(session: Session):
+    folder = _folder(session, "Pierrevert")
+    recoloured = routes.update_folder(folder.id, schemas.FolderPatch(color="sky"), session)
+    assert (recoloured.name, recoloured.color) == ("Pierrevert", "sky")
 
 
 def test_two_levels_is_the_limit(session: Session):

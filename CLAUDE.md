@@ -680,8 +680,19 @@ base uniquement, `dropdown-menu` ajouté pour les actions par ligne.
 **Les dossiers vont à deux niveaux, pas plus.** Un site, et une sortie dedans. La règle
 vit dans l'API et pas dans le modèle : une contrainte sur une table qui se référence
 elle-même ne voit pas le grand-parent. Un dossier ne contient aucune image, donc le
-supprimer ne perd rien et ce qu'il tenait revient à la racine. La couleur est **tirée au
-sort à la création** : nommer le dossier est la seule chose qui vaille une question.
+supprimer ne perd rien et ce qu'il tenait revient à la racine. La couleur se choisit à
+la création, parmi les six jetons de `lib/colors.ts`, avec un tirage au sort en
+présélection ; l'API **refuse** un jeton hors palette, parce que le front décide de son
+apparence et qu'un mot qu'il ne connaît pas donnerait une pastille invisible.
+
+**On déplace au glisser-déposer**, un rush comme un sous-dossier, et le corps de
+l'arborescence est le chemin de retour vers la racine. Deux détails qui ont demandé de
+regarder : `dataTransfer` **cache ses valeurs pendant `dragover`**, or c'est là qu'une
+cible doit décider si elle s'allume, donc ce qui est soulevé vit dans un état React et
+pas dans l'événement ; et une ligne qui accepte le lâcher doit arrêter la propagation,
+sinon le conteneur reçoit aussi le drop et défait le classement dans la même seconde.
+Les trois lâchers illégaux (un dossier dans lui-même, dans un enfant, ou un dossier qui
+a des enfants dans un autre) ne s'allument pas, et le glisser ne change rien.
 
 **Le rush sélectionné est dans l'URL**, `/derush/12` ou `/stabilisation/12`, et il suit
 quand on change d'étape. Attention : `useParams` dans l'élément d'une route parente ne

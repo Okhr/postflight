@@ -398,6 +398,22 @@ def get_templates() -> list[schemas.TemplateOut]:
 # Folders
 # --------------------------------------------------------------------------- #
 
+def _color(token: str | None) -> str:
+    """A token from the palette, or one drawn from it.
+
+    Refusing an unknown token rather than storing it: the front decides what each one
+    looks like, and a word it has no entry for would come out as no colour at all.
+    """
+    if token is None:
+        return secrets.choice(FOLDER_COLORS)
+    if token not in FOLDER_COLORS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"unknown colour {token}; expected one of {', '.join(FOLDER_COLORS)}",
+        )
+    return token
+
+
 def _folder_out(session: Session, folder: Folder) -> schemas.FolderOut:
     return schemas.FolderOut(
         id=folder.id or 0,
@@ -449,9 +465,7 @@ def create_folder(
     _check_nesting(session, None, payload.parent_id)
     folder = Folder(
         name=payload.name.strip(),
-        # Drawn, not chosen: naming the folder is the only thing worth asking for, and
-        # a colour picked at creation is one less dialog.
-        color=secrets.choice(FOLDER_COLORS),
+        color=_color(payload.color),
         parent_id=payload.parent_id,
     )
     session.add(folder)
@@ -468,7 +482,7 @@ def update_folder(
     if payload.name is not None:
         folder.name = payload.name.strip()
     if payload.color is not None:
-        folder.color = payload.color
+        folder.color = _color(payload.color)
     if "parent_id" in payload.model_fields_set:
         _check_nesting(session, folder, payload.parent_id)
         folder.parent_id = payload.parent_id

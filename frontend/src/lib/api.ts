@@ -348,13 +348,25 @@ export const api = {
     request<Sequence[]>(`/sequences/${id}/split?force=${force}`, { method: "POST" }),
 
   folders: () => request<Folder[]>("/folders"),
-  createFolder: (name: string, parentId: number | null = null) =>
+  createFolder: (name: string, parentId: number | null = null, color?: string) =>
     request<Folder>("/folders", {
       method: "POST",
-      body: JSON.stringify({ name, parent_id: parentId }),
+      body: JSON.stringify({ name, parent_id: parentId, color }),
     }),
-  renameFolder: (id: number, name: string) =>
-    request<Folder>(`/folders/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  /** Rename, recolour, reparent. Omitted fields stay as they are, and `parentId: null`
+   *  is a move to the root, which is why it has to be spelled out to happen. */
+  updateFolder: (
+    id: number,
+    changes: { name?: string; color?: string; parentId?: number | null },
+  ) =>
+    request<Folder>(`/folders/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        ...(changes.name !== undefined && { name: changes.name }),
+        ...(changes.color !== undefined && { color: changes.color }),
+        ...(changes.parentId !== undefined && { parent_id: changes.parentId }),
+      }),
+    }),
   /** Nothing is lost: what was inside comes back to the root. */
   deleteFolder: (id: number) =>
     request<{ deleted: string; rushes_freed: number; folders_freed: number }>(

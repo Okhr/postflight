@@ -153,6 +153,9 @@ class FolderOut(BaseSchema):
 class FolderIn(BaseSchema):
     name: str = Field(min_length=1, max_length=120)
     parent_id: int | None = None
+    # Absent means draw one: a folder made in a hurry still comes out told apart from
+    # its neighbours.
+    color: str | None = None
 
 
 class FolderPatch(BaseSchema):
