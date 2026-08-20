@@ -3,8 +3,8 @@
 #
 # The database belongs to the API alone. The worker holds none: it registers over
 # HTTP, asks for a job, and posts back what it measured. That is what lets a second
-# worker run on another machine later on, and why `VS_API_URL` is all it needs to
-# find its way home.
+# worker run on another machine, and why `VS_API_URL` is all it needs to find its
+# way home. See docker-compose.remote-worker.yml.
 #
 # With no GPU it runs as is: Gyroflow falls back to pocl/CPU and ffmpeg decodes on
 # the CPU. To make use of a GPU, add the override:
