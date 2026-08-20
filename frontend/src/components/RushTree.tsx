@@ -437,9 +437,101 @@ function FolderRow({
   );
 }
 
+const FOLDERS = ["folders"] as const;
+const SEQUENCES = ["sequences"] as const;
+
+interface Tree {
+  folders: Folder[];
+  rushes: Sequence[];
+}
+
+/**
+ * A write to the tree that shows before it is confirmed.
+ *
+ * Every one of these is a click or a drop, and waiting for the round trip to move
+ * anything makes the tree feel like it is thinking. So the cache is written as the
+ * answer will look, the request goes out behind it, and a refusal puts the old tree
+ * back with the error. `onSettled` refetches either way: it is what corrects a
+ * prediction that turned out slightly wrong, without anyone having to notice.
+ */
+function useTreeWrite<TVars>(
+  send: (vars: TVars) => Promise<unknown>,
+  predict: (vars: TVars, tree: Tree) => Tree,
+) {
+  const queryClient = useQueryClient();
+  return useMutation<unknown, Error, TVars, Tree>({
+    mutationFn: send,
+    onMutate: async (vars) => {
+      // A refetch already in the air would land on top of the prediction.
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: FOLDERS }),
+        queryClient.cancelQueries({ queryKey: SEQUENCES }),
+      ]);
+      const before: Tree = {
+        folders: queryClient.getQueryData<Folder[]>(FOLDERS) ?? [],
+        rushes: queryClient.getQueryData<Sequence[]>(SEQUENCES) ?? [],
+      };
+      const after = predict(vars, before);
+      queryClient.setQueryData(FOLDERS, after.folders);
+      queryClient.setQueryData(SEQUENCES, after.rushes);
+      return before;
+    },
+    onError: (error, _vars, before) => {
+      if (before) {
+        queryClient.setQueryData(FOLDERS, before.folders);
+        queryClient.setQueryData(SEQUENCES, before.rushes);
+      }
+      toast.error(error.message);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: FOLDERS });
+      queryClient.invalidateQueries({ queryKey: SEQUENCES });
+    },
+  });
+}
+
+const bySeat = (a: Folder, b: Folder) => a.position - b.position || a.id - b.id;
+
+/**
+ * The server's placement rule, repeated on this side so a drop lands at once.
+ *
+ * Duplicated logic is a cost paid on purpose: the alternative is a tree that jumps
+ * a beat after the drop. The two can only disagree until the refetch on settle, and
+ * that is what makes the duplication affordable rather than dangerous.
+ */
+function place(
+  folders: Folder[],
+  moved: Folder,
+  parentId: number | null,
+  index: number,
+): Folder[] {
+  const rank = new Map<number, number>();
+
+  const landing = folders
+    .filter((f) => f.parent_id === parentId && f.id !== moved.id)
+    .sort(bySeat);
+  landing.splice(Math.max(0, Math.min(index, landing.length)), 0, moved);
+  landing.forEach((f, seat) => rank.set(f.id, seat));
+
+  // The list it came from closes up, or the next drop there lands on the hole.
+  if (moved.parent_id !== parentId) {
+    folders
+      .filter((f) => f.parent_id === moved.parent_id && f.id !== moved.id)
+      .sort(bySeat)
+      .forEach((f, seat) => rank.set(f.id, seat));
+  }
+
+  return folders.map((f) => {
+    const seat = rank.get(f.id);
+    if (seat === undefined) return f;
+    return f.id === moved.id
+      ? { ...f, parent_id: parentId, position: seat }
+      : { ...f, position: seat };
+  });
+}
+
 /** The rush tree: Global, then the folders two deep, and the rushes inside them. */
 export function RushTree() {
-  const queryClient = useQueryClient();
   const [collapsed, toggle] = usePersistentSet("folders-collapsed");
   const [renaming, setRenaming] = useState<Folder | null>(null);
   const [creating, setCreating] = useState<{ parent: Folder | null } | null>(null);
@@ -455,55 +547,86 @@ export function RushTree() {
   });
   const { data: folders } = useQuery({ queryKey: ["folders"], queryFn: api.folders });
 
-  const refresh = () => {
-    queryClient.invalidateQueries({ queryKey: ["folders"] });
-    queryClient.invalidateQueries({ queryKey: ["sequences"] });
-  };
-  const done = () => {
-    refresh();
+  const shut = () => {
     setRenaming(null);
     setCreating(null);
     setDeleting(null);
     setName("");
   };
-  const failed = (error: Error) => toast.error(error.message);
 
-  const create = useMutation({
-    mutationFn: () => api.createFolder(name.trim(), creating?.parent?.id ?? null, color),
-    onSuccess: done,
-    onError: failed,
-  });
-  const rename = useMutation({
-    mutationFn: () => api.updateFolder(renaming?.id ?? 0, { name: name.trim() }),
-    onSuccess: done,
-    onError: failed,
-  });
-  const recolour = useMutation({
-    mutationFn: ({ id, token }: { id: number; token: string }) =>
-      api.updateFolder(id, { color: token }),
-    onSuccess: refresh,
-    onError: failed,
-  });
-  const remove = useMutation({
-    mutationFn: () => api.deleteFolder(deleting?.id ?? 0),
-    onSuccess: done,
-    onError: failed,
-  });
-  // A rush and a folder move through different endpoints, and the result of neither is
-  // read: the tree refetches, which is also what keeps the counts right.
-  const move = useMutation<
-    void,
-    Error,
-    { item: Dragged; into: number | null; index?: number }
-  >({
-    mutationFn: async ({ item, into, index }) => {
+  const create = useTreeWrite<{ name: string; parentId: number | null; color: string }>(
+    (vars) => api.createFolder(vars.name, vars.parentId, vars.color),
+    (vars, tree) => ({
+      ...tree,
+      // A made-up id until the real one arrives. Negative so it cannot collide, and
+      // short-lived: the refetch on settle replaces the row wholesale.
+      folders: [
+        ...tree.folders,
+        {
+          id: -Date.now(),
+          name: vars.name,
+          color: vars.color,
+          parent_id: vars.parentId,
+          position: tree.folders.filter((f) => f.parent_id === vars.parentId).length,
+          sequence_count: 0,
+        },
+      ],
+    }),
+  );
+
+  const rename = useTreeWrite<{ id: number; name: string }>(
+    (vars) => api.updateFolder(vars.id, { name: vars.name }),
+    (vars, tree) => ({
+      ...tree,
+      folders: tree.folders.map((f) => (f.id === vars.id ? { ...f, name: vars.name } : f)),
+    }),
+  );
+
+  const recolour = useTreeWrite<{ id: number; token: string }>(
+    (vars) => api.updateFolder(vars.id, { color: vars.token }),
+    (vars, tree) => ({
+      ...tree,
+      folders: tree.folders.map((f) => (f.id === vars.id ? { ...f, color: vars.token } : f)),
+    }),
+  );
+
+  const remove = useTreeWrite<{ id: number }>(
+    (vars) => api.deleteFolder(vars.id),
+    (vars, tree) => ({
+      // What it held is not lost: its rushes fall back to Global, its children to the
+      // root, which is what the API does with them.
+      folders: tree.folders
+        .filter((f) => f.id !== vars.id)
+        .map((f) => (f.parent_id === vars.id ? { ...f, parent_id: null } : f)),
+      rushes: tree.rushes.map((s) =>
+        s.folder_id === vars.id ? { ...s, folder_id: null } : s,
+      ),
+    }),
+  );
+
+  const move = useTreeWrite<{ item: Dragged; into: number | null; index?: number }>(
+    async ({ item, into, index }) => {
       if (item === null) return;
-      if (item.kind === "rush") await api.updateSequence(item.id, { folderId: into });
-      else await api.updateFolder(item.id, { parentId: into, position: index });
+      // A rush and a folder move through different endpoints, and the result of
+      // neither is read: the prediction already put them where they belong.
+      if (item.kind === "rush") return api.updateSequence(item.id, { folderId: into });
+      return api.updateFolder(item.id, { parentId: into, position: index });
     },
-    onSuccess: refresh,
-    onError: failed,
-  });
+    ({ item, into, index }, tree) => {
+      if (item === null) return tree;
+      if (item.kind === "rush") {
+        return {
+          ...tree,
+          rushes: tree.rushes.map((s) =>
+            s.id === item.id ? { ...s, folder_id: into } : s,
+          ),
+        };
+      }
+      const moved = tree.folders.find((f) => f.id === item.id);
+      if (moved === undefined) return tree;
+      return { ...tree, folders: place(tree.folders, moved, into, index ?? 10 ** 6) };
+    },
+  );
 
   const all = folders ?? [];
   const roots = all.filter((f) => f.parent_id === null);
@@ -542,18 +665,15 @@ export function RushTree() {
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mb-1 flex items-center justify-between pl-2 pr-1">
         <span className="text-sm font-medium text-muted-foreground">Rushes</span>
-        <span className="flex items-center gap-1">
-          <span className="tnum text-xs text-muted-foreground">{rushes.length}</span>
-          <button
-            type="button"
-            onClick={() => openCreate(null)}
-            title="New folder"
-            aria-label="New folder"
-            className="rounded p-0.5 text-muted-foreground hover:text-foreground"
-          >
-            <FolderPlus className="h-3.5 w-3.5" />
-          </button>
-        </span>
+        <button
+          type="button"
+          onClick={() => openCreate(null)}
+          title="New folder"
+          aria-label="New folder"
+          className="rounded p-0.5 text-muted-foreground hover:text-foreground"
+        >
+          <FolderPlus className="h-3.5 w-3.5" />
+        </button>
       </div>
 
       <FolderShell
@@ -608,7 +728,7 @@ export function RushTree() {
       <Dialog
         open={creating !== null || renaming !== null}
         onOpenChange={(open) => {
-          if (!open) done();
+          if (!open) shut();
         }}
       >
         <DialogContent className="max-w-sm">
@@ -625,8 +745,12 @@ export function RushTree() {
             className="space-y-4"
             onSubmit={(event) => {
               event.preventDefault();
-              if (!name.trim()) return;
-              (renaming ? rename : create).mutate();
+              const wanted = name.trim();
+              if (!wanted) return;
+              if (renaming) rename.mutate({ id: renaming.id, name: wanted });
+              else create.mutate({ name: wanted, parentId: creating?.parent?.id ?? null, color });
+              // Closed on the gesture, not on the answer: the tree already shows it.
+              shut();
             }}
           >
             <Input autoFocus value={name} onChange={(event) => setName(event.target.value)} />
@@ -652,7 +776,14 @@ export function RushTree() {
             <Button variant="ghost" size="sm" onClick={() => setDeleting(null)}>
               Cancel
             </Button>
-            <Button variant="destructive" size="sm" onClick={() => remove.mutate()}>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (deleting) remove.mutate({ id: deleting.id });
+                shut();
+              }}
+            >
               Delete
             </Button>
           </DialogFooter>

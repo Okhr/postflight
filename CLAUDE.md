@@ -716,6 +716,19 @@ Les lâchers illégaux ne s'allument pas et ne changent rien : un dossier dans l
 dans un enfant, un dossier qui a des enfants dans un autre, ou n'importe quel dossier
 dans Global.
 
+**Toute écriture de l'arborescence s'affiche avant d'être confirmée.** Créer, renommer,
+recolorier, supprimer, déplacer : le cache est écrit tel que la réponse le sera, la
+requête part derrière, et un refus remet l'arbre d'avant avec le message. `onSettled`
+refait la requête dans les deux cas, ce qui corrige une prédiction légèrement fausse
+sans que personne le voie. Mesuré le 2026-08-20 avec la réponse retenue par le test :
+dossier visible en **70 ms**, pastille changée en **29 ms**, rush déplacé en **136 ms**,
+le tout requête toujours en vol ; et un refus fait disparaître le dossier fantôme.
+
+La contrepartie assumée : la règle de placement du serveur est **répétée côté client**
+(`place()` dans `RushTree.tsx`), sinon un lâcher ne peut pas atterrir tout de suite. Les
+deux ne peuvent divergir que jusqu'au refetch, ce qui rend la duplication supportable.
+Et un dossier tout juste créé porte un **id négatif** le temps de l'aller-retour.
+
 **Le rush sélectionné est dans l'URL**, `/derush/12` ou `/stabilisation/12`, et il suit
 quand on change d'étape. Attention : `useParams` dans l'élément d'une route parente ne
 voit pas le `:id` de l'enfant, il rend le match de la route parente. D'où
