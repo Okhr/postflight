@@ -756,6 +756,64 @@ dossier est ce qui le fait reconnaître d'un coup d'œil. La colonne `sequence.c
 **reste en base** : elle est NOT NULL sans défaut DDL, donc la retirer du modèle
 casserait chaque insertion sur une base existante.
 
+### L'upload ne dépend plus de la page qui l'a lancé
+
+Refonte du 2026-08-21. Le transfert, lui, n'en a jamais dépendu : **un
+`XMLHttpRequest` en vol n'est pas annulé quand React démonte le composant qui l'a
+ouvert**, et rien n'appelait `abort()` au démontage. Ce qui se perdait en changeant de
+page, c'était tout ce qui l'entoure, parce que la file vivait dans l'état de la page
+import : la liste, le pourcentage, le bouton Stop, et le fait même qu'un upload
+tournait. D'où `lib/upload.tsx`, monté dans le layout, et la page devenue une vue.
+
+**Un onglet en arrière-plan continue, et ce n'est pas de la chance** : Chrome bride les
+timers et arrête `requestAnimationFrame` dans un onglet caché, il ne bride pas les
+requêtes réseau en vol. Or rien dans cette boucle n'attend un timer, ce sont des
+promesses et des événements XHR de bout en bout.
+
+Mesuré côté serveur (les octets arrivés dans `inbox/`, pas l'affichage), montée bridée
+à 8 Mo/s par CDP :
+
+| | mesuré |
+|---|---|
+| onglet au premier plan | 23,9 Mo en 3 s |
+| onglet « caché » | 24,0 Mo en 3 s |
+| `Page.setWebLifecycleState: frozen` | 24,0 Mo en 3 s |
+| après navigation vers `/derush` | 15,9 Mo en 2 s |
+
+**Honnêteté sur la deuxième ligne** : ni en headless ni sous X, `bring_to_front()` sur
+un autre onglet n'a fait passer `document.hidden` à vrai, donc l'onglet n'était
+probablement pas vraiment considéré comme caché et le gel forcé a pu être refusé. Ce qui
+est prouvé, c'est la navigation ; pour l'arrière-plan, l'argument reste l'absence de
+timer dans le chemin de l'upload.
+
+Fermer l'onglet, en revanche, tue le transfert : d'où un `beforeunload` tant qu'un
+upload tourne, et la ligne « Keep this tab open while uploading » a disparu, la barre de
+la sidebar disant mieux que ça continue ailleurs.
+
+Deux détails : **un Stop doit atteindre tous les lots en vol**, pas seulement le dernier
+(un `Set<AbortController>` au lieu d'une ref unique, sinon deux dépôts successifs
+laissent le premier incoupable), et la barre latérale n'affiche l'upload que pendant :
+un indicateur permanent à zéro serait du mobilier.
+
+### La barre latérale se tire, et les noms coupés se lisent
+
+320 px par défaut au lieu de 256, et une poignée de 4 px sur le bord droit, bridée entre
+200 et 560 px (mesuré : 150 demandés donnent 200, 900 donnent 560). La largeur va dans
+`localStorage` par `usePersistentState`, donc elle survit au rechargement. Écrire à
+chaque `pointermove` est assumé : c'est du localStorage, pas une requête.
+
+Tout nom en `truncate` porte un `title`, dans l'arbre comme dans la barre du haut. Pas
+de mesure de `scrollWidth` pour ne l'afficher que s'il est vraiment coupé : le `title`
+natif ne coûte rien et la page import faisait déjà ça pour les noms de fichiers.
+
+### La barre du haut : l'état en texte, le type en badge
+
+Le badge portait l'état (« running »), identique sur toutes les lignes, et le type était
+en texte gras. Inversé le 2026-08-21 : « Running task » se lit en texte normal, et le
+badge porte `stabilize` / `proxy` / `merge` / `color`, qui est ce qui distingue une ligne
+d'une autre. La barre a aussi perdu son `max-w-7xl` centré : elle prend toute la largeur,
+alignée sur le `px-6` du contenu en dessous.
+
 ## Le derush : le mot « sequence » est pris deux fois
 
 Refonte du 2026-08-21. Ce que l'interface appelle une **sequence** est un `Cut` dans le

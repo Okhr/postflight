@@ -1,5 +1,5 @@
+import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { StateBadge } from "@/components/StateBadge";
 import { etaLabel } from "@/lib/format";
 import { useLiveJobs } from "@/lib/live";
 
@@ -25,18 +25,22 @@ export function JobsBar() {
 
   return (
     <div className="border-b bg-card/60">
-      <div className="mx-auto max-w-7xl space-y-2 px-4 py-3">
+      <div className="space-y-2 px-6 py-3">
         {running.map((job) => (
           <div key={job.id} className="space-y-1">
             <div className="flex items-center justify-between gap-3 text-sm">
-              <span className="flex items-center gap-2">
-                <StateBadge state={job.state} />
-                <span className="font-medium">{KIND_LABELS[job.kind] ?? job.kind}</span>
+              <span className="flex min-w-0 items-center gap-2">
+                <span>Running task</span>
+                <Badge variant="secondary" className="font-normal">
+                  {KIND_LABELS[job.kind] ?? job.kind}
+                </Badge>
                 {job.sequence_key && (
-                  <span className="text-muted-foreground">{job.sequence_key}</span>
+                  <span className="truncate text-muted-foreground" title={job.sequence_key}>
+                    {job.sequence_key}
+                  </span>
                 )}
               </span>
-              <span className="tnum text-muted-foreground">
+              <span className="tnum shrink-0 text-muted-foreground">
                 {etaLabel(job.progress, job.started_at) ?? ""}
                 <span className="ml-2">{Math.round(job.progress * 100)} %</span>
               </span>

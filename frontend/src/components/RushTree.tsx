@@ -187,7 +187,9 @@ function CutRow({ cut, onOpen }: { cut: Cut; onOpen: () => void }) {
       onClick={onOpen}
       className="flex w-full min-w-0 items-center gap-1.5 rounded-md py-1 pl-2 pr-1 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
     >
-      <span className="truncate">{cut.label}</span>
+      <span className="truncate" title={cut.label}>
+        {cut.label}
+      </span>
       <span className="ml-auto flex shrink-0 items-center gap-1 pl-2">
         <span title={cut.rendered ? "Stabilized" : "Not stabilized"}>
           <Zap
@@ -258,7 +260,10 @@ function RushRow({
           onClick={() => navigate(rushHref(pathname, sequence.id))}
           className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left"
         >
-          <span className={cn("truncate", sequence.derushed && "text-muted-foreground")}>
+          <span
+            className={cn("truncate", sequence.derushed && "text-muted-foreground")}
+            title={sequence.label}
+          >
             {sequence.label}
           </span>
           <span className="tnum ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
@@ -363,7 +368,9 @@ function FolderShell({
             )}
           />
           <Dot token={color} />
-          <span className="truncate font-medium">{name}</span>
+          <span className="truncate font-medium" title={name}>
+          {name}
+        </span>
         </button>
         {actions}
       </div>
