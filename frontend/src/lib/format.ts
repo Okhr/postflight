@@ -11,9 +11,19 @@ export function frameToSeconds(frame: number, fpsNum: number, fpsDen: number): n
   return (frame * fpsDen) / fpsNum;
 }
 
+/**
+ * The frame a time in seconds falls in.
+ *
+ * The tolerance is not decoration. `requestVideoFrameCallback` reports `mediaTime`
+ * rounded to the microsecond, so frame 4 of a 60000/1001 stream comes back as
+ * 0.066733 rather than 0.06673333..., which is 3.99998 frames: a plain floor lands
+ * on 3, and the playhead walks backwards. A thousandth of a frame is a millisecond
+ * of slack, thirty times what that rounding can be and far less than a frame, so it
+ * cannot let the next frame through either.
+ */
 export function secondsToFrame(seconds: number, fpsNum: number, fpsDen: number): number {
   if (!fpsDen) return 0;
-  return Math.floor((seconds * fpsNum) / fpsDen + 1e-6);
+  return Math.floor((seconds * fpsNum) / fpsDen + 1e-3);
 }
 
 export function formatTimecode(frame: number, fpsNum: number, fpsDen: number): string {

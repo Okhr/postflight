@@ -213,7 +213,12 @@ function Editor({ sequenceId }: { sequenceId: number }) {
     if (target.requestVideoFrameCallback) {
       const step = (_now: number, meta: { mediaTime: number }) => {
         if (cancelled) return;
-        setFrame(secondsToFrame(meta.mediaTime, fpsNum, fpsDen));
+        // Only while playing. Paused, the frame is the one that was seeked to, and
+        // letting the callback answer as well is a race: a callback is queued for the
+        // next paint, so a frame decoded before the seek can land after it and put the
+        // playhead back where it came from. Which is what stepping frame by frame does,
+        // several times a second.
+        if (!video.paused) setFrame(secondsToFrame(meta.mediaTime, fpsNum, fpsDen));
         handle = target.requestVideoFrameCallback!(step);
       };
       handle = target.requestVideoFrameCallback(step);

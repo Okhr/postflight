@@ -905,6 +905,34 @@ Détacher un rendu en file serait le désastre silencieux : un `cut_id` nul veut
 rush entier » pour `prepare`, donc un rendu de dix secondes reviendrait long de quatre
 minutes.
 
+### Le numéro de frame avait deux menteurs
+
+Bug rapporté le 2026-08-21 : avancer image par image demandait souvent deux clics pour
+une frame, puis oscillait entre deux, et cliquer sur le début d'une sequence sautait au
+bon endroit avant de revenir en arrière. Deux causes, mesurées séparément, aucune dans
+le fichier : les PTS du proxy sont exactement à `N x 1001/60000` avec un `start_time` à
+zéro, vérifié à l'`ffprobe`.
+
+**`requestVideoFrameCallback` rapporte `mediaTime` arrondi à la microseconde.** La frame
+4 d'un flux 60000/1001 revient donc à 0,066733 s au lieu de 0,06673333, soit **3,99998
+frames** : un `floor` tombe sur 3. La tolérance de `secondsToFrame` était de 1e-6 frame,
+trente fois trop petite pour cet arrondi. À 1e-3 frame (une milliseconde) elle le
+couvre, et reste mille fois trop petite pour laisser passer la frame suivante. C'est ce
+qui produisait le double clic : le seek posait N, le callback écrasait par N-1, donc le
+clic suivant redemandait N.
+
+**Et le callback arrive après le seek qu'il précède.** Il est planifié pour la peinture
+suivante, donc une frame décodée avant un seek peut atterrir après lui et remettre le
+playhead d'où il venait. Mesuré sur 20 clics rapides sur « frame suivante », quatre
+passes : **18, 19, 20 et 20 frames** avec la seule tolérance corrigée, **20 les quatre
+fois** quand le callback ne parle qu'en lecture. D'où la règle : **en pause la frame est
+celle qu'on a demandée, en lecture celle que la vidéo affiche**.
+
+Le seek reste au **milieu** de la frame visée (`N + 0,5`), sans quoi l'arrondi du
+décodeur retombe sur la précédente. Contre-épreuve que le compteur ne mentait que sur le
+numéro : capture du canvas après un saut à la frame 6645, PSNR de **45,9 dB** contre
+cette frame extraite par ffmpeg et **32,5 dB** contre chacune de ses deux voisines.
+
 ### « Dérushé » est une marque, jamais un compte
 
 Un rush porte un booléen `derushed` qu'on pose à la main, depuis le bouton de l'entête
