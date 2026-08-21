@@ -1,7 +1,16 @@
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Droplet, FolderPlus, Palette, Pencil, Trash2, Zap } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  Droplet,
+  FolderPlus,
+  Palette,
+  Pencil,
+  Trash2,
+  Zap,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -249,10 +258,18 @@ function RushRow({
           onClick={() => navigate(rushHref(pathname, sequence.id))}
           className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left"
         >
-          <span className="truncate">{sequence.label}</span>
+          <span className={cn("truncate", sequence.derushed && "text-muted-foreground")}>
+            {sequence.label}
+          </span>
           <span className="tnum ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
             {sequence.state === "ready" ? formatDuration(sequence.duration_ms) : sequence.state}
           </span>
+          {/* Marked done: the tree is where one looks to see what is left. */}
+          {sequence.derushed && (
+            <span title="Derushed" className="shrink-0">
+              <Check className="h-3 w-3 text-muted-foreground" />
+            </span>
+          )}
         </button>
       </div>
       {open && detail && (

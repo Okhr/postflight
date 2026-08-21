@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Check, Play, RotateCcw, Scissors, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, Pencil, Play, RotateCcw, Scissors, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { RenameDialog } from "@/components/RenameDialog";
 import { UploadZone } from "@/components/UploadZone";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -72,6 +73,7 @@ export function Import() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [toDelete, setToDelete] = useState<Sequence | null>(null);
+  const [renaming, setRenaming] = useState<Sequence | null>(null);
 
   const { data: status } = useQuery({
     queryKey: ["status"],
@@ -117,6 +119,13 @@ export function Import() {
   const merge = useMutation({
     mutationFn: api.retrySequence,
     onSuccess: () => queryClient.invalidateQueries(),
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const rename = useMutation({
+    mutationFn: ({ id, label }: { id: number; label: string }) =>
+      api.updateSequence(id, { label }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["sequences"] }),
     onError: (error: Error) => toast.error(error.message),
   });
 
@@ -194,7 +203,7 @@ export function Import() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Source files</TableHead>
+                  <TableHead>Rush</TableHead>
                   <TableHead className="text-center">Filmed</TableHead>
                   <TableHead className="text-center">Length</TableHead>
                   <TableHead className="text-center">Size</TableHead>
@@ -217,12 +226,18 @@ export function Import() {
                       title={ready ? "Open in derush" : undefined}
                       className={cn(ready && "cursor-pointer")}
                     >
+                      {/* The name first, the files it was made of under it. A rush is
+                          one thing whatever it was cut into, and until someone renames
+                          it, its name is the first part's. */}
                       <TableCell className="max-w-[24rem]">
+                        <p className="truncate text-sm font-medium" title={sequence.label}>
+                          {sequence.label}
+                        </p>
                         <ul className="space-y-0.5">
                           {sequence.part_names.map((name) => (
                             <li
                               key={name}
-                              className="truncate font-mono text-sm"
+                              className="truncate font-mono text-xs text-muted-foreground"
                               title={name}
                             >
                               {name}
@@ -263,6 +278,14 @@ export function Import() {
 
                       <TableCell onClick={(event) => event.stopPropagation()}>
                         <div className="flex justify-end gap-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            title="Rename this rush"
+                            onClick={() => setRenaming(sequence)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
                           {ready && (
                             <Button
                               size="icon"
@@ -317,6 +340,13 @@ export function Import() {
         pending={remove.isPending}
         onCancel={() => setToDelete(null)}
         onConfirm={(purge) => toDelete && remove.mutate({ id: toDelete.id, purge })}
+      />
+
+      <RenameDialog
+        title="Rename rush"
+        value={renaming?.label ?? null}
+        onClose={() => setRenaming(null)}
+        onRename={(label) => renaming && rename.mutate({ id: renaming.id, label })}
       />
     </div>
   );

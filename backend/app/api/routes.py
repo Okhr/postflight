@@ -145,9 +145,9 @@ def _sequence_out(session: Session, seq: Sequence) -> schemas.SequenceOut:
         id=seq.id or 0,
         key=seq.key,
         label=seq.label or seq.key,
-        color=seq.color,
         folder_id=seq.folder_id,
         state=seq.state.value,
+        derushed=seq.derushed,
         part_count=seq.part_count,
         width=seq.width,
         height=seq.height,
@@ -649,18 +649,21 @@ def update_sequence(
     sequence_id: int,
     label: str | None = Query(None, min_length=1, max_length=200),
     folder_id: int | None = Query(None, ge=0),
+    derushed: bool | None = Query(None),
     session: Session = Depends(get_session),
 ) -> schemas.SequenceOut:
-    """Rename a rush, file it in a folder. Absent is unchanged.
+    """Rename a rush, file it in a folder, mark it derushed. Absent is unchanged.
 
     `folder_id=0` takes it out of its folder: a query parameter cannot carry null in a
     way that differs from being left out, and both meanings are wanted here.
     """
-    if label is None and folder_id is None:
+    if label is None and folder_id is None and derushed is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "nothing to update")
     seq = _get_sequence(session, sequence_id)
     if label is not None:
         seq.label = label
+    if derushed is not None:
+        seq.derushed = derushed
     if folder_id is not None:
         seq.folder_id = _get_folder(session, folder_id).id if folder_id else None
     seq.updated_at = utcnow()

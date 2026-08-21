@@ -18,6 +18,7 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
   ChevronLeft,
   ChevronRight,
   Pause,
@@ -30,6 +31,7 @@ import {
 import { toast } from "sonner";
 
 import { GyroChart, PLOT_HEIGHT } from "@/components/GyroChart";
+import { RenameDialog } from "@/components/RenameDialog";
 import { StateBadge } from "@/components/StateBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -485,6 +487,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
             {sequence.part_count} source{sequence.part_count > 1 ? "s" : ""}
           </span>
         </span>
+        <DerushedToggle sequence={sequence} />
       </div>
 
       {/* Player and sequences side by side while there is room for both, stacked
@@ -828,8 +831,9 @@ function Editor({ sequenceId }: { sequenceId: number }) {
       </Card>
       </div>
 
-      <RenameCut
-        cut={renaming}
+      <RenameDialog
+        title="Rename sequence"
+        value={renaming?.label ?? null}
         onClose={() => setRenaming(null)}
         onRename={(label) =>
           commit(cuts.map((c) => (c.key === renaming?.key ? { ...c, label } : c)))
@@ -870,50 +874,34 @@ function Editor({ sequenceId }: { sequenceId: number }) {
 }
 
 /**
- * Renaming one sequence, in a dialog.
+ * Whether this rush is done with.
  *
- * A field sitting in the list would be one click shorter and cost a column: the
- * name is the widest thing there, and an input around it turns a list one reads
- * into a form one fills.
+ * A mark someone puts there, never a count: a rush worth nothing is derushed the
+ * moment it has been watched, and it has no sequences to prove it. The state is the
+ * button's own look, which is what a checkbox is, drawn as the page's other buttons.
  */
-function RenameCut({
-  cut,
-  onClose,
-  onRename,
-}: {
-  cut: LocalCut | null;
-  onClose: () => void;
-  onRename: (label: string) => void;
-}) {
-  const [draft, setDraft] = useState("");
-  useEffect(() => {
-    if (cut) setDraft(cut.label);
-  }, [cut?.key]);
+function DerushedToggle({ sequence }: { sequence: SequenceDetail }) {
+  const queryClient = useQueryClient();
+  const mark = useMutation({
+    mutationFn: (derushed: boolean) => api.updateSequence(sequence.id, { derushed }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sequence", sequence.id] });
+      queryClient.invalidateQueries({ queryKey: ["sequences"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
   return (
-    <Dialog open={cut !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>Rename sequence</DialogTitle>
-        </DialogHeader>
-        <form
-          className="space-y-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const wanted = draft.trim();
-            if (wanted && wanted !== cut?.label) onRename(wanted);
-            onClose();
-          }}
-        >
-          <Input autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} />
-          <DialogFooter>
-            <Button type="submit" size="sm" disabled={!draft.trim()}>
-              Rename
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <Button
+      size="sm"
+      variant={sequence.derushed ? "default" : "outline"}
+      className="ml-auto"
+      disabled={mark.isPending}
+      onClick={() => mark.mutate(!sequence.derushed)}
+    >
+      <Check className="h-4 w-4" />
+      Derushed
+    </Button>
   );
 }
 

@@ -813,6 +813,29 @@ Détacher un rendu en file serait le désastre silencieux : un `cut_id` nul veut
 rush entier » pour `prepare`, donc un rendu de dix secondes reviendrait long de quatre
 minutes.
 
+### « Dérushé » est une marque, jamais un compte
+
+Un rush porte un booléen `derushed` qu'on pose à la main, depuis le bouton de l'entête
+du derush, et qui se voit dans l'arbre (le nom passe en gris, une coche à droite de la
+durée). **Il ne se déduit pas du nombre de sequences** : un rush qui ne valait rien est
+dérushé dès qu'on l'a regardé, et il n'a aucune sequence pour le prouver. C'est le
+compagnon des deux icônes ci-dessous : ensemble ils disent ce qu'il reste à faire.
+
+La colonne est non nullable avec un défaut constant, donc l'auto-migration la crée avec
+son `DEFAULT` et remplit les lignes existantes. Vérifié au redémarrage :
+`Column added: sequence.derushed`, et zéro `NULL` derrière.
+
+### Renommer un rush, et depuis où
+
+Le nom d'un rush est celui de sa première part, or **un rush peut être plusieurs
+fichiers** : la colonne de la page import porte donc le label en tête et les fichiers
+sources en dessous, en petit. La redondance quand personne n'a renommé est assumée, elle
+est le prix d'une hiérarchie lisible (voici le rush, voici ce dont il est fait).
+
+Le renommage passe par `components/RenameDialog.tsx`, partagé avec la liste des
+sequences du derush. Le champ vit dans un enfant monté avec le dialogue, sinon un nom
+tapé puis abandonné revient à la réouverture suivante.
+
 ### Ce que l'arbre de gauche montre d'un rush
 
 Un rush qui porte des sequences se déplie, et chaque sequence affiche **deux icônes,

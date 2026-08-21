@@ -211,12 +211,12 @@ def test_deleting_a_parent_ranks_its_children_at_the_root(session: Session):
 
 def test_a_rush_is_filed_and_taken_back_out(session: Session, sequence: Sequence):
     folder = _folder(session, "Pierrevert")
-    filed = routes.update_sequence(sequence.id, label=None, folder_id=folder.id, session=session)
+    filed = routes.update_sequence(sequence.id, label=None, derushed=None, folder_id=folder.id, session=session)
     assert filed.folder_id == folder.id
 
     # 0 rather than null: a query parameter has no way to say "set this to nothing"
     # that differs from leaving it out.
-    freed = routes.update_sequence(sequence.id, label=None, folder_id=0, session=session)
+    freed = routes.update_sequence(sequence.id, label=None, derushed=None, folder_id=0, session=session)
     assert freed.folder_id is None
 
 
@@ -224,7 +224,7 @@ def test_the_count_is_what_sits_directly_in_the_folder(session: Session, sequenc
     """A parent showing the total would count what the child already shows."""
     site = _folder(session, "Pierrevert")
     child = _folder(session, "August", site.id)
-    routes.update_sequence(sequence.id, label=None, folder_id=child.id, session=session)
+    routes.update_sequence(sequence.id, label=None, derushed=None, folder_id=child.id, session=session)
 
     listed = {f.name: f.sequence_count for f in routes.list_folders(session)}
     assert listed == {"August": 1, "Pierrevert": 0}
@@ -234,7 +234,7 @@ def test_deleting_a_folder_keeps_the_rushes(session: Session, sequence: Sequence
     """A folder holds no footage, so there is nothing here that can be lost."""
     site = _folder(session, "Pierrevert")
     child = _folder(session, "August", site.id)
-    routes.update_sequence(sequence.id, label=None, folder_id=site.id, session=session)
+    routes.update_sequence(sequence.id, label=None, derushed=None, folder_id=site.id, session=session)
 
     result = routes.delete_folder(site.id, session)
 
@@ -248,5 +248,5 @@ def test_filing_into_a_folder_that_does_not_exist_is_refused(
     session: Session, sequence: Sequence
 ):
     with pytest.raises(HTTPException) as raised:
-        routes.update_sequence(sequence.id, label=None, folder_id=4242, session=session)
+        routes.update_sequence(sequence.id, label=None, derushed=None, folder_id=4242, session=session)
     assert raised.value.status_code == 404

@@ -110,6 +110,10 @@ class Sequence(SQLModel, table=True):
     # would break every insert on an existing database.
     color: str = ""
     state: SequenceState = Field(default=SequenceState.NEW, index=True)
+    # Marked by hand when there is nothing left to do on this rush. Never deduced
+    # from the cuts: a rush worth nothing is derushed the moment it has been looked
+    # at, and it has no cuts at all.
+    derushed: bool = False
     # Which drawer it sits in. None is not an error state: a rush belongs nowhere
     # until someone files it, and that is most of them most of the time.
     folder_id: Optional[int] = Field(default=None, foreign_key="folder.id", index=True)

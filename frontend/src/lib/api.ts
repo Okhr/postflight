@@ -70,6 +70,9 @@ export interface Sequence {
   /** Which folder it is filed in, null for none, which is where they start. */
   folder_id: number | null;
   state: SequenceState;
+  /** Marked by hand when there is nothing left to do on it. Never deduced from the
+   *  cuts: a rush worth nothing is derushed with none at all. */
+  derushed: boolean;
   part_count: number;
   width: number;
   height: number;
@@ -320,10 +323,14 @@ export const api = {
   sequences: (state?: string) =>
     request<Sequence[]>(`/sequences${state ? `?state=${state}` : ""}`),
   sequence: (id: number) => request<SequenceDetail>(`/sequences/${id}`),
-  /** Rename a rush, file it. Omitted fields stay as they are. */
-  updateSequence: (id: number, changes: { label?: string; folderId?: number | null }) => {
+  /** Rename a rush, file it, mark it derushed. Omitted fields stay as they are. */
+  updateSequence: (
+    id: number,
+    changes: { label?: string; folderId?: number | null; derushed?: boolean },
+  ) => {
     const query = new URLSearchParams();
     if (changes.label !== undefined) query.set("label", changes.label);
+    if (changes.derushed !== undefined) query.set("derushed", String(changes.derushed));
     // 0 is how the API hears "out of every folder": a query parameter cannot carry
     // null in a way that differs from being left out.
     if (changes.folderId !== undefined) query.set("folder_id", String(changes.folderId ?? 0));

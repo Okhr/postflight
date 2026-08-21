@@ -81,6 +81,7 @@ class SequenceOut(BaseSchema):
     label: str
     folder_id: int | None = None
     state: str
+    derushed: bool = False
     part_count: int
     width: int
     height: int

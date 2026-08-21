@@ -3,6 +3,9 @@
 Both properties are about identity. A cut is the subject of a render, so its id has
 to outlive an edit of its bounds, and the rush tree asks each cut whether a
 stabilized and a graded file exist for it.
+
+The derushed mark of a rush is here too, since it is the other half of the same
+question: what is left to do on this rush.
 """
 
 from __future__ import annotations
@@ -245,3 +248,44 @@ def test_dropping_a_cut_cancels_a_render_still_waiting(session: Session, sequenc
     _save(session, seq)
 
     assert session.get(Render, render.id) is None
+
+
+# --------------------------------------------------------------------------- #
+# Marking a rush derushed
+# --------------------------------------------------------------------------- #
+
+def test_a_rush_starts_out_not_derushed(session: Session, sequence: Sequence):
+    assert routes.get_sequence(sequence.id, session=session).derushed is False
+
+
+def test_the_mark_goes_on_and_comes_back_off(session: Session, sequence: Sequence):
+    marked = routes.update_sequence(
+        sequence.id, label=None, derushed=True, folder_id=None, session=session
+    )
+    assert marked.derushed is True
+
+    unmarked = routes.update_sequence(
+        sequence.id, label=None, derushed=False, folder_id=None, session=session
+    )
+    assert unmarked.derushed is False
+
+
+def test_a_rush_with_no_cuts_at_all_can_be_marked(session: Session, sequence: Sequence):
+    """The reason it is a mark and not a count: a rush worth nothing is derushed the
+    moment it has been looked at, and it has no cuts to show for it."""
+    seq = _framed(session, sequence)
+    marked = routes.update_sequence(
+        seq.id, label=None, derushed=True, folder_id=None, session=session
+    )
+
+    assert (marked.derushed, marked.cut_count) == (True, 0)
+
+
+def test_renaming_does_not_disturb_the_mark(session: Session, sequence: Sequence):
+    routes.update_sequence(sequence.id, label=None, derushed=True, folder_id=None, session=session)
+
+    renamed = routes.update_sequence(
+        sequence.id, label="an evening at Pierrevert", derushed=None, folder_id=None, session=session
+    )
+
+    assert (renamed.label, renamed.derushed) == ("an evening at Pierrevert", True)
