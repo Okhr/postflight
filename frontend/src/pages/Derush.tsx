@@ -26,7 +26,6 @@ import {
   SkipBack,
   SkipForward,
   Trash2,
-  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -479,7 +478,6 @@ function Editor({ sequenceId }: { sequenceId: number }) {
     <div className="min-w-0 space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <RushIdentity sequence={sequence} />
-        <StateBadge state={sequence.state} />
         <span className="text-sm text-muted-foreground">
           {sequence.width}×{sequence.height} · {sequence.fps.toFixed(3)} fps ·{" "}
           {formatDuration(sequence.duration_ms)} · {sequence.frame_count} frames ·{" "}
@@ -487,14 +485,6 @@ function Editor({ sequenceId }: { sequenceId: number }) {
             {sequence.part_count} source{sequence.part_count > 1 ? "s" : ""}
           </span>
         </span>
-        {cuts.length > 0 && (
-          <Button asChild size="sm" variant="outline" className="ml-auto">
-            <Link to={`/stabilisation/${sequence.id}`}>
-              <Zap className="h-4 w-4" />
-              Stabilize
-            </Link>
-          </Button>
-        )}
       </div>
 
       {/* Player and sequences side by side while there is room for both, stacked
