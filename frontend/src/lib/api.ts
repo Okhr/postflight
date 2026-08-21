@@ -27,6 +27,9 @@ export interface Cut {
   duration_ms: number;
   start_tc: string;
   end_tc: string;
+  /** A stabilized file exists for it, and a graded one on top of that. */
+  rendered: boolean;
+  graded: boolean;
 }
 
 export interface Render {
@@ -369,7 +372,12 @@ export const api = {
       { method: "DELETE" },
     ),
 
-  saveCuts: (sequenceId: number, cuts: Array<{ label: string; start_frame: number; end_frame: number }>) =>
+  /** Replace the whole list. Sending a cut's `id` back is what keeps its identity,
+   *  and with it the renders that point at it. */
+  saveCuts: (
+    sequenceId: number,
+    cuts: Array<{ id?: number; label: string; start_frame: number; end_frame: number }>,
+  ) =>
     request<Cut[]>(`/sequences/${sequenceId}/cuts`, {
       method: "PUT",
       body: JSON.stringify({ cuts }),

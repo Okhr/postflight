@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import secrets
+from collections.abc import Iterable
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -64,19 +65,48 @@ def _count(session: Session, model, **filters) -> int:
     return session.exec(statement).one()
 
 
-def _cut_out(cut: Cut, seq: Sequence) -> schemas.CutOut:
-    frames = cut.end_frame - cut.start_frame + 1
-    return schemas.CutOut(
-        id=cut.id or 0,
-        order_index=cut.order_index,
-        label=cut.label,
-        start_frame=cut.start_frame,
-        end_frame=cut.end_frame,
-        frames=frames,
-        duration_ms=frame_to_ms(frames, seq.fps_num, seq.fps_den) if seq.fps_num else 0.0,
-        start_tc=format_timecode(cut.start_frame, seq.fps_num, seq.fps_den) if seq.fps_num else "",
-        end_tc=format_timecode(cut.end_frame, seq.fps_num, seq.fps_den) if seq.fps_num else "",
-    )
+def _cuts_out(session: Session, seq: Sequence, cuts: Iterable[Cut]) -> list[schemas.CutOut]:
+    """The cuts of one rush, each carrying whether it has been stabilized and graded.
+
+    Both are computed here rather than left to the caller to cross-reference: the
+    rush tree draws one icon per state, and it only ever asks for the cuts.
+    """
+    done = session.exec(
+        select(Render.id, Render.cut_id).where(
+            Render.sequence_id == seq.id, Render.state == RenderState.DONE
+        )
+    ).all()
+    rendered = {cut_id for _, cut_id in done if cut_id is not None}
+    graded: set[int] = set()
+    by_render = {render_id: cut_id for render_id, cut_id in done if cut_id is not None}
+    if by_render:
+        for render_id in session.exec(
+            select(Grade.render_id).where(
+                Grade.render_id.in_(by_render),  # type: ignore[attr-defined]
+                Grade.state == GradeState.DONE,
+            )
+        ).all():
+            graded.add(by_render[render_id])
+
+    out: list[schemas.CutOut] = []
+    for cut in cuts:
+        frames = cut.end_frame - cut.start_frame + 1
+        out.append(
+            schemas.CutOut(
+                id=cut.id or 0,
+                order_index=cut.order_index,
+                label=cut.label,
+                start_frame=cut.start_frame,
+                end_frame=cut.end_frame,
+                frames=frames,
+                duration_ms=frame_to_ms(frames, seq.fps_num, seq.fps_den) if seq.fps_num else 0.0,
+                start_tc=format_timecode(cut.start_frame, seq.fps_num, seq.fps_den) if seq.fps_num else "",
+                end_tc=format_timecode(cut.end_frame, seq.fps_num, seq.fps_den) if seq.fps_num else "",
+                rendered=cut.id in rendered,
+                graded=cut.id in graded,
+            )
+        )
+    return out
 
 
 def _render_out(render: Render, seq: Sequence | None = None) -> schemas.RenderOut:
@@ -609,7 +639,7 @@ def get_sequence(sequence_id: int, session: Session = Depends(get_session)) -> s
             )
             for c in clips
         ],
-        cuts=[_cut_out(c, seq) for c in cuts],
+        cuts=_cuts_out(session, seq, cuts),
         renders=[_render_out(r, seq) for r in renders],
     )
 
@@ -736,30 +766,52 @@ def replace_cuts(
             start, end = end, start
         if end == start:
             continue  # a single-frame cut makes no sense
-        cleaned.append(schemas.CutIn(label=cut.label, start_frame=start, end_frame=end))
+        cleaned.append(schemas.CutIn(id=cut.id, label=cut.label, start_frame=start, end_frame=end))
     cleaned.sort(key=lambda c: c.start_frame)
 
-    for existing in session.exec(select(Cut).where(Cut.sequence_id == seq.id)).all():
-        session.delete(existing)
-    session.commit()
-
-    created: list[Cut] = []
+    # A cut keeps its id across an edit. Deleting the lot and inserting it back was
+    # simpler and wrong: a render points at the cut it came from (`render.cut_id`,
+    # which `dispatch.prepare` reads to build the trim range), and the rush tree
+    # lights an icon per cut that has been stabilized. Both broke on every save, and
+    # dragging an edge now saves by itself, so it would break constantly.
+    existing = {
+        c.id: c
+        for c in session.exec(select(Cut).where(Cut.sequence_id == seq.id)).all()
+    }
+    kept: list[Cut] = []
     for index, cut in enumerate(cleaned):
-        row = Cut(
-            sequence_id=seq.id,  # type: ignore[arg-type]
-            order_index=index,
-            label=cut.label or f"cut {index + 1}",
-            start_frame=cut.start_frame,
-            end_frame=cut.end_frame,
-        )
+        row = existing.pop(cut.id, None) if cut.id else None
+        if row is None:
+            row = Cut(sequence_id=seq.id)  # type: ignore[arg-type]
+        row.order_index = index
+        row.label = cut.label or f"cut {index + 1}"
+        row.start_frame = cut.start_frame
+        row.end_frame = cut.end_frame
         session.add(row)
-        created.append(row)
+        kept.append(row)
+    # What the caller left out is gone, and its renders have to be dealt with first:
+    # `render.cut_id` is a real foreign key, so deleting a cut a render points at
+    # fails outright. A finished render keeps its file and loses the link; one still
+    # queued or running is cancelled, since dropping the cut dropped its subject, and
+    # a job in flight stops on its next heartbeat the way a deleted rush stops one.
+    # Detaching a queued render would be the quiet disaster: a null `cut_id` means
+    # "the whole rush" to `dispatch.prepare`, so a ten second render would become a
+    # four minute one.
+    for orphan in existing.values():
+        for render in session.exec(select(Render).where(Render.cut_id == orphan.id)).all():
+            if render.state in (RenderState.QUEUED, RenderState.RUNNING):
+                delete_render(render.id or 0, session=session)
+            else:
+                render.cut_id = None
+                session.add(render)
+        session.delete(orphan)
+
     seq.updated_at = utcnow()
     session.add(seq)
     session.commit()
-    for row in created:
+    for row in kept:
         session.refresh(row)
-    return [_cut_out(c, seq) for c in created]
+    return _cuts_out(session, seq, kept)
 
 
 # --------------------------------------------------------------------------- #

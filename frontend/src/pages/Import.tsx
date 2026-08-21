@@ -329,7 +329,7 @@ export function Import() {
  * merely detached, so the next scan regroups them and the rush is back within 30 s,
  * already merged, since the artifacts carry the content hash. That makes it a
  * reset of the grouping, not a removal. And renders always go, whatever is kept:
- * they belong to the zones being deleted.
+ * they belong to the cuts being deleted.
  */
 function DeleteDialog({
   sequence,
@@ -352,7 +352,7 @@ function DeleteDialog({
               ? "1 source file"
               : `${sequence?.part_count} source files`}{" "}
             · {formatBytes(sequence?.size_bytes)}
-            {sequence?.cut_count ? ` · ${sequence.cut_count} marked zone(s)` : ""}
+            {sequence?.cut_count ? ` · ${sequence.cut_count} marked sequence(s)` : ""}
             {sequence?.render_count ? ` · ${sequence.render_count} stabilized clip(s)` : ""}
           </DialogDescription>
         </DialogHeader>

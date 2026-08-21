@@ -756,6 +756,62 @@ dossier est ce qui le fait reconnaître d'un coup d'œil. La colonne `sequence.c
 **reste en base** : elle est NOT NULL sans défaut DDL, donc la retirer du modèle
 casserait chaque insertion sur une base existante.
 
+## Le derush : le mot « sequence » est pris deux fois
+
+Refonte du 2026-08-21. Ce que l'interface appelle une **sequence** est un `Cut` dans le
+code, l'API et la base, parce que `Sequence` y désigne déjà le rush fusionné qu'on est
+en train de découper. Renommer la table serait un renommage sur un nom occupé, et les
+deux mots ne se croisent jamais à l'écran : **le code dit `cut`, seul l'affiché dit
+« sequence »**. C'est écrit en tête de `Derush.tsx` et dans la docstring de `Cut`.
+
+**Deux boutons, un seul vivant à la fois.** « Start sequence » est actif tant que rien
+n'est commencé, « End sequence » seulement après, et un « Cancel » n'apparaît que
+pendant. Les deux sont en `variant` par défaut, donc blancs en thème sombre, parce que
+c'est le geste de la page. Le clavier suit (I, O, Escape).
+
+**Aucun bouton de sauvegarde.** Fermer une sequence, en redimensionner une, la renommer,
+la supprimer : chaque geste écrit. Un redimensionnement n'écrit qu'**au relâchement**,
+pas à chaque `pointermove`, via une ref qui retient la liste que le drag a produite. Et
+aucun toast de succès : à ce rythme, ce serait du bruit ; seul un échec parle.
+
+### Un cut garde son id, sinon deux choses cassent
+
+`replace_cuts` supprimait la totalité des cuts et les réinsérait, donc leurs id
+changeaient à chaque sauvegarde. Deux conséquences, toutes deux mesurées le 2026-08-21 :
+
+1. **`render.cut_id` est une vraie clé étrangère.** Supprimer un cut sur lequel un rendu
+   pointe échoue en `FOREIGN KEY constraint failed`, donc en 500. Le bug existait déjà :
+   stabiliser une zone puis en marquer une autre suffisait à le déclencher.
+2. `dispatch._prepare_render` relit le cut par son id pour fabriquer le `trim_ranges_ms`.
+   Un id périmé donnait `cut N not found`.
+
+Maintenant `CutIn` porte un `id` optionnel : présent, c'est une mise à jour ; absent,
+une création ; ce que l'appelant ne renvoie pas est supprimé. Un id qui appartient à une
+autre séquence n'est **pas** adopté.
+
+Pour les rendus d'un cut qu'on supprime, deux traitements et non un :
+
+| état du rendu | traitement | pourquoi |
+|---|---|---|
+| `done` / `failed` | `cut_id = NULL` | le fichier vaut quelque chose, seul le lien part |
+| `queued` / `running` | rendu supprimé | son sujet a disparu, et un job en vol s'arrête au battement suivant |
+
+Détacher un rendu en file serait le désastre silencieux : un `cut_id` nul veut dire « le
+rush entier » pour `prepare`, donc un rendu de dix secondes reviendrait long de quatre
+minutes.
+
+### Ce que l'arbre de gauche montre d'un rush
+
+Un rush qui porte des sequences se déplie, et chaque sequence affiche **deux icônes,
+allumées ou éteintes** : un éclair pour « une stab existe », une goutte pour « une stab
+étalonnée existe ». Pas la palette, déjà l'icône du recoloriage d'un dossier dans le
+même arbre. Les deux drapeaux (`rendered`, `graded`) sont calculés par l'API sur
+`CutOut` plutôt que recoupés côté front, et ils comptent **un fichier produit**, pas un
+travail demandé : un rendu en cours laisse l'icône éteinte.
+
+Le détail n'est demandé qu'au dépliage, sous la clé `["sequence", id]`, celle de la page
+derush : ouvrir un rush là-bas et le déplier ici ne coûte qu'une requête pour les deux.
+
 ## L'auto-migration doit remplir, pas seulement ajouter
 
 `db.py` compare le schéma déclaré à la base et ajoute les colonnes manquantes en

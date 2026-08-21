@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { usePersistentSet, usePersistentState } from "@/lib/persist";
@@ -73,7 +72,7 @@ interface GyroData {
 }
 
 /** On-screen height of the plot, in pixels. Exported because the derush timeline
- * draws its trim bar and its zone bands over the plot, and has to stop short of
+ * draws its trim bar and its cut bands over the plot, and has to stop short of
  * the axis legend below. Taller than it used to be: the curves are the timeline
  * now, there is no filmstrip sharing the room. */
 export const PLOT_HEIGHT = 128;
@@ -218,7 +217,6 @@ export function GyroChart({
   const points = data.points;
   const position = lastFrame ? frame / lastFrame : 0;
   const readout = hover ?? Math.round(position * (points - 1));
-  const drift = data.imu_duration_ms - data.duration_ms;
 
   return (
     <div className="space-y-1">
@@ -341,15 +339,6 @@ export function GyroChart({
             </Button>
           );
         })}
-
-        <span className="ml-auto flex items-center gap-1.5">
-          <Activity className="h-3 w-3" />
-          {data.source} · {Math.round(data.sample_rate_hz)} Hz ·{" "}
-          {data.origin === "quaternions" ? "orientation quaternions" : "raw IMU"}
-          {data.dropped > 0 && ` · ${data.dropped} rate sample(s) out of range dropped`}
-          {Math.abs(drift) > 100 &&
-            ` · IMU ${drift > 0 ? "+" : ""}${(drift / 1000).toFixed(1)}s vs video`}
-        </span>
       </div>
     </div>
   );

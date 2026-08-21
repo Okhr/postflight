@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, FolderPlus, Palette, Pencil, Trash2 } from "lucide-react";
+import { ChevronRight, Droplet, FolderPlus, Palette, Pencil, Trash2, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { api, type Folder, type Sequence } from "@/lib/api";
+import { api, type Cut, type Folder, type Sequence } from "@/lib/api";
 import { FOLDER_COLORS, folderColor } from "@/lib/colors";
 import { formatDuration } from "@/lib/format";
 import { usePersistentSet } from "@/lib/persist";
@@ -165,6 +165,36 @@ function Gap({
   );
 }
 
+/**
+ * One marked sequence of a rush, and how far it has been taken.
+ *
+ * Two icons, lit or not: a stabilized file exists, and a graded one on top of it.
+ * That is the whole state of an evening's work, readable without opening a page.
+ */
+function CutRow({ cut, onOpen }: { cut: Cut; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex w-full min-w-0 items-center gap-1.5 rounded-md py-1 pl-2 pr-1 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+    >
+      <span className="truncate">{cut.label}</span>
+      <span className="ml-auto flex shrink-0 items-center gap-1 pl-2">
+        <span title={cut.rendered ? "Stabilized" : "Not stabilized"}>
+          <Zap
+            className={cn("h-3 w-3", cut.rendered ? "text-foreground" : "text-muted-foreground/30")}
+          />
+        </span>
+        <span title={cut.graded ? "Graded" : "Not graded"}>
+          <Droplet
+            className={cn("h-3 w-3", cut.graded ? "text-foreground" : "text-muted-foreground/30")}
+          />
+        </span>
+      </span>
+    </button>
+  );
+}
+
 function RushRow({
   sequence,
   dragged,
@@ -178,28 +208,64 @@ function RushRow({
   const navigate = useNavigate();
   const active = selectedRushId(pathname) === sequence.id;
   const lifted = dragged?.kind === "rush" && dragged.id === sequence.id;
+  const [open, setOpen] = useState(false);
+  const marked = sequence.cut_count > 0;
+
+  // Asked for only once unfolded: the tree holds every rush, and the sequences of
+  // one are a request of their own. The key is the derush page's, so opening a rush
+  // there and unfolding it here cost one fetch between them.
+  const { data: detail } = useQuery({
+    queryKey: ["sequence", sequence.id],
+    queryFn: () => api.sequence(sequence.id),
+    enabled: open && marked,
+  });
 
   return (
-    <div
-      draggable
-      onDragStart={() => setDragged({ kind: "rush", id: sequence.id })}
-      onDragEnd={() => setDragged(null)}
-      className={cn(
-        "group flex items-center gap-1.5 rounded-md pl-2 pr-1 text-sm transition-colors",
-        active ? "bg-accent" : "hover:bg-accent/50",
-        lifted && "opacity-40",
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => navigate(rushHref(pathname, sequence.id))}
-        className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left"
+    <div>
+      <div
+        draggable
+        onDragStart={() => setDragged({ kind: "rush", id: sequence.id })}
+        onDragEnd={() => setDragged(null)}
+        className={cn(
+          "group flex items-center rounded-md pr-1 text-sm transition-colors",
+          active ? "bg-accent" : "hover:bg-accent/50",
+          lifted && "opacity-40",
+        )}
       >
-        <span className="truncate">{sequence.label}</span>
-        <span className="tnum ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
-          {sequence.state === "ready" ? formatDuration(sequence.duration_ms) : sequence.state}
-        </span>
-      </button>
+        {marked ? (
+          <button
+            type="button"
+            onClick={() => setOpen(!open)}
+            className="shrink-0 px-1 py-1.5 text-muted-foreground hover:text-foreground"
+            title={open ? "Fold" : "Unfold"}
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", open && "rotate-90")} />
+          </button>
+        ) : (
+          <span className="w-5 shrink-0" />
+        )}
+        <button
+          type="button"
+          onClick={() => navigate(rushHref(pathname, sequence.id))}
+          className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left"
+        >
+          <span className="truncate">{sequence.label}</span>
+          <span className="tnum ml-auto shrink-0 pl-2 text-xs text-muted-foreground">
+            {sequence.state === "ready" ? formatDuration(sequence.duration_ms) : sequence.state}
+          </span>
+        </button>
+      </div>
+      {open && detail && (
+        <div className="ml-5 border-l pl-1">
+          {detail.cuts.map((cut) => (
+            <CutRow
+              key={cut.id}
+              cut={cut}
+              onOpen={() => navigate(rushHref(pathname, sequence.id))}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

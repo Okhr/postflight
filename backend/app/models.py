@@ -185,7 +185,11 @@ class Clip(SQLModel, table=True):
 
 
 class Cut(SQLModel, table=True):
-    """A zone kept while derushing. Bounds are frames, inclusive."""
+    """A stretch of a rush kept while derushing. Bounds are frames, inclusive.
+
+    Called a "sequence" in the interface, where `Sequence` is already taken by the
+    merged rush this belongs to.
+    """
 
     __tablename__ = "cut"
 

@@ -44,14 +44,14 @@ export function Stabilize() {
     refetchInterval: 3_000,
   });
 
-  // Only rushes with something to render: a marked zone. A rush nobody derushed
+  // Only rushes with something to render: a marked cut. A rush nobody derushed
   // has nothing to offer here, and listing it just makes the step look busier than
   // it is. Chronological like the derush list, oldest first, so the two read the
   // same way.
   //
   // "ready" is still required: a render needs the merged file, and that state is the
   // one that guarantees it.
-  const withZones = (sequences ?? [])
+  const withCuts = (sequences ?? [])
     .filter((sequence) => sequence.state === "ready" && sequence.cut_count > 0)
     .sort((a, b) => {
       const left = a.recorded_at ? Date.parse(a.recorded_at) : Infinity;
@@ -66,9 +66,9 @@ export function Stabilize() {
           <Launcher key={selected} sequenceId={selected} />
         ) : (
           <p className="text-sm text-muted-foreground">
-            {withZones.length === 0 ? (
+            {withCuts.length === 0 ? (
               <>
-                No zone marked yet. Mark some in{" "}
+                No sequence marked yet. Mark some in{" "}
                 <Link to="/derush" className="underline">
                   Derush
                 </Link>
@@ -136,14 +136,14 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
             <CardTitle className="text-base">{sequence.label}</CardTitle>
             <CardDescription>
               {sequence.width}×{sequence.height} · {formatDuration(sequence.duration_ms)} ·{" "}
-              {cuts.length} zone{cuts.length > 1 ? "s" : ""} marked
+              {cuts.length} sequence{cuts.length > 1 ? "s" : ""} marked
               {!sequence.has_gyro && (
                 <span className="text-red-400"> · no gyro data, stabilization will fail</span>
               )}
             </CardDescription>
           </div>
           <Button asChild size="sm" variant="ghost">
-            <Link to={`/derush/${sequence.id}`}>Edit zones</Link>
+            <Link to={`/derush/${sequence.id}`}>Edit sequences</Link>
           </Button>
         </div>
       </CardHeader>
@@ -172,7 +172,7 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
 
         {cuts.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No zone marked on this rush. Go through{" "}
+            No sequence marked on this rush. Go through{" "}
             <Link to={`/derush/${sequence.id}`} className="underline">
               derush
             </Link>
@@ -184,7 +184,7 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-8" />
-                  <TableHead>Zone</TableHead>
+                  <TableHead>Sequence</TableHead>
                   <TableHead>Start</TableHead>
                   <TableHead>End</TableHead>
                   <TableHead className="text-right">Length</TableHead>
@@ -237,7 +237,7 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
             onClick={() => launch.mutate({ whole: false })}
           >
             <Zap className="h-4 w-4" />
-            Stabilize {selection.length} zone{selection.length > 1 ? "s" : ""}
+            Stabilize {selection.length} sequence{selection.length > 1 ? "s" : ""}
           </Button>
           <Button
             variant="outline"

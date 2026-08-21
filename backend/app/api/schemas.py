@@ -48,6 +48,11 @@ class CutOut(BaseSchema):
     duration_ms: float
     start_tc: str
     end_tc: str
+    # Whether a stabilized file exists for this cut, and a graded one on top of it.
+    # Two icons in the rush tree, so the state of a session is readable without
+    # opening anything.
+    rendered: bool = False
+    graded: bool = False
 
 
 class RenderOut(BaseSchema):
@@ -113,6 +118,10 @@ class SequenceDetail(SequenceOut):
 
 
 class CutIn(BaseSchema):
+    # The id of the cut this stands for, absent when it is a new one. Sending it
+    # back is what keeps a cut's identity across an edit, and with it the renders
+    # that point at it.
+    id: int | None = None
     label: str = ""
     start_frame: int = Field(ge=0)
     end_frame: int = Field(ge=0)
