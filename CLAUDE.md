@@ -848,6 +848,55 @@ travail demandé : un rendu en cours laisse l'icône éteinte.
 Le détail n'est demandé qu'au dépliage, sous la clé `["sequence", id]`, celle de la page
 derush : ouvrir un rush là-bas et le déplier ici ne coûte qu'une requête pour les deux.
 
+## Les templates Gyroflow : sept réglages sur les quatre-vingt-dix
+
+Un template est un **projet Gyroflow partiel** (`data/templates/*.json`), passé en
+`--preset`. Pour savoir ce que Gyroflow comprend vraiment, on ne devine pas : `gyroflow
+<fichier> --export-project 1` écrit le projet complet, et c'est de là que sortent les
+défauts de `GYROFLOW_DEFAULTS` (mesuré sur 1.6.3, format version 3, quatre-vingt-dix
+champs).
+
+Sept sont éditables dans l'interface, choix de florian le 2026-08-21 : dimensions, codec,
+débit, `smoothness`, `horizon_lock_amount`, `lens_correction_amount`, `fov` et le
+`adaptive_zoom_center_offset` sur ses **deux** axes (un 16:9 pris dans du 4:3 recadre
+verticalement, un 9:16 recadre horizontalement : n'exposer que Y aurait rendu le vertical
+inutilisable).
+
+Écartés, et pourquoi : la **méthode de lissage** (chaque méthode a ses propres
+`smoothing_params`, donc un formulaire qui change de forme), tout le bloc
+`synchronization` (le gyro DJI arrive déjà synchronisé), `frame_readout_time` (déduit du
+profil d'objectif), les `additional_rotation/translation`, `background_*` (ne sert que
+si on dézoome hors cadre), `video_speed` (change la durée), `use_gpu` (verrouillé à
+`false`, voir plus haut), `interpolation`, `pad_with_black`, l'audio.
+
+**Un enregistrement patche, il ne réécrit pas.** Le fichier porte des choses que le
+formulaire ne montre pas (`smoothness_pitch/yaw/roll`, `adaptive_zoom_window`,
+`max_zoom`, `encoder_options`) et les réécrire depuis le formulaire les perdrait.
+`smoothness` en particulier vit dans une **liste de `{name, value}`**, pas dans un objet.
+
+**L'aspect est calculé, jamais stocké.** Il était dans `$meta` et pouvait contredire les
+dimensions écrites à côté. Retiré des deux templates livrés.
+
+**Un template livré ne se supprime pas, il se réinitialise.** Son fichier est dans
+l'image ; `seed_templates()` le recopie dans `data/templates` s'il manque, donc supprimer
+la copie éditée **est** le retour à l'original, et l'interface le dit (l'icône est une
+flèche de retour, pas une poubelle). Ceux créés à la main se suppriment pour de bon.
+
+**Le décalage de cadre est une fraction, et il est violent.** Vérifié par deux rendus
+réels du clip de bench en 1080x1920 : entre `[0.0, 0.0]` et `[-0.5, 0.0]`, la même frame
+montre une partie complètement différente de la source. D'où le pas de 0,05 sur le
+slider. Les bornes dures de l'API sont -1 à 1 ; Gyroflow écrête de lui-même au bord du
+recadrage possible.
+
+**Ni surcharge par rendu, ni par sequence** : un rendu prend le template tel quel, et le
+champ `overrides` de l'API reste inutilisé. Deux variantes d'un look se font en
+dupliquant un template, ce qui a l'avantage qu'un rendu se reproduit à l'identique.
+
+Deux détails de l'API : `output_width` / `output_height` doivent être **pairs** (le 4:2:0
+sous-échantillonne la chroma par deux, x264 refuse une hauteur impaire), et il n'existe
+pas de « défaut Gyroflow » pour les dimensions ni le débit, que Gyroflow dérive du
+fichier source. Le bouton « Gyroflow defaults » ne les touche donc pas.
+
 ## L'auto-migration doit remplir, pas seulement ajouter
 
 `db.py` compare le schéma déclaré à la base et ajoute les colonnes manquantes en

@@ -174,9 +174,52 @@ export interface Template {
   id: string;
   label: string;
   description: string;
+  /** Derived from the dimensions by the API, never stored. */
   aspect: string;
   width: number;
   height: number;
+  /** Ships inside the image: editable and resettable, never deletable. */
+  bundled: boolean;
+  codec: string;
+  bitrate: number;
+  smoothness: number;
+  horizon_lock: number;
+  lens_correction: number;
+  frame_offset_x: number;
+  frame_offset_y: number;
+  fov: number;
+}
+
+/** The seven settings, as the edit form holds them. */
+export type TemplateSettings = Partial<
+  Pick<
+    Template,
+    | "label"
+    | "description"
+    | "width"
+    | "height"
+    | "codec"
+    | "bitrate"
+    | "smoothness"
+    | "horizon_lock"
+    | "lens_correction"
+    | "frame_offset_x"
+    | "frame_offset_y"
+    | "fov"
+  >
+>;
+
+/** Gyroflow's own starting values. No width, height or bitrate: it derives those
+ *  from the source file, so they have no default in a template. */
+export interface TemplateDefaults {
+  codecs: string[];
+  codec: string;
+  smoothness: number;
+  horizon_lock: number;
+  lens_correction: number;
+  frame_offset_x: number;
+  frame_offset_y: number;
+  fov: number;
 }
 
 export interface OpenCLDevice {
@@ -319,6 +362,21 @@ export const api = {
       headers: { "Content-Type": "application/octet-stream" },
     }),
   templates: () => request<Template[]>("/templates"),
+  templateDefaults: () => request<TemplateDefaults>("/templates/defaults"),
+  createTemplate: (label: string, copyOf?: string) =>
+    request<Template>("/templates", {
+      method: "POST",
+      body: JSON.stringify({ label, copy_of: copyOf ?? null }),
+    }),
+  /** Patch: what is left out keeps its value in the file, including the settings this
+   *  form never shows. */
+  updateTemplate: (id: string, settings: TemplateSettings) =>
+    request<Template>(`/templates/${id}`, { method: "PATCH", body: JSON.stringify(settings) }),
+  /** Deletes one made here, resets one that ships with the image. */
+  deleteTemplate: (id: string) =>
+    request<{ template: string; outcome: "deleted" | "reset" }>(`/templates/${id}`, {
+      method: "DELETE",
+    }),
 
   sequences: (state?: string) =>
     request<Sequence[]>(`/sequences${state ? `?state=${state}` : ""}`),

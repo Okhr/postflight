@@ -215,9 +215,63 @@ class TemplateOut(BaseSchema):
     id: str
     label: str
     description: str
+    #: Derived from the dimensions, never stored.
     aspect: str
     width: int
     height: int
+    #: Ships inside the image, so it can be edited and reset but never deleted.
+    bundled: bool = False
+    codec: str = ""
+    bitrate: float = 0.0
+    smoothness: float = 0.5
+    horizon_lock: float = 0.0
+    lens_correction: float = 1.0
+    frame_offset_x: float = 0.0
+    frame_offset_y: float = 0.0
+    fov: float = 1.0
+
+
+class TemplateDefaults(BaseSchema):
+    """What Gyroflow puts in a fresh project, so the interface can offer to go back
+    to it. `width`, `height` and `bitrate` are absent on purpose: Gyroflow derives
+    them from the source file, so they have no default in a template."""
+
+    codecs: list[str] = Field(default_factory=list)
+    codec: str = ""
+    smoothness: float = 0.5
+    horizon_lock: float = 0.0
+    lens_correction: float = 1.0
+    frame_offset_x: float = 0.0
+    frame_offset_y: float = 0.0
+    fov: float = 1.0
+
+
+class TemplateIn(BaseSchema):
+    label: str = Field(min_length=1, max_length=60)
+    #: Start from this template's settings instead of Gyroflow's defaults.
+    copy_of: str | None = None
+
+
+class TemplatePatch(BaseSchema):
+    """Every field optional: what is absent stays as it is in the file.
+
+    The bounds are the hard ones, the sliders' own ranges being narrower. Dimensions
+    have to be even, which is not fussiness: 4:2:0 chroma is subsampled by two, and
+    x264 refuses an odd height outright.
+    """
+
+    label: str | None = Field(default=None, min_length=1, max_length=60)
+    description: str | None = Field(default=None, max_length=300)
+    width: int | None = Field(default=None, ge=16, le=7680, multiple_of=2)
+    height: int | None = Field(default=None, ge=16, le=7680, multiple_of=2)
+    codec: str | None = None
+    bitrate: float | None = Field(default=None, gt=0, le=500)
+    smoothness: float | None = Field(default=None, ge=0, le=1)
+    horizon_lock: float | None = Field(default=None, ge=0, le=100)
+    lens_correction: float | None = Field(default=None, ge=0, le=1)
+    frame_offset_x: float | None = Field(default=None, ge=-1, le=1)
+    frame_offset_y: float | None = Field(default=None, ge=-1, le=1)
+    fov: float | None = Field(default=None, ge=0.1, le=3)
 
 
 class ScanOut(BaseSchema):

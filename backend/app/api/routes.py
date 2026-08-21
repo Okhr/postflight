@@ -415,6 +415,47 @@ def get_templates() -> list[schemas.TemplateOut]:
     return [schemas.TemplateOut(**t.to_dict()) for t in gyroflow_service.list_templates()]
 
 
+@router.get("/templates/defaults", response_model=schemas.TemplateDefaults)
+def get_template_defaults() -> schemas.TemplateDefaults:
+    """Gyroflow's own starting values, so "back to defaults" is not a number the
+    front invented."""
+    return schemas.TemplateDefaults(
+        codecs=gyroflow_service.CODECS, **gyroflow_service.GYROFLOW_DEFAULTS
+    )
+
+
+@router.post("/templates", response_model=schemas.TemplateOut, status_code=status.HTTP_201_CREATED)
+def create_template(payload: schemas.TemplateIn) -> schemas.TemplateOut:
+    try:
+        created = gyroflow_service.create_template(payload.label, payload.copy_of)
+    except gyroflow_service.GyroflowError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return schemas.TemplateOut(**created.to_dict())
+
+
+@router.patch("/templates/{template_id}", response_model=schemas.TemplateOut)
+def update_template(template_id: str, payload: schemas.TemplatePatch) -> schemas.TemplateOut:
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "nothing to update")
+    if (codec := values.get("codec")) and codec not in gyroflow_service.CODECS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown codec: {codec}")
+    try:
+        saved = gyroflow_service.save_template(template_id, values)
+    except gyroflow_service.GyroflowError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return schemas.TemplateOut(**saved.to_dict())
+
+
+@router.delete("/templates/{template_id}")
+def delete_template(template_id: str) -> dict:
+    """Deletes a template made here, resets one that ships with the image."""
+    try:
+        return {"template": template_id, "outcome": gyroflow_service.delete_template(template_id)}
+    except gyroflow_service.GyroflowError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+
 # --------------------------------------------------------------------------- #
 # Sequences
 # --------------------------------------------------------------------------- #

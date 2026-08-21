@@ -2,8 +2,7 @@
   "$meta": {
     "id": "v_1080",
     "label": "Vertical 1080p",
-    "description": "9:16 crop inside the 4:3 source, 1080x1920 H.265 10-bit output. The crop offset is adjustable per cut.",
-    "aspect": "9:16"
+    "description": "9:16 crop inside the 4:3 source, 1080x1920 H.265 output."
   },
   "version": 2,
   "stabilization": {

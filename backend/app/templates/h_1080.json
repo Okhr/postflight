@@ -2,8 +2,7 @@
   "$meta": {
     "id": "h_1080",
     "label": "Horizontal 1080p",
-    "description": "16:9 crop inside the 4:3 source, 1920x1080 H.265 10-bit output.",
-    "aspect": "16:9"
+    "description": "16:9 crop inside the 4:3 source, 1920x1080 H.265 10-bit output."
   },
   "version": 2,
   "stabilization": {

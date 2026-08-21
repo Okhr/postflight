@@ -5,6 +5,7 @@ import { Check, Download, Trash2, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { StateBadge } from "@/components/StateBadge";
+import { TemplatesCard } from "@/components/TemplatesCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -62,6 +63,8 @@ export function Stabilize() {
   return (
     <div>
       <div className="min-w-0 space-y-4">
+        <TemplatesCard />
+
         {selected ? (
           <Launcher key={selected} sequenceId={selected} />
         ) : (
