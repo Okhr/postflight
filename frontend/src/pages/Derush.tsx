@@ -32,7 +32,6 @@ import { toast } from "sonner";
 
 import { GyroChart, PLOT_HEIGHT } from "@/components/GyroChart";
 import { RenameDialog } from "@/components/RenameDialog";
-import { StateBadge } from "@/components/StateBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -142,7 +141,7 @@ export function Derush() {
         <p className="text-sm text-muted-foreground">
           {usable.length === 0 ? (
             <>
-              No proxy yet. Import rushes from <Link to="/" className="underline">Import</Link>.
+              Nothing imported yet. See <Link to="/" className="underline">Import</Link>.
             </>
           ) : (
             "Pick a rush."
@@ -368,10 +367,11 @@ function Editor({ sequenceId }: { sequenceId: number }) {
           <CardTitle className="text-base">{sequence.label}</CardTitle>
           <CardDescription>The proxy is not ready yet.</CardDescription>
         </CardHeader>
-        <CardContent className="flex items-center gap-3">
-          <StateBadge state={sequence.state} />
-          {sequence.error && <p className="text-sm text-red-400">{sequence.error}</p>}
-        </CardContent>
+        {sequence.error && (
+          <CardContent>
+            <p className="text-sm text-red-400">{sequence.error}</p>
+          </CardContent>
+        )}
       </Card>
     );
   }

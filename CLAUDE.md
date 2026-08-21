@@ -795,6 +795,40 @@ Deux détails : **un Stop doit atteindre tous les lots en vol**, pas seulement l
 laissent le premier incoupable), et la barre latérale n'affiche l'upload que pendant :
 un indicateur permanent à zéro serait du mobilier.
 
+### Pourquoi l'upload est lent, et où il ne l'est pas
+
+Diagnostiqué le 2026-08-21, laptop de florian vers proxima. Trois suspects, mesurés
+un par un, et deux sont innocents.
+
+| mesure | valeur |
+|---|---|
+| 1 Go poussé dans l'API depuis proxima (localhost) | **611 Mo/s** |
+| RTT proxima vers la box (192.168.1.254) | **0,20 ms** |
+| RTT proxima vers le laptop (192.168.27.65) | **21,7 ms** |
+| lien ethernet de proxima | 1000 Mb/s |
+| débit déduit de deux vrais uploads (3,5 Go en 383 s) | **~9 Mo/s** |
+
+**`/mnt/Stockage` n'est pas dans la boucle.** `VS_DATA_PATH=./data`, donc l'inbox est
+sur le NVMe racine (`/dev/nvme0n1p2`), pas sur le disque à plateaux. Le HDD ne peut pas
+être le coupable de quelque chose qu'il ne touche pas.
+
+**L'API et le disque non plus** : 611 Mo/s en local, soit **66 fois** ce qui est observé.
+La route d'upload est déjà écrite pour ça (streaming direct vers un `.partial`, pas de
+multipart, pas de `fsync`).
+
+**Le laptop n'est pas sur le LAN.** La box répond en 0,20 ms, le laptop en 21,7 ms, et sa
+route passe par `192.168.1.254` : le trafic entre par le VPN de la Freebox depuis
+l'extérieur. Le plafond est donc soit le débit montant de la connexion où se trouve le
+laptop, soit le CPU de la box qui chiffre le tunnel.
+
+Deux conséquences pratiques. Sur le LAN sans VPN, le lien gigabit donnerait ~110 Mo/s,
+soit dix fois mieux, et le NVMe suivrait sans peine. Et côté logiciel, la seule piste
+réelle est le **parallélisme** : à 21,7 ms de RTT un flux TCP unique est borné par la
+fenêtre et s'effondre à la moindre perte, alors que deux ou trois transferts simultanés
+remplissent le tunnel. Le code est volontairement séquentiel, et son commentaire dit
+pourquoi (« saturer le lien et éparpiller les écritures ») : c'est juste sur un LAN et
+faux sur un tunnel distant.
+
 ### La barre latérale se tire, et les noms coupés se lisent
 
 320 px par défaut au lieu de 256, et une poignée de 4 px sur le bord droit, bridée entre

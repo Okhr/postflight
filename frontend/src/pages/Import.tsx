@@ -197,7 +197,8 @@ export function Import() {
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : rows.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No rush yet. Drop files above, or copy them into <code>inbox/</code> and hit Scan.
+              Nothing imported yet. Drop files above, or copy them into <code>inbox/</code> and
+              hit Scan.
             </p>
           ) : (
             <Table>

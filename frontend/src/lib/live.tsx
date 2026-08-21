@@ -22,10 +22,23 @@ export function useLiveJobs(): Job[] {
   return useContext(LiveJobsContext);
 }
 
-// Everything that describes pipeline state. `grade` and `sequence` details are
-// left out on purpose: they back an editing surface, and refetching under the
-// cursor while sliders or marks are being moved would fight the user.
-const STALE_ON_JOB_CHANGE = [["sequences"], ["renders"], ["grades"], ["status"]];
+// Everything that describes pipeline state.
+//
+// `["sequence"]` covers one rush's detail, and it has to be in here: the derush page
+// reads that key and nothing else, so a finished proxy left it saying "the proxy is
+// not ready yet" until the page was reloaded. It is safe because this list is only
+// invalidated when a job's identity or state changes, never on a progress tick, and
+// because the marks being edited live in local state that a refetch does not touch.
+//
+// `["grade", id]` stays out: its params *are* the slider positions, so refetching
+// under the cursor would move them while they are being dragged.
+const STALE_ON_JOB_CHANGE = [
+  ["sequences"],
+  ["sequence"],
+  ["renders"],
+  ["grades"],
+  ["status"],
+];
 
 export function LiveJobsProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();

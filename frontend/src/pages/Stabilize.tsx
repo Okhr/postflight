@@ -71,7 +71,7 @@ export function Stabilize() {
           <p className="text-sm text-muted-foreground">
             {withCuts.length === 0 ? (
               <>
-                No sequence marked yet. Mark some in{" "}
+                Nothing marked yet. See{" "}
                 <Link to="/derush" className="underline">
                   Derush
                 </Link>
@@ -139,7 +139,7 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
             <CardTitle className="text-base">{sequence.label}</CardTitle>
             <CardDescription>
               {sequence.width}×{sequence.height} · {formatDuration(sequence.duration_ms)} ·{" "}
-              {cuts.length} sequence{cuts.length > 1 ? "s" : ""} marked
+              {cuts.length} sequence{cuts.length === 1 ? "" : "s"} marked
               {!sequence.has_gyro && (
                 <span className="text-red-400"> · no gyro data, stabilization will fail</span>
               )}
@@ -175,11 +175,11 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
 
         {cuts.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No sequence marked on this rush. Go through{" "}
+            Nothing marked on this rush. See{" "}
             <Link to={`/derush/${sequence.id}`} className="underline">
-              derush
+              Derush
             </Link>
-            , or stabilize the whole sequence.
+            , or stabilize the whole rush.
           </p>
         ) : (
           <div className="overflow-hidden rounded-md border">
@@ -240,7 +240,7 @@ function Launcher({ sequenceId }: { sequenceId: number }) {
             onClick={() => launch.mutate({ whole: false })}
           >
             <Zap className="h-4 w-4" />
-            Stabilize {selection.length} sequence{selection.length > 1 ? "s" : ""}
+            Stabilize {selection.length} sequence{selection.length === 1 ? "" : "s"}
           </Button>
           <Button
             variant="outline"
@@ -282,7 +282,7 @@ function RendersTable({ renders, highlight }: { renders: Render[]; highlight?: n
       </CardHeader>
       <CardContent>
         {renders.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No render started yet.</p>
+          <p className="text-sm text-muted-foreground">Nothing stabilized yet.</p>
         ) : (
           <Table>
             <TableHeader>
