@@ -50,6 +50,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { api, mediaUrl, type Cut, type SequenceDetail } from "@/lib/api";
 import { usePersistentState } from "@/lib/persist";
 import { formatDuration, formatTimecode, frameToSeconds, secondsToFrame } from "@/lib/format";
@@ -86,6 +94,9 @@ interface LocalCut {
   label: string;
   start_frame: number;
   end_frame: number;
+  /** A stabilized file exists for it. Read only by the delete dialog, which says so
+   *  rather than letting anyone think the file goes with the range. */
+  rendered: boolean;
 }
 
 function toLocal(cuts: Cut[]): LocalCut[] {
@@ -95,6 +106,7 @@ function toLocal(cuts: Cut[]): LocalCut[] {
     label: c.label,
     start_frame: c.start_frame,
     end_frame: c.end_frame,
+    rendered: c.rendered,
   }));
 }
 
@@ -156,6 +168,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
   const [cuts, setCuts] = useState<LocalCut[]>([]);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [renaming, setRenaming] = useState<LocalCut | null>(null);
+  const [deleting, setDeleting] = useState<LocalCut | null>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   /** What a drag has changed and not written yet. A drag fires a move per pointer
    *  event; only the release is worth a request. */
@@ -282,6 +295,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
             label: `sequence ${cuts.length + 1}`,
             start_frame: start,
             end_frame: end,
+            rendered: false,
           },
         ].sort((a, b) => a.start_frame - b.start_frame),
       );
@@ -485,7 +499,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
 
       {/* Player and sequences side by side while there is room for both, stacked
           under each other when there is not. */}
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_24rem] xl:grid-cols-[minmax(0,1fr)_30rem]">
       <Card className="overflow-hidden">
         {/* The box is sized from the proxy dimensions the API already reports, so
             the player is at its final size on first paint. Left to `w-auto`, the
@@ -743,7 +757,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="overflow-hidden">
         <CardHeader className="flex-row items-baseline justify-between gap-2 pb-2">
           <CardTitle className="text-sm">Sequences</CardTitle>
           {cuts.length > 0 && (
@@ -752,58 +766,73 @@ function Editor({ sequenceId }: { sequenceId: number }) {
             </span>
           )}
         </CardHeader>
-        <CardContent className="space-y-0.5 px-2 pb-3">
+        <CardContent className="px-0 pb-2">
           {cuts.length === 0 ? (
-            <p className="px-2 text-sm text-muted-foreground">Nothing marked yet.</p>
+            <p className="px-6 text-sm text-muted-foreground">Nothing marked yet.</p>
           ) : (
-            cuts.map((cut) => (
-              <div
-                key={cut.key}
-                className="group rounded-md px-2 py-1.5 transition-colors hover:bg-accent/50"
-              >
-                <div className="flex items-center gap-1">
-                  <span className="min-w-0 flex-1 truncate text-sm">{cut.label}</span>
-                  <span className="tnum shrink-0 text-xs text-muted-foreground">
-                    {formatDuration(
-                      ((cut.end_frame - cut.start_frame + 1) * 1000 * fpsDen) / (fpsNum || 1),
-                    )}
-                  </span>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    title="Rename"
-                    className="h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-                    onClick={() => setRenaming(cut)}
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    title="Delete"
-                    className="h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-                    onClick={() => commit(cuts.filter((c) => c.key !== cut.key))}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-                <div className="tnum flex items-center gap-1 text-xs text-muted-foreground">
-                  <button
-                    className="hover:text-foreground hover:underline"
-                    onClick={() => seek(cut.start_frame)}
-                  >
-                    {formatTimecode(cut.start_frame, fpsNum, fpsDen)}
-                  </button>
-                  {"\u2192"}
-                  <button
-                    className="hover:text-foreground hover:underline"
-                    onClick={() => seek(cut.end_frame)}
-                  >
-                    {formatTimecode(cut.end_frame, fpsNum, fpsDen)}
-                  </button>
-                </div>
-              </div>
-            ))
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="pl-6">Name</TableHead>
+                  <TableHead>In</TableHead>
+                  <TableHead>Out</TableHead>
+                  <TableHead className="text-right">Length</TableHead>
+                  <TableHead className="w-20" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {cuts.map((cut) => (
+                  <TableRow key={cut.key}>
+                    <TableCell className="max-w-32 truncate pl-6 text-sm">{cut.label}</TableCell>
+                    <TableCell>
+                      <button
+                        className="tnum text-sm hover:underline"
+                        onClick={() => seek(cut.start_frame)}
+                      >
+                        {formatTimecode(cut.start_frame, fpsNum, fpsDen)}
+                      </button>
+                    </TableCell>
+                    <TableCell>
+                      <button
+                        className="tnum text-sm hover:underline"
+                        onClick={() => seek(cut.end_frame)}
+                      >
+                        {formatTimecode(cut.end_frame, fpsNum, fpsDen)}
+                      </button>
+                    </TableCell>
+                    <TableCell className="tnum text-right text-sm">
+                      {formatDuration(
+                        ((cut.end_frame - cut.start_frame + 1) * 1000 * fpsDen) / (fpsNum || 1),
+                      )}
+                    </TableCell>
+                    {/* Both actions are always drawn: an icon that appears on hover is
+                        an icon nobody knows is there. */}
+                    <TableCell className="pr-3">
+                      <div className="flex justify-end gap-0.5">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Rename"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          onClick={() => setRenaming(cut)}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Delete"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          onClick={() => setDeleting(cut)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           )}
         </CardContent>
       </Card>
@@ -816,6 +845,36 @@ function Editor({ sequenceId }: { sequenceId: number }) {
           commit(cuts.map((c) => (c.key === renaming?.key ? { ...c, label } : c)))
         }
       />
+
+      <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete {deleting?.label}?</DialogTitle>
+          </DialogHeader>
+          {/* Said only when it is true: a sequence nobody has stabilized has no file
+              to reassure anyone about. */}
+          {deleting?.rendered && (
+            <p className="text-sm text-muted-foreground">
+              The stabilized file stays on disk. Only the marked range goes.
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (deleting) commit(cuts.filter((c) => c.key !== deleting.key));
+                setDeleting(null);
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

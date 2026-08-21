@@ -774,6 +774,19 @@ la supprimer : chaque geste écrit. Un redimensionnement n'écrit qu'**au relâc
 pas à chaque `pointermove`, via une ref qui retient la liste que le drag a produite. Et
 aucun toast de succès : à ce rythme, ce serait du bruit ; seul un échec parle.
 
+La contrepartie de l'écriture immédiate est que **la suppression demande confirmation**,
+le seul geste du derush qui ne se refait pas d'un clic. Le dialogue ne porte une phrase
+que si la sequence a une stab (« le fichier reste sur le disque ») : dire ça d'une
+sequence dont personne n'a rien produit serait rassurer sur un fichier qui n'existe pas.
+
+**Les sequences sont un tableau**, dans une colonne de 24 rem qui passe à 30 rem quand
+l'écran le permet : nom, in, out, longueur et les deux actions sur une seule ligne, tout
+en `text-sm`. Deux lignes par entrée avec des tailles mélangées ont été essayées le
+2026-08-21 et lues comme du désordre. Ici les icônes sont **toujours dessinées**, à la
+différence de l'arbre à gauche où elles sortent au survol : une liste de trois lignes
+n'a pas de place à gagner, et une icône qui n'apparaît qu'au survol est une icône dont
+personne ne sait qu'elle est là.
+
 ### Un cut garde son id, sinon deux choses cassent
 
 `replace_cuts` supprimait la totalité des cuts et les réinsérait, donc leurs id
