@@ -935,8 +935,8 @@ cette frame extraite par ffmpeg et **32,5 dB** contre chacune de ses deux voisin
 
 ### « Dérushé » est une marque, jamais un compte
 
-Un rush porte un booléen `derushed` qu'on pose à la main, depuis le bouton de l'entête
-du derush, et qui se voit dans l'arbre : **une coche à droite de la durée, et rien
+Un rush porte un booléen `derushed` qu'on pose à la main, depuis la case à cocher de
+l'entête du derush, et qui se voit dans l'arbre : **une coche à droite de la durée, et rien
 d'autre**. **Il ne se déduit pas du nombre de sequences** : un rush qui ne valait rien
 est dérushé dès qu'on l'a regardé, et il n'a aucune sequence pour le prouver. C'est le
 compagnon des deux icônes ci-dessous : ensemble ils disent ce qu'il reste à faire.

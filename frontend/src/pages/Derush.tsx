@@ -18,7 +18,6 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Check,
   ChevronLeft,
   ChevronRight,
   Pause,
@@ -34,6 +33,7 @@ import { GyroChart, PLOT_HEIGHT } from "@/components/GyroChart";
 import { RenameDialog } from "@/components/RenameDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -882,8 +882,8 @@ function Editor({ sequenceId }: { sequenceId: number }) {
  * Whether this rush is done with.
  *
  * A mark someone puts there, never a count: a rush worth nothing is derushed the
- * moment it has been watched, and it has no sequences to prove it. The state is the
- * button's own look, which is what a checkbox is, drawn as the page's other buttons.
+ * moment it has been watched, and it has no sequences to prove it. It writes as soon
+ * as it is ticked, like everything else on this page.
  */
 function DerushedToggle({ sequence }: { sequence: SequenceDetail }) {
   const queryClient = useQueryClient();
@@ -897,16 +897,14 @@ function DerushedToggle({ sequence }: { sequence: SequenceDetail }) {
   });
 
   return (
-    <Button
-      size="sm"
-      variant={sequence.derushed ? "default" : "outline"}
-      className="ml-auto"
-      disabled={mark.isPending}
-      onClick={() => mark.mutate(!sequence.derushed)}
-    >
-      <Check className="h-4 w-4" />
+    <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-2 text-sm">
+      <Checkbox
+        checked={sequence.derushed}
+        disabled={mark.isPending}
+        onCheckedChange={(state) => mark.mutate(state === true)}
+      />
       Derushed
-    </Button>
+    </label>
   );
 }
 
