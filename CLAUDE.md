@@ -276,8 +276,10 @@ Mesuré sur un clip réel de 10 s en 1080p60 :
 | **H.264 8-bit `veryfast`** | **0.71x**, le choix retenu |
 | une image filtrée en JPEG | **0.32 s**, d'où l'aperçu live |
 
-L'aperçu est une vraie image ffmpeg, pas une réimplémentation en shader : ce qu'on
-voit traverse exactement les filtres du rendu final, aucune parité à maintenir.
+L'aperçu était une vraie image ffmpeg, sans parité à maintenir. **Changé le
+2026-08-23**, choix de florian : « ça serait pas mal quand même des filtres frontend,
+on a pas moyen d'avoir un truc good enough ». Voir la section suivante, l'image fixe
+est retirée.
 
 **`colorlevels` est un piège.** Il accepte le YUV autant que le RGB, et sur une
 image YUV ses points « rouge/vert/bleu » tombent sur **Y/U/V** : décaler le point
@@ -290,6 +292,76 @@ blancs inventée sur une image moitié ciel, moitié herbe sèche).
 
 L'auto-niveaux ne pousse jamais un côté déjà écrêté : mesuré, remonter le point
 blanc d'un plan dont le ciel touche le plafond le brûle complètement.
+
+### L'aperçu en shader : une seconde implémentation, mesurée
+
+Le modèle est celui de Resolve ou Lightroom : un aperçu GPU qui suit les curseurs, un
+rendu final qui fait foi. Donc oui, la chaîne couleur existe deux fois, et le fichier
+écrit vient toujours de ffmpeg.
+
+**Les formules ont été trouvées par la mesure, pas dans la doc** : une mire de 256 gris
+et huit patchs colorés passée dans chaque filtre, valeurs relues, candidats comparés.
+
+| filtre | ce qu'il fait vraiment | écart de la reproduction |
+|---|---|---|
+| `exposure` | `out = in * 2^EV`, sur les valeurs encodées, sans linéarisation | 0,5 niveau |
+| `eq` contrast | `(v - 0,5) * C + 0,5` en luma normalisée | 1,5 niveau |
+| `eq` saturation | `(u - 128) * S + 128` sur la chroma | 1,6 niveau |
+| `colortemperature` | un gain par canal RGB, sur les valeurs encodées | 1,7 niveau |
+| `curves` | spline cubique naturelle sur les quatre points | 1,1 niveau |
+| `lutyuv` | l'étirement de luma, que le serveur résout et envoie | exact |
+
+**Le détail qui décide de tout : ffmpeg repasse par du 8 bits entre les filtres, donc
+il écrête après chaque étage.** En gardant tout en flottant, le ciel divergeait de 18
+niveaux (30,6 dB) ; en écrêtant à chaque étage, 39,1 dB et 2 niveaux d'écart moyen, deux
+images indiscernables côte à côte.
+
+**Les décisions restent au serveur.** `auto_levels` arrive dans `GradeOut` sous forme de
+`levels` déjà résolu (`[low, gain]` ou `null`) : quel côté est déjà écrêté et si
+l'étirement vaut la peine est un raisonnement, et un raisonnement ne doit pas exister
+deux fois. Le shader n'est qu'un exécutant.
+
+**Deux bugs de shader que seul le harnais a attrapés** : une LUT en `R32F` ne
+s'échantillonne pas en `LINEAR` sans extension, et une texture incomplète se lit comme
+zéro, donc la courbe noircissait toute l'image (5,9 dB) ; et à 6500 K l'approximation de
+Tanner Helland ne vaut pas exactement `[1, 1, 1]` mais `[1, 0,996, 0,980]`, soit 2 % de
+bleu appliqués à un moment où ffmpeg n'insère pas le filtre du tout.
+
+**Le plancher de la mesure est le décodeur, pas le shader.** Comparé dans le navigateur
+contre une frame PNG pleine résolution produite par le ffmpeg du conteneur :
+
+| cas | PSNR |
+|---|---|
+| **contrôle, paramètres neutres** (le shader ne fait rien) | **29,7 dB** |
+| exposition +0,4 EV | 31,0 dB |
+| contraste + saturation | 27,2 dB |
+| température 7400 K | 28,0 dB |
+| courbe | 28,9 dB |
+| auto-levels | 32,6 dB |
+| tout ensemble | 33,2 dB |
+
+Le contrôle neutre est la clé de lecture : à paramètres neutres le shader recopie la
+texture, donc ces 29,7 dB sont l'écart entre **le décodeur de Chrome et celui de
+ffmpeg**. Il est **affine** (mesuré : pente 0,945, offset +12,9), donc l'aperçu est
+légèrement plus clair et moins contrasté que le fichier final. Tous les cas tombent à
+±3 dB du contrôle : le shader n'ajoute rien à ce plancher.
+
+Piste non explorée pour le réduire : **le clip stabilisé est en H.264 10 bits**
+(`yuv420p10le`, Gyroflow suit la source), ce que les navigateurs traitent mal. Sortir
+les rendus en 8 bits serait le premier essai si cet écart devient gênant.
+
+Deux détails d'implémentation : `preserveDrawingBuffer: true`, parce que l'histogramme
+et le harnais relisent le canvas après composition ; et le décalage d'alignement pour
+comparer, mesuré et non deviné, est d'**une demi-frame** (`-ss T` de ffmpeg prend la
+frame suivante là où Chrome à `currentTime = T` montre celle qui contient T ; sans ça la
+mesure tombait à 28,7 dB au lieu de 35,3).
+
+**L'alternative écartée**, chiffrée avant de choisir : rendre un extrait animé par
+ffmpeg à la demande. Sur le proxy 1280x960 60p, chaîne complète, 4 s d'extrait coûtent
+3,1 s (1,3x le temps réel), et **1,4 s si on réduit l'image avant les filtres** (3,0x,
+parce qu'ils travaillent sur quatre fois moins de pixels). `colortemperature` coûte à lui
+seul plus que tous les autres réunis. Utilisable, mais 1,4 s d'attente à chaque
+vérification contre du temps réel.
 
 ## Biais connu : Gyroflow rend +3 frames
 

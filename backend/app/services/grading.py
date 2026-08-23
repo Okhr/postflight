@@ -198,6 +198,33 @@ def _curve(shadows: float, highlights: float) -> str | None:
     return f"curves=m='0/0 0.25/{low:.3f} 0.75/{high:.3f} 1/1'"
 
 
+def auto_levels(values: dict, analysis: dict | None) -> tuple[float, float] | None:
+    """The luma stretch to apply, as (low point, gain), or None for none at all.
+
+    Its own function because the live preview runs in the browser and has to apply
+    exactly this, without repeating the decisions: which side is already clipped, and
+    whether there is enough unused range to be worth touching. The browser executes,
+    the server decides.
+    """
+    if not values.get("auto_levels") or not analysis:
+        return None
+    low = max(0.0, (analysis.get("y_low", LEGAL_BLACK) - LEGAL_BLACK) / LEGAL_SPAN)
+    high = min(1.0, (analysis.get("y_high", LEGAL_WHITE) - LEGAL_BLACK) / LEGAL_SPAN)
+    # Only reclaim range that is actually unused. Seen on a real clip: pushing the
+    # white point on footage whose sky already touches the ceiling blows the sky out
+    # completely. A side that clips is a side left alone.
+    if analysis.get("clipped_black", 0.0) > 0.05 or low < 0.02:
+        low = 0.0
+    if analysis.get("clipped_white", 0.0) > 0.05 or high > 0.98:
+        high = 1.0
+    if high - low <= 0.15 or (low <= 0.0 and high >= 1.0):
+        return None
+    # Back to fractions of full scale, where the expression is depth-proof.
+    lo = BLACK_N + low * (WHITE_N - BLACK_N)
+    hi = BLACK_N + high * (WHITE_N - BLACK_N)
+    return lo, (WHITE_N - BLACK_N) / max(hi - lo, 1e-3)
+
+
 def build_filters(params: dict, analysis: dict | None = None) -> list[str]:
     """The ffmpeg chain, in the order it has to be applied."""
     values = merge_params(params)
@@ -214,27 +241,14 @@ def build_filters(params: dict, analysis: dict | None = None) -> list[str]:
     # where neutral is the middle of the range and not zero, turns the picture
     # black. Worse, it only did so *sometimes*: with another RGB filter in the
     # chain, ffmpeg inserted a conversion and the same parameters behaved.
-    if values["auto_levels"] and analysis:
-        low = max(0.0, (analysis.get("y_low", LEGAL_BLACK) - LEGAL_BLACK) / LEGAL_SPAN)
-        high = min(1.0, (analysis.get("y_high", LEGAL_WHITE) - LEGAL_BLACK) / LEGAL_SPAN)
-        # Only reclaim range that is actually unused. Seen on a real clip: pushing
-        # the white point on footage whose sky already touches the ceiling blows
-        # the sky out completely. A side that clips is a side left alone.
-        if analysis.get("clipped_black", 0.0) > 0.05 or low < 0.02:
-            low = 0.0
-        if analysis.get("clipped_white", 0.0) > 0.05 or high > 0.98:
-            high = 1.0
-        if high - low > 0.15 and (low > 0.0 or high < 1.0):
-            # Back to fractions of full scale, where the expression is depth-proof.
-            lo = BLACK_N + low * (WHITE_N - BLACK_N)
-            hi = BLACK_N + high * (WHITE_N - BLACK_N)
-            gain = (WHITE_N - BLACK_N) / max(hi - lo, 1e-3)
-            chain.append(
-                "lutyuv=y='clip(((val/maxval)-{lo:.5f})*{gain:.5f}+{black:.5f},"
-                "{black:.5f},{white:.5f})*maxval'".format(
-                    lo=lo, gain=gain, black=BLACK_N, white=WHITE_N
-                )
+    if (levels := auto_levels(values, analysis)):
+        lo, gain = levels
+        chain.append(
+            "lutyuv=y='clip(((val/maxval)-{lo:.5f})*{gain:.5f}+{black:.5f},"
+            "{black:.5f},{white:.5f})*maxval'".format(
+                lo=lo, gain=gain, black=BLACK_N, white=WHITE_N
             )
+        )
 
     if abs(values["exposure"]) > 1e-3:
         # `exposure` works in stops around 0, which is what the slider shows.

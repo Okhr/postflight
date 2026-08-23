@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Download, Eye, RotateCcw, Save, Trash2, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { GradedVideo } from "@/components/GradedVideo";
 import { StateBadge } from "@/components/StateBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -37,14 +38,6 @@ const CONTROLS = [
 ] as const;
 
 /** Waits for the slider to settle before asking the server for a new frame. */
-function useSettled<T>(value: T, delay = 220): T {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(value), delay);
-    return () => clearTimeout(timer);
-  }, [value, delay]);
-  return settled;
-}
 
 export function Color() {
   const { id } = useParams();
@@ -119,7 +112,6 @@ export function Color() {
 function Editor({ renderId, render }: { renderId: number; render?: Render }) {
   const queryClient = useQueryClient();
   const [params, setParams] = useState<GradeParams>(NEUTRAL_GRADE);
-  const [at, setAt] = useState(0);
   const [showBefore, setShowBefore] = useState(false);
   const [dirty, setDirty] = useState(false);
 
@@ -134,11 +126,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
     if (!grade) return;
     setParams(grade.params);
     setDirty(false);
-    if (at === 0 && grade.analysis.median_ms) setAt(grade.analysis.median_ms);
   }, [grade?.id, grade?.params]);
-
-  const settled = useSettled(params);
-  const previewUrl = mediaUrl.gradePreview(renderId, showBefore ? NEUTRAL_GRADE : settled, at);
 
   const save = useMutation({
     mutationFn: () => api.saveGrade(renderId, params),
@@ -209,47 +197,35 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_19rem]">
         <Card className="overflow-hidden">
-          <div className="relative bg-black">
-            <img
-              src={previewUrl}
-              alt=""
-              className="mx-auto block w-full"
-              style={{ aspectRatio: "16 / 9" }}
+          <CardContent className="p-3">
+            <GradedVideo
+              src={mediaUrl.render(renderId)}
+              plan={{
+                levels: showBefore ? null : (grade?.levels ?? null),
+                exposure: showBefore ? 0 : (params.exposure as number),
+                shadows: showBefore ? 0 : (params.shadows as number),
+                highlights: showBefore ? 0 : (params.highlights as number),
+                contrast: showBefore ? 1 : (params.contrast as number),
+                saturation: showBefore ? 1 : (params.saturation as number),
+                temperature: showBefore ? 6500 : (params.temperature as number),
+              }}
+              marks={references.map((r) => ({ label: r.label, ms: r.ms ?? 0 }))}
             />
-            {showBefore && (
-              <span className="absolute left-2 top-2 rounded bg-black/70 px-2 py-0.5 text-sm text-white">
-                before
-              </span>
-            )}
-          </div>
-          <CardContent className="flex flex-wrap items-center gap-2 py-3">
-            <Button
-              size="sm"
-              variant={showBefore ? "default" : "outline"}
-              onMouseDown={() => setShowBefore(true)}
-              onMouseUp={() => setShowBefore(false)}
-              onMouseLeave={() => setShowBefore(false)}
-              onTouchStart={() => setShowBefore(true)}
-              onTouchEnd={() => setShowBefore(false)}
-            >
-              <Eye className="h-4 w-4" />
-              Hold to compare
-            </Button>
-            {/* Three frames rather than one: grading on a single lucky frame is the
-                surest way to be wrong about a whole clip. */}
-            {references.map((reference) => (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
               <Button
-                key={reference.label}
                 size="sm"
-                variant={Math.abs(at - (reference.ms ?? -1)) < 1 ? "secondary" : "ghost"}
-                onClick={() => setAt(reference.ms ?? 0)}
+                variant={showBefore ? "default" : "outline"}
+                onMouseDown={() => setShowBefore(true)}
+                onMouseUp={() => setShowBefore(false)}
+                onMouseLeave={() => setShowBefore(false)}
+                onTouchStart={() => setShowBefore(true)}
+                onTouchEnd={() => setShowBefore(false)}
               >
-                {reference.label}
+                <Eye className="h-4 w-4" />
+                Hold to compare
               </Button>
-            ))}
-            <span className="tnum ml-auto text-sm text-muted-foreground">
-              frame at {(at / 1000).toFixed(1)}s
-            </span>
+              {showBefore && <span className="text-sm text-muted-foreground">before</span>}
+            </div>
           </CardContent>
         </Card>
 

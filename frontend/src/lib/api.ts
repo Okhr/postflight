@@ -165,6 +165,9 @@ export interface Grade {
   progress: number;
   params: GradeParams;
   analysis: Partial<GradeAnalysis>;
+  /** What auto-levels resolves to, as [low, gain], or null when it does nothing.
+   *  Decided on the server so the browser preview never reasons about it twice. */
+  levels: [number, number] | null;
   out_name: string | null;
   size_bytes: number | null;
   error: string | null;
