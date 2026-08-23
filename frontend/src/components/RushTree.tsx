@@ -260,10 +260,9 @@ function RushRow({
           onClick={() => navigate(rushHref(pathname, sequence.id))}
           className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left"
         >
-          <span
-            className={cn("truncate", sequence.derushed && "text-muted-foreground")}
-            title={sequence.label}
-          >
+          {/* Not greyed out when derushed: at the same size, a low contrast name reads
+              as a smaller one, and the tick below already says it. */}
+          <span className="truncate" title={sequence.label}>
             {sequence.label}
           </span>
           <span className="tnum ml-auto shrink-0 pl-2 text-xs text-muted-foreground">

@@ -936,10 +936,15 @@ cette frame extraite par ffmpeg et **32,5 dB** contre chacune de ses deux voisin
 ### « Dérushé » est une marque, jamais un compte
 
 Un rush porte un booléen `derushed` qu'on pose à la main, depuis le bouton de l'entête
-du derush, et qui se voit dans l'arbre (le nom passe en gris, une coche à droite de la
-durée). **Il ne se déduit pas du nombre de sequences** : un rush qui ne valait rien est
-dérushé dès qu'on l'a regardé, et il n'a aucune sequence pour le prouver. C'est le
+du derush, et qui se voit dans l'arbre : **une coche à droite de la durée, et rien
+d'autre**. **Il ne se déduit pas du nombre de sequences** : un rush qui ne valait rien
+est dérushé dès qu'on l'a regardé, et il n'a aucune sequence pour le prouver. C'est le
 compagnon des deux icônes ci-dessous : ensemble ils disent ce qu'il reste à faire.
+
+Le nom passait aussi en gris, retiré le 2026-08-23 : mesuré dans le DOM, les deux noms
+font bien 14 px et poids 400, mais à contraste plus faible (`rgb(161,161,170)` contre
+`rgb(250,250,250)`) le même texte se lit comme un texte plus petit, ce qui a été rapporté
+comme une taille de police incohérente. La coche disait déjà la même chose.
 
 La colonne est non nullable avec un défaut constant, donc l'auto-migration la crée avec
 son `DEFAULT` et remplit les lignes existantes. Vérifié au redémarrage :
