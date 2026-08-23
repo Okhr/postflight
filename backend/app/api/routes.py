@@ -644,6 +644,82 @@ def delete_folder(folder_id: int, session: Session = Depends(get_session)) -> di
     return {"deleted": folder.name, "rushes_freed": freed, "folders_freed": orphans}
 
 
+@router.get("/stabilize/queue", response_model=list[schemas.QueueRush])
+def stabilize_queue(session: Session = Depends(get_session)) -> list[schemas.QueueRush]:
+    """Everything that can be stabilized, in one answer.
+
+    One request rather than one per rush, because the page exists to say what is left
+    to do and cannot say it a rush at a time. A rush needs the merged file (`ready`)
+    and at least one marked sequence: stabilizing a whole rush is not a thing here.
+
+    Oldest first, like the derush list, which is the order a session is walked in.
+    """
+    rushes = session.exec(
+        select(Sequence).where(Sequence.state == SequenceState.READY)
+    ).all()
+    if not rushes:
+        return []
+
+    ids = [r.id for r in rushes]
+    cuts = session.exec(
+        select(Cut).where(Cut.sequence_id.in_(ids)).order_by(Cut.order_index)  # type: ignore[union-attr]
+    ).all()
+    renders = session.exec(select(Render).where(Render.sequence_id.in_(ids))).all()  # type: ignore[union-attr]
+
+    done: dict[int, list[schemas.QueueRender]] = {}
+    busy: dict[int, list[schemas.QueueRender]] = {}
+    for render in sorted(renders, key=lambda r: r.id or 0):
+        if render.cut_id is None:
+            continue
+        entry = schemas.QueueRender(id=render.id or 0, template=render.template)
+        if render.state == RenderState.DONE:
+            done.setdefault(render.cut_id, []).append(entry)
+        elif render.state in (RenderState.QUEUED, RenderState.RUNNING):
+            busy.setdefault(render.cut_id, []).append(entry)
+
+    by_rush: dict[int, list[Cut]] = {}
+    for cut in cuts:
+        by_rush.setdefault(cut.sequence_id, []).append(cut)
+
+    out: list[schemas.QueueRush] = []
+    for rush in sorted(rushes, key=lambda r: (r.recorded_at is None, r.recorded_at, r.id)):
+        mine = by_rush.get(rush.id or 0, [])
+        if not mine:
+            continue
+        out.append(
+            schemas.QueueRush(
+                id=rush.id or 0,
+                label=rush.label,
+                folder_id=rush.folder_id,
+                recorded_at=rush.recorded_at,
+                cuts=[
+                    schemas.QueueCut(
+                        id=cut.id or 0,
+                        label=cut.label,
+                        frames=cut.end_frame - cut.start_frame + 1,
+                        # A rush whose probe failed has no fps. It must not take the
+                        # whole queue down with a division by zero.
+                        duration_ms=frame_to_ms(
+                            cut.end_frame - cut.start_frame + 1, rush.fps_num, rush.fps_den
+                        )
+                        if rush.fps_num
+                        else 0.0,
+                        start_tc=format_timecode(cut.start_frame, rush.fps_num, rush.fps_den)
+                        if rush.fps_num
+                        else "",
+                        end_tc=format_timecode(cut.end_frame, rush.fps_num, rush.fps_den)
+                        if rush.fps_num
+                        else "",
+                        done=done.get(cut.id or 0, []),
+                        busy=busy.get(cut.id or 0, []),
+                    )
+                    for cut in mine
+                ],
+            )
+        )
+    return out
+
+
 @router.get("/sequences", response_model=list[schemas.SequenceOut])
 def list_sequences(
     state: str | None = None,

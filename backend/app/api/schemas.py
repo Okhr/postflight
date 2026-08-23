@@ -55,6 +55,40 @@ class CutOut(BaseSchema):
     graded: bool = False
 
 
+class QueueRender(BaseSchema):
+    """One file made from a sequence. Named by its profile, addressed by its id, so
+    the profile shown on the row is also the way to its grading and its file."""
+
+    id: int
+    template: str
+
+
+class QueueCut(BaseSchema):
+    """A sequence as the stabilize queue shows it."""
+
+    id: int
+    label: str
+    frames: int
+    duration_ms: float
+    start_tc: str
+    end_tc: str
+    # Profiles a finished file exists for, and profiles a job is still working on.
+    # Together they decide whether the row arrives ticked: what is done with the
+    # chosen profile has nothing left to ask for.
+    done: list[QueueRender] = Field(default_factory=list)
+    busy: list[QueueRender] = Field(default_factory=list)
+
+
+class QueueRush(BaseSchema):
+    """A rush and the sequences marked on it. Only rushes with at least one."""
+
+    id: int
+    label: str
+    folder_id: int | None = None
+    recorded_at: datetime | None = None
+    cuts: list[QueueCut] = Field(default_factory=list)
+
+
 class RenderOut(BaseSchema):
     id: int
     sequence_id: int

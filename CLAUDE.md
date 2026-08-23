@@ -1028,6 +1028,56 @@ travail demandé : un rendu en cours laisse l'icône éteinte.
 Le détail n'est demandé qu'au dépliage, sous la clé `["sequence", id]`, celle de la page
 derush : ouvrir un rush là-bas et le déplier ici ne coûte qu'une requête pour les deux.
 
+## Stabilize : une file, pas un lanceur par rush
+
+Refonte du 2026-08-23, après un brainstorm où le grief de florian était textuel : « je
+sais pas trop si je peux faire tous les rendus de toutes les sequences de toutes les
+rush en même temps, ou si je peux sélectionner certains profils, ou certains rush de
+certains dossiers ». Ce n'était pas un manque de fonction, c'était un manque
+d'affordance : la page ne disait pas ce qu'elle permettait.
+
+Le lanceur par rush a donc disparu au profit d'**une file unique, tous rushes
+confondus**, dessinée comme l'arbre de la barre latérale (dossier, rush, sequence) avec
+des **cases à trois états** : cocher un dossier coche ses rushes, cocher un rush coche
+ses sequences, et l'état partiel se voit. Une case « Everything waiting » en tête, parce
+que le cas courant est de tout prendre.
+
+Ce qui fait le travail de la page :
+
+- **Tout arrive coché, sauf ce qui a déjà un fichier pour le profil choisi.** Changer de
+  profil en haut recoche ces lignes toutes seules : c'est ce qui rend un second format
+  gratuit sans jamais refaire deux fois le même travail. Le second format est rare mais
+  existe (choix de florian), donc il ne fallait ni l'imposer ni le bloquer.
+- **Une sequence porte le nom des profils avec lesquels elle a été rendue**, un badge par
+  fichier, avec un spinner tant que le job tourne. Et ce badge **est le chemin vers le
+  fichier** : étalonner, télécharger, supprimer. C'est ce qui a permis de retirer la
+  table de rendus à neuf colonnes, qui mélangeait deux échelles (un lanceur pour un rush,
+  une table pour tous).
+- **Le profil est un réglage mémorisé, pas une question.** Le dernier utilisé, dans
+  `localStorage`, parce que le profil a été validé dans Gyroflow bien avant cette page.
+- **Aucun aperçu du cadrage**, décision de florian : « l'idée que j'avais quand j'ai
+  commencé le projet c'est d'aller vite, donc normalement le profil a déjà été testé et
+  ajusté dans Gyroflow ». Un aperçu serait une question posée à quelqu'un qui a déjà
+  répondu.
+- **Pas de rush entier.** Le derush est le passage obligé, donc une sequence marquée est
+  la condition d'entrée dans la file. `whole_sequence` reste dans l'API (des rendus à
+  `cut_id` nul existent en base et la file doit les ignorer sans les faire disparaître),
+  mais l'interface ne l'offre plus.
+- **Les templates restent en haut**, choix de florian contre ma proposition de les
+  déplacer dans un dialogue.
+
+Deux détails d'implémentation qui ont une raison :
+
+- **`GET /stabilize/queue` répond en une requête**, avec trois SELECT et un assemblage en
+  Python. Une route par rush aurait fait du N+1 pour une page dont le sujet est
+  précisément l'ensemble.
+- **Un rush dont la sonde a échoué n'a pas de fps**, et `frame_to_ms` divise par zéro. La
+  file entière serait tombée en 500 à cause d'un seul mauvais rush ; la durée vaut 0 dans
+  ce cas. Trouvé par un test, pas en production.
+- **Le lancement fait une requête par rush**, puisqu'un rendu se crée contre le rush qui
+  possède les cuts, et rapporte l'agrégat (`Promise.allSettled`) : ce qui compte est
+  combien de jobs le clic a produits, pas quelle requête a échoué.
+
 ## Les templates Gyroflow : sept réglages sur les quatre-vingt-dix
 
 Un template est un **projet Gyroflow partiel** (`data/templates/*.json`), passé en

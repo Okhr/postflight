@@ -17,6 +17,33 @@ export interface Clip {
   state: string;
 }
 
+/** One file made from a sequence: named by its profile, reached by its id. */
+export interface QueueRender {
+  id: number;
+  template: string;
+}
+
+/** A sequence as the stabilize queue lists it, with what has been made from it. */
+export interface QueueCut {
+  id: number;
+  label: string;
+  frames: number;
+  duration_ms: number;
+  start_tc: string;
+  end_tc: string;
+  /** Profiles a finished file exists for, and profiles a job is working on. */
+  done: QueueRender[];
+  busy: QueueRender[];
+}
+
+export interface QueueRush {
+  id: number;
+  label: string;
+  folder_id: number | null;
+  recorded_at: string | null;
+  cuts: QueueCut[];
+}
+
 export interface Cut {
   id: number;
   order_index: number;
@@ -447,6 +474,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ cuts }),
     }),
+
+  /** Everything that can be stabilized, grouped as the tree draws it. One request:
+   *  the page has to say what is left to do, which it cannot do a rush at a time. */
+  stabilizeQueue: () => request<QueueRush[]>("/stabilize/queue"),
 
   createRenders: (
     sequenceId: number,

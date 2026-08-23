@@ -1,14 +1,33 @@
-import { useEffect, useState } from "react";
+/**
+ * Stabilize: one queue of everything that can be stabilized, whatever rush it is in.
+ *
+ * The page answers a single question, and it used to answer it badly: what is left to
+ * do, and can I take all of it at once. So there is no per-rush launcher any more. The
+ * tree holds every marked sequence, grouped the way the sidebar groups them, ticked on
+ * arrival except where a file already exists for the chosen profile. Change the profile
+ * and those rows tick themselves again, which is what makes a second format cost one
+ * click and never redo work by accident.
+ *
+ * What a sequence has already been rendered with is written on its row, and the profile
+ * is the way to the file: it leads to grading, which is the step after this one.
+ */
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Download, Trash2, Zap } from "lucide-react";
+import { ChevronRight, Download, Droplet, Loader2, Trash2, Zap } from "lucide-react";
 import { toast } from "sonner";
 
-import { StateBadge } from "@/components/StateBadge";
 import { TemplatesCard } from "@/components/TemplatesCard";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
 import {
   Select,
@@ -17,258 +36,398 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { api, mediaUrl, type Render } from "@/lib/api";
-import { etaLabel, formatBytes, formatDateTime, formatDuration } from "@/lib/format";
+import { api, mediaUrl, type Folder, type QueueRush, type Render, type Template } from "@/lib/api";
+import { folderColor } from "@/lib/colors";
+import { etaLabel, formatDuration } from "@/lib/format";
+import { usePersistentState } from "@/lib/persist";
 import { cn } from "@/lib/utils";
+
+/** A folder and what hangs under it. Two levels deep, like everywhere else. */
+interface Node {
+  folder: Folder | null;
+  children: Node[];
+  rushes: QueueRush[];
+}
+
+type Mark = "on" | "off" | "mixed";
+
+function mark(ids: number[], picked: Set<number>): Mark {
+  if (ids.length === 0) return "off";
+  const taken = ids.filter((id) => picked.has(id)).length;
+  if (taken === 0) return "off";
+  return taken === ids.length ? "on" : "mixed";
+}
+
+/** Every cut under a node, so a folder can be ticked as one thing. */
+function cutsOf(node: Node): number[] {
+  return [
+    ...node.rushes.flatMap((rush) => rush.cuts.map((cut) => cut.id)),
+    ...node.children.flatMap(cutsOf),
+  ];
+}
+
+function lengthOf(node: Node): number {
+  return (
+    node.rushes.reduce(
+      (total, rush) => total + rush.cuts.reduce((sum, cut) => sum + cut.duration_ms, 0),
+      0,
+    ) + node.children.reduce((total, child) => total + lengthOf(child), 0)
+  );
+}
+
+/**
+ * The tree, keeping only what has work in it.
+ *
+ * A folder holding nothing to stabilize is noise here: this page is the list of what
+ * is left, not the library. Global comes first, as the folder nobody chose.
+ */
+function build(folders: Folder[], queue: QueueRush[]): Node[] {
+  const mine = (id: number | null) => queue.filter((rush) => rush.folder_id === id);
+  const node = (folder: Folder): Node => ({
+    folder,
+    children: folders
+      .filter((child) => child.parent_id === folder.id)
+      .map(node)
+      .filter((child) => cutsOf(child).length > 0),
+    rushes: mine(folder.id),
+  });
+
+  const roots = folders.filter((folder) => folder.parent_id === null).map(node);
+  const global: Node = { folder: null, children: [], rushes: mine(null) };
+  return [global, ...roots].filter((entry) => cutsOf(entry).length > 0);
+}
 
 export function Stabilize() {
   const { id } = useParams();
-  const sequenceId = Number(id);
-  const selected = Number.isFinite(sequenceId) ? sequenceId : undefined;
-
-  const { data: sequences } = useQuery({
-    queryKey: ["sequences"],
-    queryFn: () => api.sequences(),
-    refetchInterval: 10_000,
-  });
-  const { data: renders } = useQuery({
-    queryKey: ["renders"],
-    queryFn: () => api.renders(),
-    refetchInterval: 3_000,
-  });
-
-  // Only rushes with something to render: a marked cut. A rush nobody derushed
-  // has nothing to offer here, and listing it just makes the step look busier than
-  // it is. Chronological like the derush list, oldest first, so the two read the
-  // same way.
-  //
-  // "ready" is still required: a render needs the merged file, and that state is the
-  // one that guarantees it.
-  const withCuts = (sequences ?? [])
-    .filter((sequence) => sequence.state === "ready" && sequence.cut_count > 0)
-    .sort((a, b) => {
-      const left = a.recorded_at ? Date.parse(a.recorded_at) : Infinity;
-      const right = b.recorded_at ? Date.parse(b.recorded_at) : Infinity;
-      return left - right;
-    });
+  const opened = Number(id);
 
   return (
-    <div>
-      <div className="min-w-0 space-y-4">
-        <TemplatesCard />
-
-        {selected ? (
-          <Launcher key={selected} sequenceId={selected} />
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            {withCuts.length === 0 ? (
-              <>
-                Nothing marked yet. See{" "}
-                <Link to="/derush" className="underline">
-                  Derush
-                </Link>
-                .
-              </>
-            ) : (
-              "Pick a rush."
-            )}
-          </p>
-        )}
-
-        <RendersTable renders={renders ?? []} highlight={selected} />
-      </div>
+    <div className="min-w-0 space-y-4">
+      <TemplatesCard />
+      <Queue highlight={Number.isFinite(opened) ? opened : undefined} />
+      <Active />
     </div>
   );
 }
 
-function Launcher({ sequenceId }: { sequenceId: number }) {
+function Queue({ highlight }: { highlight?: number }) {
   const queryClient = useQueryClient();
-  const [template, setTemplate] = useState("");
-  const [picked, setPicked] = useState<number[] | null>(null);
+  const [template, setTemplate] = usePersistentState("stabilize.template", "");
+  /** `null` means nobody has touched a box, so the default stands. */
+  const [picked, setPicked] = useState<Set<number> | null>(null);
+  const [shut, setShut] = useState<Set<string>>(new Set());
 
-  const { data: sequence } = useQuery({
-    queryKey: ["sequence", sequenceId],
-    queryFn: () => api.sequence(sequenceId),
-    refetchInterval: (query) =>
-      query.state.data?.renders.some((r) => r.state === "running" || r.state === "queued")
-        ? 3_000
-        : false,
+  const { data: queue } = useQuery({
+    queryKey: ["stabilize-queue"],
+    queryFn: api.stabilizeQueue,
+    refetchInterval: 5_000,
   });
+  const { data: folders } = useQuery({ queryKey: ["folders"], queryFn: api.folders });
   const { data: templates } = useQuery({ queryKey: ["templates"], queryFn: api.templates });
 
+  // A profile has to be chosen for the page to mean anything, and the last one used is
+  // the right guess: the profile was settled in Gyroflow long before this page.
   useEffect(() => {
-    if (templates?.length && !template) setTemplate(templates[0].id);
-  }, [templates, template]);
+    if (!templates?.length) return;
+    if (!templates.some((option) => option.id === template)) setTemplate(templates[0].id);
+  }, [templates, template, setTemplate]);
 
-  const cuts = sequence?.cuts ?? [];
-  // `null` = nothing unchecked yet, so everything is taken.
-  const selection = picked ?? cuts.map((cut) => cut.id);
+  const tree = useMemo(() => build(folders ?? [], queue ?? []), [folders, queue]);
+
+  // Untouched, the queue offers exactly the work that is missing for this profile.
+  const fresh = useMemo(() => {
+    const out = new Set<number>();
+    for (const rush of queue ?? []) {
+      for (const cut of rush.cuts) {
+        const made = [...cut.done, ...cut.busy].some((file) => file.template === template);
+        if (!made) out.add(cut.id);
+      }
+    }
+    return out;
+  }, [queue, template]);
+  const selection = picked ?? fresh;
+
+  const flip = useCallback(
+    (ids: number[], on: boolean) => {
+      setPicked((previous) => {
+        const next = new Set(previous ?? fresh);
+        for (const id of ids) {
+          if (on) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+    },
+    [fresh],
+  );
+
+  const chosen = useMemo(
+    () =>
+      (queue ?? []).flatMap((rush) =>
+        rush.cuts.filter((cut) => selection.has(cut.id)).map((cut) => ({ rush, cut })),
+      ),
+    [queue, selection],
+  );
+  const total = chosen.reduce((sum, entry) => sum + entry.cut.duration_ms, 0);
 
   const launch = useMutation({
-    mutationFn: (payload: { whole: boolean }) =>
-      api.createRenders(sequenceId, {
-        template,
-        whole_sequence: payload.whole,
-        cut_ids: payload.whole ? undefined : selection,
-      }),
-    onSuccess: (created) => {
-      toast.success(`${created.length} render${created.length > 1 ? "s" : ""} queued`);
-      queryClient.invalidateQueries({ queryKey: ["sequence", sequenceId] });
+    // One request per rush, since a render is created against the rush that owns the
+    // cuts. Reported together: what matters is how many jobs the click produced.
+    mutationFn: async () => {
+      const byRush = new Map<number, number[]>();
+      for (const { rush, cut } of chosen) {
+        byRush.set(rush.id, [...(byRush.get(rush.id) ?? []), cut.id]);
+      }
+      const results = await Promise.allSettled(
+        [...byRush].map(([rushId, cutIds]) =>
+          api.createRenders(rushId, { template, cut_ids: cutIds }),
+        ),
+      );
+      const made = results
+        .filter((r): r is PromiseFulfilledResult<Render[]> => r.status === "fulfilled")
+        .flatMap((r) => r.value);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      return { made: made.length, failed };
+    },
+    onSuccess: ({ made, failed }) => {
+      if (made) toast.success(`${made} render${made > 1 ? "s" : ""} queued`);
+      if (failed) toast.error(`${failed} rush${failed > 1 ? "es" : ""} refused`);
+      setPicked(null);
+      queryClient.invalidateQueries({ queryKey: ["stabilize-queue"] });
       queryClient.invalidateQueries({ queryKey: ["renders"] });
+      queryClient.invalidateQueries({ queryKey: ["sequences"] });
     },
     onError: (error: Error) => toast.error(error.message),
   });
 
-  if (!sequence) return <p className="text-sm text-muted-foreground">Loading…</p>;
-
-  const chosen = templates?.find((option) => option.id === template);
+  const everything = tree.flatMap(cutsOf);
+  const label = (id: string) => templates?.find((t) => t.id === id)?.label ?? id;
 
   return (
     <Card>
-      <CardHeader className="pb-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle className="text-base">{sequence.label}</CardTitle>
-            <CardDescription>
-              {sequence.width}×{sequence.height} · {formatDuration(sequence.duration_ms)} ·{" "}
-              {cuts.length} sequence{cuts.length === 1 ? "" : "s"} marked
-              {!sequence.has_gyro && (
-                <span className="text-red-400"> · no gyro data, stabilization will fail</span>
-              )}
-            </CardDescription>
-          </div>
-          <Button asChild size="sm" variant="ghost">
-            <Link to={`/derush/${sequence.id}`}>Edit sequences</Link>
+      <CardHeader className="gap-3 pb-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <Select value={template} onValueChange={setTemplate}>
+            <SelectTrigger className="w-64">
+              <SelectValue placeholder="Profile…" />
+            </SelectTrigger>
+            <SelectContent>
+              {(templates ?? []).map((option: Template) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.label} · {option.width}×{option.height}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="text-sm text-muted-foreground">
+            {chosen.length} of {everything.length} sequence{everything.length === 1 ? "" : "s"}
+            {chosen.length > 0 && ` · ${formatDuration(total)}`}
+          </span>
+          <Button
+            className="ml-auto"
+            disabled={!template || chosen.length === 0 || launch.isPending}
+            onClick={() => launch.mutate()}
+          >
+            <Zap className="h-4 w-4" />
+            Stabilize {chosen.length}
           </Button>
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="space-y-1.5">
-            <Label className="text-sm">Template</Label>
-            <Select value={template} onValueChange={setTemplate}>
-              <SelectTrigger className="w-64">
-                <SelectValue placeholder="Choose…" />
-              </SelectTrigger>
-              <SelectContent>
-                {(templates ?? []).map((option) => (
-                  <SelectItem key={option.id} value={option.id}>
-                    {option.label} · {option.width}×{option.height}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {chosen?.description && (
-            <p className="max-w-md pb-2 text-sm text-muted-foreground">{chosen.description}</p>
-          )}
-        </div>
-
-        {cuts.length === 0 ? (
+      <CardContent>
+        {everything.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            Nothing marked on this rush. See{" "}
-            <Link to={`/derush/${sequence.id}`} className="underline">
+            Nothing marked yet. See{" "}
+            <Link to="/derush" className="underline">
               Derush
             </Link>
-            , or stabilize the whole rush.
+            .
           </p>
         ) : (
-          <div className="overflow-hidden rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-8" />
-                  <TableHead>Sequence</TableHead>
-                  <TableHead>Start</TableHead>
-                  <TableHead>End</TableHead>
-                  <TableHead className="text-right">Length</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {cuts.map((cut) => {
-                  const on = selection.includes(cut.id);
-                  return (
-                    <TableRow
-                      key={cut.id}
-                      className={cn("cursor-pointer", on && "bg-accent/60")}
-                      onClick={() =>
-                        setPicked(
-                          on
-                            ? selection.filter((x) => x !== cut.id)
-                            : [...selection, cut.id],
-                        )
-                      }
-                    >
-                      <TableCell>
-                        <span
-                          className={cn(
-                            "flex h-4 w-4 items-center justify-center rounded border",
-                            on
-                              ? "border-primary bg-primary text-primary-foreground"
-                              : "border-input",
-                          )}
-                        >
-                          {on && <Check className="h-3 w-3" />}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-sm">{cut.label}</TableCell>
-                      <TableCell className="tnum text-sm">{cut.start_tc}</TableCell>
-                      <TableCell className="tnum text-sm">{cut.end_tc}</TableCell>
-                      <TableCell className="tnum text-right text-sm">
-                        {formatDuration(cut.duration_ms)}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2 border-b pb-2">
+              <Box
+                state={mark(everything, selection)}
+                onChange={(on) => flip(everything, on)}
+              />
+              <span className="text-sm text-muted-foreground">Everything waiting</span>
+            </div>
+            {tree.map((node) => (
+              <FolderRow
+                key={node.folder?.id ?? "global"}
+                node={node}
+                depth={0}
+                selection={selection}
+                flip={flip}
+                shut={shut}
+                toggle={(key) =>
+                  setShut((previous) => {
+                    const next = new Set(previous);
+                    if (next.has(key)) next.delete(key);
+                    else next.add(key);
+                    return next;
+                  })
+                }
+                highlight={highlight}
+                name={label}
+              />
+            ))}
           </div>
         )}
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            disabled={!template || selection.length === 0 || launch.isPending}
-            onClick={() => launch.mutate({ whole: false })}
-          >
-            <Zap className="h-4 w-4" />
-            Stabilize {selection.length} sequence{selection.length === 1 ? "" : "s"}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={!template || launch.isPending}
-            onClick={() => launch.mutate({ whole: true })}
-          >
-            Stabilize the whole sequence
-          </Button>
-          <span className="text-sm text-muted-foreground">
-            {formatDuration(
-              cuts
-                .filter((cut) => selection.includes(cut.id))
-                .reduce((total, cut) => total + cut.duration_ms, 0),
-            )}{" "}
-            to render
-          </span>
-        </div>
       </CardContent>
     </Card>
   );
 }
 
-function RendersTable({ renders, highlight }: { renders: Render[]; highlight?: number }) {
+/** A checkbox that can also be neither on nor off, which is what a folder often is. */
+function Box({ state, onChange }: { state: Mark; onChange: (on: boolean) => void }) {
+  return (
+    <Checkbox
+      checked={state === "mixed" ? "indeterminate" : state === "on"}
+      onCheckedChange={() => onChange(state !== "on")}
+    />
+  );
+}
+
+interface RowProps {
+  selection: Set<number>;
+  flip: (ids: number[], on: boolean) => void;
+  shut: Set<string>;
+  toggle: (key: string) => void;
+  highlight?: number;
+  name: (id: string) => string;
+}
+
+function FolderRow({ node, depth, ...rest }: { node: Node; depth: number } & RowProps) {
+  const key = `folder-${node.folder?.id ?? "global"}`;
+  const open = !rest.shut.has(key);
+  const ids = cutsOf(node);
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 rounded-md py-1 hover:bg-accent/40">
+        <span style={{ width: depth * 16 }} />
+        <Box state={mark(ids, rest.selection)} onChange={(on) => rest.flip(ids, on)} />
+        <button
+          type="button"
+          onClick={() => rest.toggle(key)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm"
+        >
+          <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-90")} />
+          <span
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full",
+              node.folder
+                ? (folderColor(node.folder.color)?.dot ?? "bg-muted")
+                : "bg-muted-foreground/50",
+            )}
+          />
+          <span className="truncate font-medium" title={node.folder?.name ?? "Global"}>
+            {node.folder?.name ?? "Global"}
+          </span>
+        </button>
+        <span className="tnum shrink-0 pr-1 text-xs text-muted-foreground">
+          {formatDuration(lengthOf(node))}
+        </span>
+      </div>
+      {open && (
+        <div>
+          {node.rushes.map((rush) => (
+            <RushRow key={rush.id} rush={rush} depth={depth + 1} {...rest} />
+          ))}
+          {node.children.map((child) => (
+            <FolderRow key={child.folder?.id} node={child} depth={depth + 1} {...rest} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RushRow({ rush, depth, ...rest }: { rush: QueueRush; depth: number } & RowProps) {
+  const key = `rush-${rush.id}`;
+  const open = !rest.shut.has(key) || rush.id === rest.highlight;
+  const ids = rush.cuts.map((cut) => cut.id);
+  const length = rush.cuts.reduce((sum, cut) => sum + cut.duration_ms, 0);
+
+  return (
+    <div>
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-md py-1 hover:bg-accent/40",
+          rush.id === rest.highlight && "bg-accent/40",
+        )}
+      >
+        <span style={{ width: depth * 16 }} />
+        <Box state={mark(ids, rest.selection)} onChange={(on) => rest.flip(ids, on)} />
+        <button
+          type="button"
+          onClick={() => rest.toggle(key)}
+          className="shrink-0 text-muted-foreground hover:text-foreground"
+        >
+          <ChevronRight className={cn("h-3 w-3 transition-transform", open && "rotate-90")} />
+        </button>
+        <Link
+          to={`/derush/${rush.id}`}
+          className="min-w-0 flex-1 truncate text-sm hover:underline"
+          title={rush.label}
+        >
+          {rush.label}
+        </Link>
+        <span className="tnum shrink-0 pr-1 text-xs text-muted-foreground">
+          {formatDuration(length)}
+        </span>
+      </div>
+      {open &&
+        rush.cuts.map((cut) => (
+          <CutRow key={cut.id} cut={cut} depth={depth + 1} {...rest} />
+        ))}
+    </div>
+  );
+}
+
+function CutRow({
+  cut,
+  depth,
+  selection,
+  flip,
+  name,
+}: { cut: QueueRush["cuts"][number]; depth: number } & RowProps) {
+  return (
+    <div className="flex items-center gap-2 rounded-md py-1 hover:bg-accent/40">
+      <span style={{ width: depth * 16 }} />
+      <Box state={selection.has(cut.id) ? "on" : "off"} onChange={(on) => flip([cut.id], on)} />
+      <span className="min-w-0 flex-1 truncate text-sm" title={cut.label}>
+        {cut.label}
+      </span>
+      <span className="tnum hidden shrink-0 text-xs text-muted-foreground sm:inline">
+        {cut.start_tc} → {cut.end_tc}
+      </span>
+      <span className="flex shrink-0 items-center gap-1">
+        {cut.busy.map((file) => (
+          <Badge key={file.id} variant="outline" className="gap-1 font-normal">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {name(file.template)}
+          </Badge>
+        ))}
+        {cut.done.map((file) => (
+          <Made key={file.id} id={file.id} label={name(file.template)} />
+        ))}
+      </span>
+      <span className="tnum w-12 shrink-0 pr-1 text-right text-xs text-muted-foreground">
+        {formatDuration(cut.duration_ms)}
+      </span>
+    </div>
+  );
+}
+
+/** A file that exists. Named by its profile, because that is what tells two apart. */
+function Made({ id, label }: { id: number; label: string }) {
   const queryClient = useQueryClient();
   const remove = useMutation({
-    mutationFn: api.deleteRender,
+    mutationFn: () => api.deleteRender(id),
     onSuccess: () => {
-      toast.success("Render deleted");
+      queryClient.invalidateQueries({ queryKey: ["stabilize-queue"] });
       queryClient.invalidateQueries({ queryKey: ["renders"] });
       queryClient.invalidateQueries({ queryKey: ["sequences"] });
     },
@@ -276,102 +435,110 @@ function RendersTable({ renders, highlight }: { renders: Render[]; highlight?: n
   });
 
   return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Badge variant="secondary" className="cursor-pointer font-normal">
+          {label}
+        </Badge>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem asChild>
+          <Link to={`/color/${id}`}>
+            <Droplet className="h-3.5 w-3.5" />
+            Grade
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <a href={mediaUrl.download(id)}>
+            <Download className="h-3.5 w-3.5" />
+            Download
+          </a>
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => remove.mutate()}>
+          <Trash2 className="h-3.5 w-3.5" />
+          Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * What is running, and what failed.
+ *
+ * Finished files are not here: they are the material of the next step, and the queue
+ * above already says which sequence has one. A failure stays until it is cleared,
+ * since its sequence is back in the queue and the reason is the only thing left.
+ */
+function Active() {
+  const queryClient = useQueryClient();
+  const { data: renders } = useQuery({
+    queryKey: ["renders"],
+    queryFn: () => api.renders(),
+    refetchInterval: 3_000,
+  });
+  const { data: templates } = useQuery({ queryKey: ["templates"], queryFn: api.templates });
+  const remove = useMutation({
+    mutationFn: api.deleteRender,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["renders"] });
+      queryClient.invalidateQueries({ queryKey: ["stabilize-queue"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const busy = (renders ?? []).filter((r) => r.state === "running" || r.state === "queued");
+  const failed = (renders ?? []).filter((r) => r.state === "failed");
+  if (busy.length === 0 && failed.length === 0) return null;
+
+  const name = (id: string) => templates?.find((t) => t.id === id)?.label ?? id;
+
+  return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">Renders ({renders.length})</CardTitle>
+        <CardTitle className="text-sm">
+          {busy.length > 0 ? `Running · ${busy.length}` : "Failed"}
+        </CardTitle>
       </CardHeader>
-      <CardContent>
-        {renders.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Nothing stabilized yet.</p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>File</TableHead>
-                <TableHead>Rush</TableHead>
-                <TableHead>Template</TableHead>
-                <TableHead>State</TableHead>
-                <TableHead className="w-36">Progress</TableHead>
-                <TableHead>Device</TableHead>
-                <TableHead className="text-right">Size</TableHead>
-                <TableHead>Finished</TableHead>
-                <TableHead className="text-right" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {renders.map((render) => (
-                <TableRow
-                  key={render.id}
-                  className={cn(render.sequence_id === highlight && "bg-accent/40")}
-                >
-                  <TableCell className="max-w-[18rem] truncate text-sm">
-                    {render.out_name ?? "-"}
-                    {render.error && (
-                      <p className="mt-1 line-clamp-2 text-sm text-red-400">{render.error}</p>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <Link
-                      to={`/stabilisation/${render.sequence_id}`}
-                      className="text-sm hover:underline"
-                    >
-                      {render.sequence_key}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="text-sm">{render.template}</TableCell>
-                  <TableCell>
-                    <StateBadge state={render.state} />
-                  </TableCell>
-                  <TableCell>
-                    {render.state === "running" ? (
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <Progress value={render.progress * 100} className="h-1.5" />
-                          <span className="tnum text-sm text-muted-foreground">
-                            {Math.round(render.progress * 100)} %
-                          </span>
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          {etaLabel(render.progress, render.started_at)}
-                        </p>
-                      </div>
-                    ) : (
-                      <span className="text-sm text-muted-foreground">-</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {render.processing_device ?? "-"}
-                  </TableCell>
-                  <TableCell className="tnum text-right text-sm">
-                    {formatBytes(render.size_bytes)}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {formatDateTime(render.finished_at)}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1">
-                      {render.state === "done" && (
-                        <Button asChild size="icon" variant="outline" title="Download">
-                          <a href={mediaUrl.download(render.id)}>
-                            <Download className="h-4 w-4" />
-                          </a>
-                        </Button>
-                      )}
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        title="Delete render"
-                        onClick={() => remove.mutate(render.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
+      <CardContent className="space-y-3">
+        {busy.map((render) => (
+          <div key={render.id} className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="truncate">{render.sequence_key}</span>
+              <Badge variant="secondary" className="font-normal">
+                {name(render.template)}
+              </Badge>
+              {render.state === "queued" ? (
+                <span className="text-sm text-muted-foreground">waiting</span>
+              ) : (
+                <span className="tnum ml-auto text-sm text-muted-foreground">
+                  {etaLabel(render.progress, render.started_at) ?? ""}
+                  <span className="ml-2">{Math.round(render.progress * 100)} %</span>
+                </span>
+              )}
+            </div>
+            {render.state === "running" && (
+              <Progress value={render.progress * 100} className="h-1.5" />
+            )}
+          </div>
+        ))}
+        {failed.map((render) => (
+          <div key={render.id} className="flex flex-wrap items-start gap-2 text-sm">
+            <span className="truncate">{render.sequence_key}</span>
+            <Badge variant="outline" className="font-normal">
+              {name(render.template)}
+            </Badge>
+            <p className="min-w-0 flex-1 text-red-400">{render.error ?? "failed"}</p>
+            <Button
+              size="icon"
+              variant="ghost"
+              title="Clear"
+              onClick={() => remove.mutate(render.id)}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
       </CardContent>
     </Card>
   );
