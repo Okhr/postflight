@@ -928,6 +928,22 @@ passes : **18, 19, 20 et 20 frames** avec la seule tolérance corrigée, **20 le
 fois** quand le callback ne parle qu'en lecture. D'où la règle : **en pause la frame est
 celle qu'on a demandée, en lecture celle que la vidéo affiche**.
 
+**Ni le fichier ni le décodeur n'y sont pour rien**, vérifié le 2026-08-23 quand le
+bug a paru persister. Les deux proxys ont des PTS strictement monotones, tous exactement
+à `N x 1001`, un seul écart possible entre voisins, aucun trou (26390 et 22165 frames,
+dont un proxy issu d'une fusion de deux parts). Et le navigateur ne se trompe pas non
+plus : 300 seeks répartis sur cinq zones du fichier présentent chaque fois la frame
+demandée, et son `duration` colle à la milliseconde.
+
+**Un pas relatif part d'une ref, jamais de l'état React.** `frame` a un render de retard
+dès qu'un clic arrive avant que React ait commité le précédent, et deux clics dans cette
+fenêtre demandent deux fois la même frame. La position vit donc dans une ref écrite par
+le seek comme par le callback, et l'état ne sert plus qu'à l'affichage. `currentTime` a
+été essayé à sa place et écarté : juste après une pause il peut encore être dans la frame
+qui précède celle affichée, et le premier pas ne bougeait alors pas (mesuré : trois pas
+donnaient +2). **Et un pas met la lecture en pause**, sinon la frame suivante efface le
+seek et l'image a l'air de revenir en arrière.
+
 Le seek reste au **milieu** de la frame visée (`N + 0,5`), sans quoi l'arrondi du
 décodeur retombe sur la précédente. Contre-épreuve que le compteur ne mentait que sur le
 numéro : capture du canvas après un saut à la frame 6645, PSNR de **45,9 dB** contre

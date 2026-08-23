@@ -182,6 +182,20 @@ function Editor({ sequenceId }: { sequenceId: number }) {
     if (sequence) setCuts(toLocal(sequence.cuts));
   }, [sequence?.id, sequence?.cuts.length]);
 
+  /**
+   * Where the playhead is, for arithmetic rather than for display.
+   *
+   * `frame` is a render behind whenever a gesture lands before React has committed the
+   * previous one, and two clicks in that window would ask for the same frame twice.
+   * The ref is written the moment anything moves, so a relative move always starts
+   * from where the last one left off.
+   */
+  const frameRef = useRef(0);
+  const place = useCallback((value: number) => {
+    frameRef.current = value;
+    setFrame(value);
+  }, []);
+
   /** Land on an exact frame: pin the time to the middle of the target frame, or
    * the decoder's rounding may fall back onto the previous one. */
   const seek = useCallback(
@@ -191,9 +205,25 @@ function Editor({ sequenceId }: { sequenceId: number }) {
       if (video && fpsNum) {
         video.currentTime = frameToSeconds(clamped + 0.5, fpsNum, fpsDen);
       }
-      setFrame(clamped);
+      place(clamped);
     },
-    [fpsNum, fpsDen, lastFrame],
+    [fpsNum, fpsDen, lastFrame, place],
+  );
+
+  /**
+   * Move by whole frames. Stepping stops playback: asking for one frame means wanting
+   * to look at it, and a step taken while the video runs is undone by the next frame.
+   */
+  const step = useCallback(
+    (delta: number) => {
+      const video = videoRef.current;
+      if (video && !video.paused) {
+        video.pause();
+        setPlaying(false);
+      }
+      seek(frameRef.current + delta);
+    },
+    [seek],
   );
 
   // Tracking the current frame. requestVideoFrameCallback gives the frame
@@ -218,7 +248,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
         // next paint, so a frame decoded before the seek can land after it and put the
         // playhead back where it came from. Which is what stepping frame by frame does,
         // several times a second.
-        if (!video.paused) setFrame(secondsToFrame(meta.mediaTime, fpsNum, fpsDen));
+        if (!video.paused) place(secondsToFrame(meta.mediaTime, fpsNum, fpsDen));
         handle = target.requestVideoFrameCallback!(step);
       };
       handle = target.requestVideoFrameCallback(step);
@@ -228,10 +258,10 @@ function Editor({ sequenceId }: { sequenceId: number }) {
       };
     }
 
-    const onTime = () => setFrame(secondsToFrame(video.currentTime, fpsNum, fpsDen));
+    const onTime = () => place(secondsToFrame(video.currentTime, fpsNum, fpsDen));
     video.addEventListener("timeupdate", onTime);
     return () => video.removeEventListener("timeupdate", onTime);
-  }, [fpsNum, fpsDen, sequence?.id]);
+  }, [fpsNum, fpsDen, sequence?.id, place]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -323,16 +353,16 @@ function Editor({ sequenceId }: { sequenceId: number }) {
           break;
         case "ArrowLeft":
           event.preventDefault();
-          seek(frame - (event.shiftKey ? secondInFrames : 1));
+          step(-(event.shiftKey ? secondInFrames : 1));
           break;
         case "ArrowRight":
           event.preventDefault();
-          seek(frame + (event.shiftKey ? secondInFrames : 1));
+          step(event.shiftKey ? secondInFrames : 1);
           break;
         case "i":
         case "I":
           event.preventDefault();
-          if (markIn === null) setMarkIn(frame);
+          if (markIn === null) setMarkIn(frameRef.current);
           break;
         case "o":
         case "O":
@@ -340,7 +370,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
           if (markIn === null) {
             toast.info("Set a start first, with I");
           } else {
-            addCut(Math.min(markIn, frame), Math.max(markIn, frame));
+            addCut(Math.min(markIn, frameRef.current), Math.max(markIn, frameRef.current));
           }
           break;
         case "Escape":
@@ -352,7 +382,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [frame, markIn, fpsNum, fpsDen, seek, togglePlay, addCut]);
+  }, [markIn, fpsNum, fpsDen, step, togglePlay, addCut]);
 
   const keptFrames = useMemo(
     () => cuts.reduce((total, cut) => total + (cut.end_frame - cut.start_frame + 1), 0),
@@ -683,7 +713,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
               size="icon"
               variant="outline"
               title="Previous frame (←)"
-              onClick={() => seek(frame - 1)}
+              onClick={() => step(-1)}
             >
               <ChevronLeft className="h-4 w-4" />
             </Button>
@@ -694,7 +724,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
               size="icon"
               variant="outline"
               title="Next frame (→)"
-              onClick={() => seek(frame + 1)}
+              onClick={() => step(1)}
             >
               <ChevronRight className="h-4 w-4" />
             </Button>
@@ -728,14 +758,15 @@ function Editor({ sequenceId }: { sequenceId: number }) {
           {/* Marking a sequence, and the only two states it has: one button is live
               at a time, so which one is the next move needs no reading. */}
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={markIn !== null} onClick={() => setMarkIn(frame)}>
+            <Button size="sm" disabled={markIn !== null} onClick={() => setMarkIn(frameRef.current)}>
               Start sequence <kbd className="ml-1 text-xs opacity-60">I</kbd>
             </Button>
             <Button
               size="sm"
               disabled={markIn === null}
               onClick={() =>
-                markIn !== null && addCut(Math.min(markIn, frame), Math.max(markIn, frame))
+                markIn !== null &&
+                addCut(Math.min(markIn, frameRef.current), Math.max(markIn, frameRef.current))
               }
             >
               End sequence <kbd className="ml-1 text-xs opacity-60">O</kbd>
