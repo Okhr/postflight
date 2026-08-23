@@ -313,6 +313,28 @@ def get_status(session: Session = Depends(get_session)) -> schemas.StatusOut:
     )
 
 
+@router.post("/debug/report")
+async def post_debug_report(request: Request) -> dict[str, str]:
+    """Store one playhead trace, sent by the page when it catches itself misbehaving.
+
+    Temporary, and deliberately dumb: the bug shows up on one person's browser and not
+    on any measurement made here, so the recording has to come from that browser. The
+    page only calls this when a gesture did not land where it asked to.
+    """
+    body = await request.body()
+    folder = settings.data_dir / "debug"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = utcnow().strftime("%Y%m%d-%H%M%S-%f")
+    path = folder / f"derush-{stamp}.json"
+    path.write_bytes(body[:4_000_000])
+    try:
+        reason = json.loads(body).get("reason", "?")
+    except ValueError:
+        reason = "unreadable"
+    log.warning("Derush debug report %s: %s", path.name, reason)
+    return {"saved": path.name}
+
+
 @router.post("/scan", response_model=schemas.ScanOut)
 async def trigger_scan(session: Session = Depends(get_session)) -> schemas.ScanOut:
     """Force an immediate scan, without waiting for the worker's turn."""

@@ -60,6 +60,7 @@ import {
 } from "@/components/ui/table";
 import { api, mediaUrl, type Cut, type SequenceDetail } from "@/lib/api";
 import { usePersistentState } from "@/lib/persist";
+import { mark, quality, report } from "@/lib/playhead-debug";
 import { formatDuration, formatTimecode, frameToSeconds, secondsToFrame } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -196,18 +197,55 @@ function Editor({ sequenceId }: { sequenceId: number }) {
     setFrame(value);
   }, []);
 
+  // Debug only, remove with lib/playhead-debug: the frame the video last presented,
+  // and where the last gesture meant to land. A gesture that does not land is what
+  // gets reported.
+  const shownRef = useRef<number | null>(null);
+  const goalRef = useRef<number | null>(null);
+  const checkRef = useRef(0);
+  const audit = useCallback((target: number) => {
+    goalRef.current = target;
+    window.clearTimeout(checkRef.current);
+    checkRef.current = window.setTimeout(() => {
+      const video = videoRef.current;
+      const goal = goalRef.current;
+      if (!video || goal === null || !video.paused) return;
+      if (frameRef.current === goal && shownRef.current === goal) return;
+      const sent = report("gesture did not land", {
+        goal,
+        ref: frameRef.current,
+        shown: shownRef.current,
+        currentTime: video.currentTime,
+        seeking: video.seeking,
+        readyState: video.readyState,
+        quality: quality(video),
+      });
+      if (sent) toast.info(`Playhead glitch recorded (asked ${goal}, showing ${shownRef.current})`);
+    }, 800);
+  }, []);
+
   /** Land on an exact frame: pin the time to the middle of the target frame, or
    * the decoder's rounding may fall back onto the previous one. */
   const seek = useCallback(
     (target: number) => {
       const clamped = Math.max(0, Math.min(Math.round(target), lastFrame));
       const video = videoRef.current;
+      mark("seek", {
+        target: clamped,
+        from: frameRef.current,
+        shown: shownRef.current,
+        at: video?.currentTime,
+        paused: video?.paused,
+        seeking: video?.seeking,
+        ready: video?.readyState,
+      });
       if (video && fpsNum) {
         video.currentTime = frameToSeconds(clamped + 0.5, fpsNum, fpsDen);
       }
       place(clamped);
+      audit(clamped);
     },
-    [fpsNum, fpsDen, lastFrame, place],
+    [fpsNum, fpsDen, lastFrame, place, audit],
   );
 
   /**
@@ -217,6 +255,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
   const step = useCallback(
     (delta: number) => {
       const video = videoRef.current;
+      mark("step", { delta, from: frameRef.current, paused: video?.paused });
       if (video && !video.paused) {
         video.pause();
         setPlaying(false);
@@ -248,7 +287,10 @@ function Editor({ sequenceId }: { sequenceId: number }) {
         // next paint, so a frame decoded before the seek can land after it and put the
         // playhead back where it came from. Which is what stepping frame by frame does,
         // several times a second.
-        if (!video.paused) place(secondsToFrame(meta.mediaTime, fpsNum, fpsDen));
+        const at = secondsToFrame(meta.mediaTime, fpsNum, fpsDen);
+        shownRef.current = at;
+        mark("shown", { frame: at, media: meta.mediaTime, paused: video.paused, seeking: video.seeking });
+        if (!video.paused) place(at);
         handle = target.requestVideoFrameCallback!(step);
       };
       handle = target.requestVideoFrameCallback(step);
@@ -262,6 +304,43 @@ function Editor({ sequenceId }: { sequenceId: number }) {
     video.addEventListener("timeupdate", onTime);
     return () => video.removeEventListener("timeupdate", onTime);
   }, [fpsNum, fpsDen, sequence?.id, place]);
+
+  // Debug only, remove with lib/playhead-debug: the video's own account of what
+  // happened, recorded next to ours.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const names = [
+      "seeking",
+      "seeked",
+      "play",
+      "pause",
+      "waiting",
+      "stalled",
+      "ratechange",
+      "error",
+      "emptied",
+      "loadeddata",
+    ];
+    const onEvent = (event: Event) =>
+      mark(event.type, {
+        at: video.currentTime,
+        paused: video.paused,
+        seeking: video.seeking,
+        ready: video.readyState,
+      });
+    for (const name of names) video.addEventListener(name, onEvent);
+    mark("watching", {
+      fps: `${fpsNum}/${fpsDen}`,
+      frames: sequence?.frame_count,
+      size: `${video.videoWidth}x${video.videoHeight}`,
+      window: `${window.innerWidth}x${window.innerHeight}`,
+      dpr: window.devicePixelRatio,
+    });
+    return () => {
+      for (const name of names) video.removeEventListener(name, onEvent);
+    };
+  }, [fpsNum, fpsDen, sequence?.id, sequence?.frame_count]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -376,6 +455,22 @@ function Editor({ sequenceId }: { sequenceId: number }) {
         case "Escape":
           setMarkIn(null);
           break;
+        // Debug only, remove with lib/playhead-debug: send the trace by hand, for
+        // anything the audit above does not call a glitch.
+        case "d":
+        case "D": {
+          const video = videoRef.current;
+          const sent = report("reported by hand", {
+            goal: goalRef.current,
+            ref: frameRef.current,
+            shown: shownRef.current,
+            currentTime: video?.currentTime,
+            paused: video?.paused,
+            quality: video ? quality(video) : null,
+          });
+          toast.info(sent ? "Trace sent" : "Nothing more sent this visit");
+          break;
+        }
         default:
           break;
       }
