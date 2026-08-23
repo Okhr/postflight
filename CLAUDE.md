@@ -928,6 +928,34 @@ passes : **18, 19, 20 et 20 frames** avec la seule tolérance corrigée, **20 le
 fois** quand le callback ne parle qu'en lecture. D'où la règle : **en pause la frame est
 celle qu'on a demandée, en lecture celle que la vidéo affiche**.
 
+**Et le troisième menteur était la garde elle-même**, trouvé le 2026-08-23 grâce à une
+trace envoyée depuis le navigateur qui le voyait, puisqu'aucune mesure faite ici ne le
+reproduisait :
+
+```
+46495.8   shown 15112        ← la vidéo présente 15112, et `paused` est déjà vrai
+46497.0   pause              ← l'événement n'arrive que 1,2 ms plus tard
+47938.6   step +1 from 15111 ← le pas part donc d'une frame en retard
+47938.6     seek -> 15112    ← il redemande la frame déjà affichée
+47975.1     shown 15112      ← rien ne bouge
+```
+
+Le dernier callback d'une lecture s'exécute quand `paused` **est déjà vrai**. Filtrer sur
+la pause jetait donc la dernière frame de chaque lecture : la position restait en retard
+d'une image et le premier pas suivant ne faisait rien. « Une fois sur cinq », soit la
+fréquence à laquelle on met en pause avant de faire du pas à pas.
+
+Le bon critère n'est pas la pause mais **un seek en vol** : un callback en retard porte
+`seeking = true` **et** une frame différente de la cible, et c'est ce couple qui le
+démasque. Tout le reste dit où la vidéo est vraiment, pause comprise. La cible s'oublie
+dès qu'elle est atteinte ou dès `seeked`, sans quoi un décodeur qui n'atterrirait jamais
+exactement dessus ferait taire le suivi pour toujours.
+
+Leçon de méthode, plus utile que le correctif : mes tests comparaient le compteur à
+lui-même après une pause, deux valeurs issues du même état, donc ils passaient tous. La
+trace comparait le compteur à la frame que la vidéo **présentait**. **Une sonde qui ne
+compare que deux valeurs venant de la même source ne prouve rien.**
+
 **Ni le fichier ni le décodeur n'y sont pour rien**, vérifié le 2026-08-23 quand le
 bug a paru persister. Les deux proxys ont des PTS strictement monotones, tous exactement
 à `N x 1001`, un seul écart possible entre voisins, aucun trou (26390 et 22165 frames,

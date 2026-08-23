@@ -196,6 +196,9 @@ function Editor({ sequenceId }: { sequenceId: number }) {
     frameRef.current = value;
     setFrame(value);
   }, []);
+  /** The frame the last seek asked for, until the video presents it. What tells a
+   *  callback that arrived late from one that is simply telling the truth. */
+  const pendingRef = useRef<number | null>(null);
 
   // Debug only, remove with lib/playhead-debug: the frame the video last presented,
   // and where the last gesture meant to land. A gesture that does not land is what
@@ -240,6 +243,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
         ready: video?.readyState,
       });
       if (video && fpsNum) {
+        pendingRef.current = clamped;
         video.currentTime = frameToSeconds(clamped + 0.5, fpsNum, fpsDen);
       }
       place(clamped);
@@ -273,6 +277,13 @@ function Editor({ sequenceId }: { sequenceId: number }) {
     let handle = 0;
     let cancelled = false;
 
+    // Once a seek has landed, a callback speaks for the video whatever frame it
+    // names: there is no longer anything it could be late for.
+    const settled = () => {
+      pendingRef.current = null;
+    };
+    video.addEventListener("seeked", settled);
+
     type WithRvfc = HTMLVideoElement & {
       requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => number;
       cancelVideoFrameCallback?: (handle: number) => void;
@@ -282,27 +293,38 @@ function Editor({ sequenceId }: { sequenceId: number }) {
     if (target.requestVideoFrameCallback) {
       const step = (_now: number, meta: { mediaTime: number }) => {
         if (cancelled) return;
-        // Only while playing. Paused, the frame is the one that was seeked to, and
-        // letting the callback answer as well is a race: a callback is queued for the
-        // next paint, so a frame decoded before the seek can land after it and put the
-        // playhead back where it came from. Which is what stepping frame by frame does,
-        // several times a second.
         const at = secondsToFrame(meta.mediaTime, fpsNum, fpsDen);
         shownRef.current = at;
         mark("shown", { frame: at, media: meta.mediaTime, paused: video.paused, seeking: video.seeking });
-        if (!video.paused) place(at);
+        // A callback is queued for the next paint, so a frame decoded before a seek
+        // can land after it. Those are the ones to drop, and a seek in flight is
+        // what identifies them: anything else is where the video really is, pausing
+        // included. Guarding on `paused` instead cost the last frame of every
+        // playback, which left the playhead one frame behind and the first step
+        // afterwards doing nothing.
+        const pending = pendingRef.current;
+        if (pending !== null && at !== pending && video.seeking) {
+          handle = target.requestVideoFrameCallback!(step);
+          return;
+        }
+        if (at === pending) pendingRef.current = null;
+        place(at);
         handle = target.requestVideoFrameCallback!(step);
       };
       handle = target.requestVideoFrameCallback(step);
       return () => {
         cancelled = true;
+        video.removeEventListener("seeked", settled);
         target.cancelVideoFrameCallback?.(handle);
       };
     }
 
     const onTime = () => place(secondsToFrame(video.currentTime, fpsNum, fpsDen));
     video.addEventListener("timeupdate", onTime);
-    return () => video.removeEventListener("timeupdate", onTime);
+    return () => {
+      video.removeEventListener("seeked", settled);
+      video.removeEventListener("timeupdate", onTime);
+    };
   }, [fpsNum, fpsDen, sequence?.id, place]);
 
   // Debug only, remove with lib/playhead-debug: the video's own account of what
