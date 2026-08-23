@@ -956,6 +956,17 @@ lui-même après une pause, deux valeurs issues du même état, donc ils passaie
 trace comparait le compteur à la frame que la vidéo **présentait**. **Une sonde qui ne
 compare que deux valeurs venant de la même source ne prouve rien.**
 
+L'enregistreur qui a produit cette trace (`lib/playhead-debug.ts`, une route
+`POST /api/debug/report`, un tampon en anneau posté quand un geste n'atterrit pas où il
+l'a demandé) a été **retiré le même jour**, son travail fait. À refaire à l'identique si
+un défaut ne se voit que sur une machine : c'est ce qui a tranché là où quatre séries de
+mesures prises ici avaient toutes conclu à tort.
+
+Reste, après ces trois correctifs, une gêne visuelle que florian décrit toujours et
+qu'aucune sonde n'attrape : dans sa dernière trace, chaque geste atterrit exactement où
+il le demandait. Son verdict le 2026-08-23, et l'affaire est classée là : « je pense que
+c'est purement visuel ».
+
 **Ni le fichier ni le décodeur n'y sont pour rien**, vérifié le 2026-08-23 quand le
 bug a paru persister. Les deux proxys ont des PTS strictement monotones, tous exactement
 à `N x 1001`, un seul écart possible entre voisins, aucun trou (26390 et 22165 frames,
