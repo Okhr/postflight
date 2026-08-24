@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import mimetypes
 import re
-import unicodedata
 from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -20,18 +18,15 @@ _RANGE = re.compile(r"bytes=(\d*)-(\d*)")
 
 
 def _disposition(name: str) -> str:
-    """Both forms of the filename, because a header is ASCII and a label is not.
+    """One filename, because the callers send slugs.
 
-    `filename=` carries an accent-stripped version for whatever cannot read the other,
-    and `filename*=` the real one, percent-encoded (RFC 5987). Sending only the first
-    would turn "Quissac étalonné" into a mangled name, and only the second loses the
-    oldest clients.
+    The two-form header (`filename*=UTF-8''`, RFC 5987) was the answer to accents in a
+    label, and slugifying the name removes the question. What is left is a guard: a
+    header is latin-1 on the wire, so anything outside ASCII would go out as mojibake
+    rather than as an error.
     """
-    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
-    # A separator in a download name is the browser's problem to sanitize, and not
-    # every one of them does. Nothing legitimate has one, so it goes here.
-    plain = re.sub(r'["\\/]', "", plain).strip() or "download"
-    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(name, safe='')}"
+    plain = name.encode("ascii", "ignore").decode().replace('"', "").strip() or "download"
+    return f'attachment; filename="{plain}"'
 
 
 def _guess_type(path: Path) -> str:

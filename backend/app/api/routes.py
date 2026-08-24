@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import secrets
+import unicodedata
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -1443,21 +1444,29 @@ async def get_gyro_chart(
     return media.serve_file(chart, request)
 
 
-# Anything a filesystem or a header would choke on. Accents stay: the name goes out
-# in both an ASCII form and a UTF-8 one, so they survive.
-_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+_NOT_SLUG = re.compile(r"[^a-z0-9]+")
+
+
+def _slug(part: str) -> str:
+    """A label as a filename fragment: ASCII, lowercase, nothing to quote.
+
+    Capped because three labels and an extension have to fit in a filename, and a
+    label is free text.
+    """
+    folded = unicodedata.normalize("NFKD", part).encode("ascii", "ignore").decode().lower()
+    return _NOT_SLUG.sub("_", folded).strip("_")[:60]
 
 
 def _pretty_name(parts: Iterable[str], suffix: str) -> str:
-    """The name a downloaded file takes: what the interface calls it.
+    """The name a downloaded file takes: what the interface calls it, slugified.
 
     On disk a render is `DJI_20260711191722_0025_D__h_1080__c00.mp4`, which is right
     where it lives (the worker cache addresses files by path, and the parts have to be
     unambiguous) and wrong in a downloads folder. Here it is the rush, the sequence and
-    the profile, the same three words the row above the file says.
+    the profile, the same three words the row above the file says, in the same shape
+    the volume already uses: `__` between the fields, `_` inside one.
     """
-    clean = [re.sub(r"\s{2,}", " ", _UNSAFE.sub(" ", part)).strip() for part in parts]
-    return " - ".join(part for part in clean if part) + suffix
+    return "__".join(slug for slug in (_slug(part) for part in parts) if slug) + suffix.lower()
 
 
 def _render_name(session: Session, render: Render, path: Path, graded: bool = False) -> str:

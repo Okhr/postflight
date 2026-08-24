@@ -1,9 +1,9 @@
-"""A downloaded file is named the way the interface names things.
+"""A downloaded file is named the way the interface names things, slugified.
 
 On disk a render is `DJI_20260711191722_0025_D__h_1080__c00.mp4`: unambiguous, which
 is what the worker cache needs, and unreadable in a downloads folder. The name served
 is the rush, the sequence and the profile, the same three words on the row the file
-came from.
+came from, in the same shape the volume already uses: `__` between fields, `_` inside.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def test_a_render_is_named_rush_sequence_profile(session: Session, sequence: Seq
     session.commit()
     cut = _cut(session, sequence, "dive")
 
-    assert _named(session, _render(session, sequence, cut)) == "Rush 1 - dive - Wide 1080p.mp4"
+    assert _named(session, _render(session, sequence, cut)) == "rush_1__dive__wide_1080p.mp4"
 
 
 def test_a_profile_deleted_since_leaves_its_id(session: Session, sequence: Sequence):
@@ -74,7 +74,7 @@ def test_a_profile_deleted_since_leaves_its_id(session: Session, sequence: Seque
 
     name = _named(session, _render(session, sequence, cut, template="gone_forever"))
 
-    assert name == "Rush 1 - dive - gone_forever.mp4"
+    assert name == "rush_1__dive__gone_forever.mp4"
 
 
 def test_a_whole_rush_render_names_no_sequence(session: Session, sequence: Sequence):
@@ -83,7 +83,7 @@ def test_a_whole_rush_render_names_no_sequence(session: Session, sequence: Seque
     session.add(sequence)
     session.commit()
 
-    assert _named(session, _render(session, sequence, None)) == "Rush 1 - Wide 1080p.mp4"
+    assert _named(session, _render(session, sequence, None)) == "rush_1__wide_1080p.mp4"
 
 
 def test_the_graded_file_says_so(session: Session, sequence: Sequence):
@@ -94,28 +94,51 @@ def test_the_graded_file_says_so(session: Session, sequence: Sequence):
 
     name = _named(session, _render(session, sequence, cut), graded=True)
 
-    assert name == "Rush 1 - dive - Wide 1080p - graded.mp4"
+    assert name == "rush_1__dive__wide_1080p__graded.mp4"
 
 
-def test_a_label_cannot_carry_a_path_separator(session: Session, sequence: Sequence):
-    """Labels are free text, and a slash in one would be a path, not a name."""
-    sequence.label = "16/9 tests"
+def test_a_label_is_slugified_however_it_was_typed(session: Session, sequence: Sequence):
+    """Labels are free text: a slash would read as a path, an accent as mojibake in a
+    latin-1 header, and a space is merely unpleasant to hand to a shell."""
+    sequence.label = "16/9 Été"
     session.add(sequence)
     session.commit()
     cut = _cut(session, sequence, 'a "quoted" bit')
 
     name = _named(session, _render(session, sequence, cut))
 
-    assert "/" not in name and '"' not in name
-    assert name == "16 9 tests - a quoted bit - Wide 1080p.mp4"
+    assert name == "16_9_ete__a_quoted_bit__wide_1080p.mp4"
+    assert name.isascii() and " " not in name
 
 
-def test_the_download_header_carries_the_name_twice():
-    """A header is ASCII and a label is not, so both forms go out (RFC 5987)."""
-    header = _disposition("Quissac été - séquence 2 - Vertical.mp4")
+def test_a_label_of_nothing_usable_drops_out(session: Session, sequence: Sequence):
+    """An emoji-only sequence name leaves no fragment, and an empty one must not
+    leave `__` behind either."""
+    sequence.label = "Rush 1"
+    session.add(sequence)
+    session.commit()
+    cut = _cut(session, sequence, "🚀")
 
-    assert 'filename="Quissac ete - sequence 2 - Vertical.mp4"' in header
-    assert "filename*=UTF-8''Quissac%20%C3%A9t%C3%A9" in header
+    assert _named(session, _render(session, sequence, cut)) == "rush_1__wide_1080p.mp4"
+
+
+def test_a_very_long_label_is_capped(session: Session, sequence: Sequence):
+    """Three labels and an extension have to fit in one filename."""
+    sequence.label = "x" * 200
+    session.add(sequence)
+    session.commit()
+
+    name = _named(session, _render(session, sequence, None))
+
+    assert name.startswith("x" * 60 + "__")
+    assert len(name) < 128
+
+
+def test_the_download_header_carries_the_slug():
+    header = _disposition("rush_1__dive__wide_1080p.mp4")
+
+    assert header == 'attachment; filename="rush_1__dive__wide_1080p.mp4"'
+
 
 
 def test_a_download_of_nothing_is_a_404(session: Session):
