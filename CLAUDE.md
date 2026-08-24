@@ -394,6 +394,132 @@ légèrement plus clair et moins contrasté que le fichier final. Tous les cas t
 **Le clip stabilisé était en H.264 10 bits** (`yuv420p10le`, Gyroflow suit la source),
 et c'est devenu bien plus qu'un écart de mesure. Voir ci-dessous.
 
+### Le lecteur que le seek tuait : un GOP ouvert
+
+Rapporté le 2026-08-24, en trois observations qui décrivent exactement le défaut :
+« des fois ça marche », « quand je touche aux boutons darkest et tout ça casse », « seul
+un changement de clip répare », « le scrub casse aussi ». Lecture depuis le début : bon.
+Darkest / Median / Brightest : ce sont des **seeks**. Le scrub aussi. Changer de clip
+remonte un `<video>` neuf, d'où la réparation.
+
+**La cause, mesurée en comptant les NAL** : le rendu de Gyroflow ne contient qu'**une
+seule IDR**, la première image.
+
+| fichier | images clés | dont IDR |
+|---|---|---|
+| rendu Gyroflow | 28 | **1** |
+| proxy du derush | 31 | 31 |
+
+Les 27 autres sont des I-frames d'un **GOP ouvert** : décoder à partir d'elles réclame
+des images qui viennent après. ffmpeg s'en accommode en écrivant `mmco: unref short
+failure` et continue ; Chrome refuse le paquet, `PIPELINE_ERROR_DECODE`, et le décodeur
+est mort jusqu'au remontage de l'élément.
+
+Réparé par une option d'encodeur, choisie en rendant quatre fois 8 s du même master :
+
+| `encoder_options` | IDR | images clés |
+|---|---|---|
+| `-preset superfast` (avant) | 1 | 9 |
+| `-preset superfast -flags +cgop` | **9** | 9 |
+| `-preset superfast -x264-params open-gop=0` | 9 | 9 |
+| `-preset superfast -g 60` | 1 | 9 |
+
+`+cgop` est retenu : c'est un drapeau générique de ffmpeg, donc il vaut aussi pour HEVC,
+là où `-x264-params` ne parle qu'à x264. Ajouté dans `build_preset`, et seulement si le
+template n'a pas déjà fermé son GOP. Contre-épreuve sur un vrai rendu refait par la
+chaîne complète : **28 images clés, 28 IDR**, et sur la page les trois marks atterrissent
+en donnant trois images distinctes au canvas.
+
+**Trois innocents, écartés par la mesure** avant d'arriver là : nos réponses Range sont
+exactes à l'octet (comparées au disque sur quatre plages, dont une ouverte) ; les images
+clés ne manquaient pas (28 sur 26 s) ; et le fichier n'est pas corrompu, ffmpeg le décode
+de bout en bout avec un simple avertissement.
+
+**Et une fausse piste que j'ai suivie une heure**, écrite ici parce qu'elle est
+instructive : le premier fichier examiné était en H.264 **High 10** (`yuv420p10le`,
+Gyroflow suivant la profondeur de la source), ce qui expliquait joliment le symptôme. Ça
+n'était pas la cause : le fichier 8 bits produit ensuite échouait **exactement pareil**.
+Mesuré après coup, Chrome lisait même le 10 bits depuis le début sans broncher. La leçon
+tient en une phrase : **un mécanisme plausible qui colle au symptôme n'est pas une
+cause**, et la contre-épreuve manquante était triviale, refaire le même essai sur un
+fichier 8 bits.
+
+**Le passage en 8 bits est gardé quand même**, pour une raison qui n'a rien à voir : un
+livrable en High 10 se lit mal partout (navigateurs, QuickTime, plusieurs montages), et
+personne ne demande dix bits à un H.264 destiné au partage. `output.pixel_format` est le
+champ, vide par défaut, trouvé comme toujours par `--export-project 1` :
+
+| `output.pixel_format` | sortie sur une source 10 bits |
+|---|---|
+| `""` (défaut) | `High 10 / yuv420p10le` |
+| `"yuv420p"` | `High / yuv420p` |
+
+Forcé pour H.264 seulement ; HEVC et ProRes gardent leur profondeur, et un template qui
+nomme un format le garde.
+
+À ne pas confondre avec le derush : ses proxys sont en `yuv420p` avec une IDR par
+seconde, donc ce lecteur-là n'a jamais eu ce problème.
+
+Et la page le dit maintenant au lieu de figer : l'élément vidéo émet bien un événement
+`error` (code 3), donc une ligne apparaît sous l'image. Un remontage automatique a été
+écarté parce qu'il ne répare pas, mesuré.
+
+### L'aperçu en shader : une seconde implémentation, mesurée
+
+Le modèle est celui de Resolve ou Lightroom : un aperçu GPU qui suit les curseurs, un
+rendu final qui fait foi. Donc oui, la chaîne couleur existe deux fois, et le fichier
+écrit vient toujours de ffmpeg.
+
+**Les formules ont été trouvées par la mesure, pas dans la doc** : une mire de 256 gris
+et huit patchs colorés passée dans chaque filtre, valeurs relues, candidats comparés.
+
+| filtre | ce qu'il fait vraiment | écart de la reproduction |
+|---|---|---|
+| `exposure` | `out = in * 2^EV`, sur les valeurs encodées, sans linéarisation | 0,5 niveau |
+| `eq` contrast | `(v - 0,5) * C + 0,5` en luma normalisée | 1,5 niveau |
+| `eq` saturation | `(u - 128) * S + 128` sur la chroma | 1,6 niveau |
+| `colortemperature` | un gain par canal RGB, sur les valeurs encodées | 1,7 niveau |
+| `curves` | spline cubique naturelle sur les quatre points | 1,1 niveau |
+| `lutyuv` | l'étirement de luma, que le serveur résout et envoie | exact |
+
+**Le détail qui décide de tout : ffmpeg repasse par du 8 bits entre les filtres, donc
+il écrête après chaque étage.** En gardant tout en flottant, le ciel divergeait de 18
+niveaux (30,6 dB) ; en écrêtant à chaque étage, 39,1 dB et 2 niveaux d'écart moyen, deux
+images indiscernables côte à côte.
+
+**Les décisions restent au serveur.** `auto_levels` arrive dans `GradeOut` sous forme de
+`levels` déjà résolu (`[low, gain]` ou `null`) : quel côté est déjà écrêté et si
+l'étirement vaut la peine est un raisonnement, et un raisonnement ne doit pas exister
+deux fois. Le shader n'est qu'un exécutant.
+
+**Deux bugs de shader que seul le harnais a attrapés** : une LUT en `R32F` ne
+s'échantillonne pas en `LINEAR` sans extension, et une texture incomplète se lit comme
+zéro, donc la courbe noircissait toute l'image (5,9 dB) ; et à 6500 K l'approximation de
+Tanner Helland ne vaut pas exactement `[1, 1, 1]` mais `[1, 0,996, 0,980]`, soit 2 % de
+bleu appliqués à un moment où ffmpeg n'insère pas le filtre du tout.
+
+**Le plancher de la mesure est le décodeur, pas le shader.** Comparé dans le navigateur
+contre une frame PNG pleine résolution produite par le ffmpeg du conteneur :
+
+| cas | PSNR |
+|---|---|
+| **contrôle, paramètres neutres** (le shader ne fait rien) | **29,7 dB** |
+| exposition +0,4 EV | 31,0 dB |
+| contraste + saturation | 27,2 dB |
+| température 7400 K | 28,0 dB |
+| courbe | 28,9 dB |
+| auto-levels | 32,6 dB |
+| tout ensemble | 33,2 dB |
+
+Le contrôle neutre est la clé de lecture : à paramètres neutres le shader recopie la
+texture, donc ces 29,7 dB sont l'écart entre **le décodeur de Chrome et celui de
+ffmpeg**. Il est **affine** (mesuré : pente 0,945, offset +12,9), donc l'aperçu est
+légèrement plus clair et moins contrasté que le fichier final. Tous les cas tombent à
+±3 dB du contrôle : le shader n'ajoute rien à ce plancher.
+
+**Le clip stabilisé était en H.264 10 bits** (`yuv420p10le`, Gyroflow suit la source),
+et c'est devenu bien plus qu'un écart de mesure. Voir ci-dessous.
+
 ### Le lecteur que le seek tuait : H.264 High 10
 
 Rapporté le 2026-08-24, en trois observations qui décrivent exactement le défaut :

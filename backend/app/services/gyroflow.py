@@ -371,6 +371,15 @@ def build_preset(
     # ProRes keep their depth, and a template that names a format keeps it.
     if str(output.get("codec", "")).startswith("H.264") and not output.get("pixel_format"):
         output["pixel_format"] = "yuv420p"
+    # Closed GOP, or the file cannot be seeked in a browser. Gyroflow's encoder emits
+    # exactly one IDR, at the first frame: measured on an 8 s render, 9 keyframes and
+    # 1 IDR. Those 9 are I-frames of an open GOP, so decoding from one needs pictures
+    # that come after it. ffmpeg copes and prints `mmco: unref short failure`; Chrome
+    # refuses the packet outright, which is why the colour page played a clip from the
+    # start and died on the first seek. With `+cgop`: 9 keyframes, 9 IDR.
+    options = str(output.get("encoder_options") or "")
+    if "cgop" not in options:
+        output["encoder_options"] = f"{options} -flags +cgop".strip()
     preset["output"] = output
     return preset
 

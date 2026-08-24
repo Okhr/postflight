@@ -249,3 +249,16 @@ def test_hevc_keeps_its_depth():
 
 def test_a_template_that_names_a_format_keeps_it():
     assert _preset("H.264/AVC", pixel_format="yuv422p10le")["pixel_format"] == "yuv422p10le"
+
+
+def test_the_gop_is_closed():
+    """Gyroflow emits one IDR at frame zero and open-GOP I-frames after it, which no
+    browser can seek to. Measured on an 8 s render: 9 keyframes and 1 IDR without the
+    flag, 9 and 9 with it."""
+    assert "-flags +cgop" in _preset("H.264/AVC", encoder_options="-preset superfast")["encoder_options"]
+    assert _preset("H.264/AVC")["encoder_options"] == "-flags +cgop"
+
+
+def test_a_template_that_already_closes_it_is_left_alone():
+    options = "-preset veryfast -x264-params open-gop=0:cgop=1"
+    assert _preset("H.264/AVC", encoder_options=options)["encoder_options"] == options
