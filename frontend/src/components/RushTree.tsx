@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { DeleteCutDialog, type Doomed } from "@/components/DeleteCutDialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -180,29 +181,41 @@ function Gap({
  * Two icons, lit or not: a stabilized file exists, and a graded one on top of it.
  * That is the whole state of an evening's work, readable without opening a page.
  */
-function CutRow({ cut, onOpen }: { cut: Cut; onOpen: () => void }) {
+function CutRow({
+  cut,
+  onOpen,
+  onDelete,
+}: { cut: Cut; onOpen: () => void; onDelete: (cut: Doomed) => void }) {
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex w-full min-w-0 items-center gap-1.5 rounded-md py-1 pl-2 pr-1 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-    >
-      <span className="truncate" title={cut.label}>
-        {cut.label}
-      </span>
-      <span className="ml-auto flex shrink-0 items-center gap-1 pl-2">
-        <span title={cut.rendered ? "Stabilized" : "Not stabilized"}>
-          <Zap
-            className={cn("h-3 w-3", cut.rendered ? "text-foreground" : "text-muted-foreground/30")}
-          />
+    <div className="group flex min-w-0 items-center rounded-md pr-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex min-w-0 flex-1 items-center gap-1.5 py-1 pl-2 text-left hover:text-foreground"
+      >
+        <span className="truncate" title={cut.label}>
+          {cut.label}
         </span>
-        <span title={cut.graded ? "Graded" : "Not graded"}>
-          <Droplet
-            className={cn("h-3 w-3", cut.graded ? "text-foreground" : "text-muted-foreground/30")}
-          />
+        <span className="ml-auto flex shrink-0 items-center gap-1 pl-2">
+          <span title={cut.rendered ? "Stabilized" : "Not stabilized"}>
+            <Zap
+              className={cn("h-3 w-3", cut.rendered ? "text-foreground" : "text-muted-foreground/30")}
+            />
+          </span>
+          <span title={cut.graded ? "Graded" : "Not graded"}>
+            <Droplet
+              className={cn("h-3 w-3", cut.graded ? "text-foreground" : "text-muted-foreground/30")}
+            />
+          </span>
         </span>
-      </span>
-    </button>
+      </button>
+      <RowIcon
+        label="Delete sequence"
+        onClick={() => onDelete({ id: cut.id, label: cut.label, files: cut.files })}
+      >
+        <Trash2 className="h-3 w-3" />
+      </RowIcon>
+    </div>
   );
 }
 
@@ -210,10 +223,12 @@ function RushRow({
   sequence,
   dragged,
   setDragged,
+  onDeleteCut,
 }: {
   sequence: Sequence;
   dragged: Dragged;
   setDragged: (dragged: Dragged) => void;
+  onDeleteCut: (cut: Doomed) => void;
 }) {
   const { pathname } = useLocation();
   const navigate = useNavigate();
@@ -283,6 +298,7 @@ function RushRow({
               key={cut.id}
               cut={cut}
               onOpen={() => navigate(rushHref(pathname, sequence.id))}
+              onDelete={onDeleteCut}
             />
           ))}
         </div>
@@ -387,6 +403,7 @@ function FolderRow({
   onRename,
   onRecolour,
   onDelete,
+  onDeleteCut,
   onAddChild,
   onFile,
   onOrder,
@@ -403,6 +420,7 @@ function FolderRow({
   onRename: (folder: Folder) => void;
   onRecolour: (folder: Folder, token: string) => void;
   onDelete: (folder: Folder) => void;
+  onDeleteCut: (cut: Doomed) => void;
   onAddChild: (parent: Folder) => void;
   onFile: (dragged: Dragged, into: number | null) => void;
   onOrder: (dragged: Dragged, parentId: number | null, index: number) => void;
@@ -493,6 +511,7 @@ function FolderRow({
             onRename={onRename}
             onRecolour={onRecolour}
             onDelete={onDelete}
+            onDeleteCut={onDeleteCut}
             onAddChild={onAddChild}
             onFile={onFile}
             onOrder={onOrder}
@@ -518,6 +537,7 @@ function FolderRow({
           sequence={sequence}
           dragged={dragged}
           setDragged={setDragged}
+          onDeleteCut={onDeleteCut}
         />
       ))}
     </FolderShell>
@@ -623,6 +643,7 @@ export function RushTree() {
   const [renaming, setRenaming] = useState<Folder | null>(null);
   const [creating, setCreating] = useState<{ parent: Folder | null } | null>(null);
   const [deleting, setDeleting] = useState<Folder | null>(null);
+  const [doomed, setDoomed] = useState<Doomed | null>(null);
   const [name, setName] = useState("");
   const [color, setColor] = useState(FOLDER_COLORS[0].token);
   const [dragged, setDragged] = useState<Dragged>(null);
@@ -782,6 +803,7 @@ export function RushTree() {
             sequence={sequence}
             dragged={dragged}
             setDragged={setDragged}
+            onDeleteCut={setDoomed}
           />
         ))}
       </FolderShell>
@@ -801,6 +823,7 @@ export function RushTree() {
             }}
             onRecolour={(f, token) => recolour.mutate({ id: f.id, token })}
             onDelete={setDeleting}
+            onDeleteCut={setDoomed}
             onAddChild={openCreate}
             onFile={file}
             onOrder={order}
@@ -850,6 +873,8 @@ export function RushTree() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <DeleteCutDialog cut={doomed} onClose={() => setDoomed(null)} />
 
       <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <DialogContent className="max-w-sm">

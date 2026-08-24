@@ -10,10 +10,15 @@ question: what is left to do on this rush.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
 from sqlmodel import Session, select
 
 from app.api import routes, schemas
 from app.models import Cut, Grade, GradeState, Render, RenderState, Sequence
+from app.paths import to_absolute
 
 
 def _save(session: Session, seq: Sequence, *cuts: schemas.CutIn) -> list[schemas.CutOut]:
@@ -28,6 +33,16 @@ def _framed(session: Session, seq: Sequence) -> Sequence:
     session.add(seq)
     session.commit()
     return seq
+
+
+def _on_disk(relative: str | None) -> Path:
+    """A real file where a path says there is one, so unlinking it can be measured."""
+    assert relative is not None
+    path = to_absolute(relative)
+    assert path is not None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"a clip")
+    return path
 
 
 def _render(session: Session, seq: Sequence, cut_id: int | None, state: RenderState) -> Render:
@@ -220,27 +235,27 @@ def test_the_flags_come_back_straight_from_a_save(session: Session, sequence: Se
     assert resized.rendered is True
 
 
-def test_dropping_a_cut_keeps_the_file_it_produced(session: Session, sequence: Sequence):
-    """The stabilized file is still worth something, so only the link goes.
+def test_dropping_a_cut_takes_its_files_with_it(session: Session, sequence: Sequence):
+    """Deleting a parent deletes its children, to the file on disk.
 
-    It cannot simply be left pointing at nothing: `render.cut_id` is a foreign key,
-    and deleting the cut under it fails outright.
+    The detached render was the quiet leak: a clip in `out/` no tree could name any
+    more, since every view of it hangs off the cut that is gone.
     """
     seq = _framed(session, sequence)
     [cut] = _save(session, seq, schemas.CutIn(label="one", start_frame=100, end_frame=200))
     render = _render(session, seq, cut.id, RenderState.DONE)
+    clip = _on_disk(render.out_path)
 
     _save(session, seq)
 
     assert session.exec(select(Cut)).all() == []
-    session.refresh(render)
-    assert render.cut_id is None
-    assert render.out_path is not None
+    assert session.get(Render, render.id) is None
+    assert not clip.exists()
 
 
 def test_dropping_a_cut_cancels_a_render_still_waiting(session: Session, sequence: Sequence):
-    """Detaching it instead would be the quiet disaster: a null `cut_id` reads as
-    "the whole rush", so a ten second render would come back four minutes long."""
+    """A render whose subject is gone has nothing left to render. The job goes with
+    it, and the worker holding it stops on its next heartbeat."""
     seq = _framed(session, sequence)
     [cut] = _save(session, seq, schemas.CutIn(label="one", start_frame=100, end_frame=200))
     render = _render(session, seq, cut.id, RenderState.QUEUED)
@@ -248,6 +263,81 @@ def test_dropping_a_cut_cancels_a_render_still_waiting(session: Session, sequenc
     _save(session, seq)
 
     assert session.get(Render, render.id) is None
+
+
+def test_dropping_a_cut_takes_the_graded_file_too(session: Session, sequence: Sequence):
+    """`grade.render_id` is unique but not a foreign key, so nothing would have
+    complained about a grade row pointing at a render that no longer exists."""
+    seq = _framed(session, sequence)
+    [cut] = _save(session, seq, schemas.CutIn(label="one", start_frame=100, end_frame=200))
+    render = _render(session, seq, cut.id, RenderState.DONE)
+    grade = Grade(
+        render_id=render.id,  # type: ignore[arg-type]
+        state=GradeState.DONE,
+        out_path="graded/graded-1.mp4",
+    )
+    session.add(grade)
+    session.commit()
+    graded = _on_disk(grade.out_path)
+
+    _save(session, seq)
+
+    assert session.exec(select(Grade)).all() == []
+    assert not graded.exists()
+
+
+def test_deleting_one_cut_leaves_the_others_alone(session: Session, sequence: Sequence):
+    """The route the tree and the stabilize queue use: one cut by its id, not a
+    rewrite of the whole list."""
+    seq = _framed(session, sequence)
+    first, second = _save(
+        session,
+        seq,
+        schemas.CutIn(label="one", start_frame=100, end_frame=200),
+        schemas.CutIn(label="two", start_frame=300, end_frame=400),
+    )
+    render = _render(session, seq, first.id, RenderState.DONE)
+    clip = _on_disk(render.out_path)
+
+    answer = routes.delete_cut(first.id, session=session)
+
+    assert answer["files_removed"] == [clip.name]
+    assert [c.label for c in session.exec(select(Cut)).all()] == ["two"]
+    assert session.get(Render, render.id) is None
+
+
+def test_deleting_an_unknown_cut_is_a_404(session: Session):
+    with pytest.raises(HTTPException) as raised:
+        routes.delete_cut(9999, session=session)
+    assert raised.value.status_code == 404
+
+
+def test_a_cut_says_how_many_files_it_made(session: Session, sequence: Sequence):
+    """What the delete dialog says out loud, so it never has to be counted twice."""
+    seq = _framed(session, sequence)
+    [cut] = _save(session, seq, schemas.CutIn(label="one", start_frame=100, end_frame=200))
+    assert routes.get_sequence(seq.id, session=session).cuts[0].files == 0
+
+    render = _render(session, seq, cut.id, RenderState.DONE)
+    assert routes.get_sequence(seq.id, session=session).cuts[0].files == 1
+
+    session.add(
+        Grade(
+            render_id=render.id,  # type: ignore[arg-type]
+            state=GradeState.DONE,
+            out_path="graded/graded-1.mp4",
+        )
+    )
+    session.commit()
+    assert routes.get_sequence(seq.id, session=session).cuts[0].files == 2
+
+
+def test_a_render_still_going_is_not_a_file_yet(session: Session, sequence: Sequence):
+    seq = _framed(session, sequence)
+    [cut] = _save(session, seq, schemas.CutIn(label="one", start_frame=100, end_frame=200))
+    _render(session, seq, cut.id, RenderState.RUNNING)
+
+    assert routes.get_sequence(seq.id, session=session).cuts[0].files == 0
 
 
 # --------------------------------------------------------------------------- #

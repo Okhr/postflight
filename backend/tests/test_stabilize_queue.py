@@ -10,7 +10,7 @@ from __future__ import annotations
 from sqlmodel import Session
 
 from app.api import routes, schemas
-from app.models import Cut, Render, RenderState, Sequence, SequenceState
+from app.models import Cut, Grade, GradeState, Render, RenderState, Sequence, SequenceState
 
 
 def _cut(session: Session, seq: Sequence, label: str, start: int, end: int) -> Cut:
@@ -84,6 +84,40 @@ def test_a_finished_render_is_named_and_addressable(session: Session, sequence: 
     assert [r.template for r in rush.cuts[0].done] == ["h_1080"]
     assert rush.cuts[0].done[0].id > 0
     assert rush.cuts[0].busy == []
+
+
+def test_a_finished_render_hands_over_its_graded_version_too(
+    session: Session, sequence: Sequence
+):
+    """A stabilized clip and its graded one are two files, and the row is where either
+    gets downloaded. Without the grade id there would be nothing to address."""
+    seq = _ready(session, sequence)
+    cut = _cut(session, seq, "one", 100, 200)
+    render = _render(session, seq, cut, "h_1080", RenderState.DONE)
+    grade = Grade(
+        render_id=render.id,  # type: ignore[arg-type]
+        state=GradeState.DONE,
+        out_path="graded/x.mp4",
+    )
+    session.add(grade)
+    session.commit()
+
+    [rush] = routes.stabilize_queue(session=session)
+
+    assert rush.cuts[0].done[0].grade_id == grade.id
+
+
+def test_a_look_still_being_tuned_is_not_a_file(session: Session, sequence: Sequence):
+    """A draft grade has no output, so there is nothing to offer."""
+    seq = _ready(session, sequence)
+    cut = _cut(session, seq, "one", 100, 200)
+    render = _render(session, seq, cut, "h_1080", RenderState.DONE)
+    session.add(Grade(render_id=render.id, state=GradeState.DRAFT))  # type: ignore[arg-type]
+    session.commit()
+
+    [rush] = routes.stabilize_queue(session=session)
+
+    assert rush.cuts[0].done[0].grade_id is None
 
 
 def test_a_render_in_flight_is_busy_not_done(session: Session, sequence: Sequence):

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import secrets
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -78,7 +79,9 @@ def _cuts_out(session: Session, seq: Sequence, cuts: Iterable[Cut]) -> list[sche
     ).all()
     rendered = {cut_id for _, cut_id in done if cut_id is not None}
     graded: set[int] = set()
+    files: Counter[int] = Counter()
     by_render = {render_id: cut_id for render_id, cut_id in done if cut_id is not None}
+    files.update(by_render.values())
     if by_render:
         for render_id in session.exec(
             select(Grade.render_id).where(
@@ -87,6 +90,7 @@ def _cuts_out(session: Session, seq: Sequence, cuts: Iterable[Cut]) -> list[sche
             )
         ).all():
             graded.add(by_render[render_id])
+            files[by_render[render_id]] += 1
 
     out: list[schemas.CutOut] = []
     for cut in cuts:
@@ -104,6 +108,7 @@ def _cuts_out(session: Session, seq: Sequence, cuts: Iterable[Cut]) -> list[sche
                 end_tc=format_timecode(cut.end_frame, seq.fps_num, seq.fps_den) if seq.fps_num else "",
                 rendered=cut.id in rendered,
                 graded=cut.id in graded,
+                files=files[cut.id or 0],
             )
         )
     return out
@@ -200,6 +205,35 @@ def _grade_out(session: Session, grade: Grade) -> schemas.GradeOut:
         started_at=grade.started_at,
         finished_at=grade.finished_at,
     )
+
+
+def _purge_render(session: Session, render: Render) -> list[str]:
+    """Delete a render and everything hanging off it, files included.
+
+    Deleting a parent deletes its children: a render is the parent of its grade, so
+    the graded file goes with it. It used to stay, which left a `grade` row pointing
+    at a render that no longer existed (`render_id` is unique but not a foreign key,
+    so nothing complained) and a file in `graded/` nothing could name.
+
+    Does not commit: the callers delete more than one thing at a time.
+    """
+    removed: list[str] = []
+    rendered = to_absolute(render.out_path)
+    if rendered and rendered.exists():
+        rendered.unlink(missing_ok=True)
+        removed.append(rendered.name)
+    for grade in session.exec(select(Grade).where(Grade.render_id == render.id)).all():
+        graded = to_absolute(grade.out_path)
+        if graded and graded.exists():
+            graded.unlink(missing_ok=True)
+            removed.append(graded.name)
+        for job in session.exec(select(Job).where(Job.grade_id == grade.id)).all():
+            session.delete(job)
+        session.delete(grade)
+    for job in session.exec(select(Job).where(Job.render_id == render.id)).all():
+        session.delete(job)
+    session.delete(render)
+    return removed
 
 
 def _get_render(session: Session, render_id: int) -> Render:
@@ -716,13 +750,28 @@ def stabilize_queue(session: Session = Depends(get_session)) -> list[schemas.Que
         select(Cut).where(Cut.sequence_id.in_(ids)).order_by(Cut.order_index)  # type: ignore[union-attr]
     ).all()
     renders = session.exec(select(Render).where(Render.sequence_id.in_(ids))).all()  # type: ignore[union-attr]
+    # The graded file of each render that has one, so the row can hand over either
+    # version of the clip without a second request.
+    graded = {
+        grade.render_id: grade.id or 0
+        for grade in session.exec(
+            select(Grade).where(
+                Grade.render_id.in_([r.id for r in renders]),  # type: ignore[attr-defined]
+                Grade.state == GradeState.DONE,
+            )
+        ).all()
+    }
 
     done: dict[int, list[schemas.QueueRender]] = {}
     busy: dict[int, list[schemas.QueueRender]] = {}
     for render in sorted(renders, key=lambda r: r.id or 0):
         if render.cut_id is None:
             continue
-        entry = schemas.QueueRender(id=render.id or 0, template=render.template)
+        entry = schemas.QueueRender(
+            id=render.id or 0,
+            template=render.template,
+            grade_id=graded.get(render.id or 0),
+        )
         if render.state == RenderState.DONE:
             done.setdefault(render.cut_id, []).append(entry)
         elif render.state in (RenderState.QUEUED, RenderState.RUNNING):
@@ -874,8 +923,8 @@ def delete_sequence(
     filmstrip) stay: the derived ones carry the content hash in their name, so
     regrouping the same parts finds them again and skips the reprocessing
     entirely. `keep_derived=false` is the real cleanup, `keep_raw=false` the full
-    purge. Renders in `out/` always go: they belong to this sequence's cuts,
-    which are being deleted.
+    purge. Renders in `out/` always go, graded files with them: they belong to this
+    sequence's cuts, which are being deleted.
     """
     seq = _get_sequence(session, sequence_id)
     removed: list[str] = []
@@ -891,11 +940,7 @@ def delete_sequence(
         gyro_service.chart_path(seq.artifact_stem).unlink(missing_ok=True)
 
     for render in session.exec(select(Render).where(Render.sequence_id == seq.id)).all():
-        rendered = to_absolute(render.out_path)
-        if rendered and rendered.exists():
-            rendered.unlink(missing_ok=True)
-            removed.append(rendered.name)
-        session.delete(render)
+        removed.extend(_purge_render(session, render))
     for cut in session.exec(select(Cut).where(Cut.sequence_id == seq.id)).all():
         session.delete(cut)
     for job in session.exec(select(Job).where(Job.sequence_id == seq.id)).all():
@@ -963,22 +1008,11 @@ def replace_cuts(
         row.end_frame = cut.end_frame
         session.add(row)
         kept.append(row)
-    # What the caller left out is gone, and its renders have to be dealt with first:
-    # `render.cut_id` is a real foreign key, so deleting a cut a render points at
-    # fails outright. A finished render keeps its file and loses the link; one still
-    # queued or running is cancelled, since dropping the cut dropped its subject, and
-    # a job in flight stops on its next heartbeat the way a deleted rush stops one.
-    # Detaching a queued render would be the quiet disaster: a null `cut_id` means
-    # "the whole rush" to `dispatch.prepare`, so a ten second render would become a
-    # four minute one.
+    # What the caller left out is gone, and it takes its renders with it. They have
+    # to go first anyway: `render.cut_id` is a real foreign key, so deleting a cut a
+    # render points at fails outright.
     for orphan in existing.values():
-        for render in session.exec(select(Render).where(Render.cut_id == orphan.id)).all():
-            if render.state in (RenderState.QUEUED, RenderState.RUNNING):
-                delete_render(render.id or 0, session=session)
-            else:
-                render.cut_id = None
-                session.add(render)
-        session.delete(orphan)
+        _purge_cut(session, orphan)
 
     seq.updated_at = utcnow()
     session.add(seq)
@@ -986,6 +1020,39 @@ def replace_cuts(
     for row in kept:
         session.refresh(row)
     return _cuts_out(session, seq, kept)
+
+
+def _purge_cut(session: Session, cut: Cut) -> list[str]:
+    """Delete a cut and every file made from it. Does not commit.
+
+    Deleting a parent deletes its children, whatever state they are in. A finished
+    render used to keep its file and merely lose the link, which left a clip in
+    `out/` that no tree could name any more: the only place it still showed up was
+    the flat list on the colour page. A render still queued or running goes too, and
+    its job in flight stops on the next heartbeat, the way a deleted rush stops one.
+    """
+    removed: list[str] = []
+    for render in session.exec(select(Render).where(Render.cut_id == cut.id)).all():
+        removed.extend(_purge_render(session, render))
+    # Flushed before the cut goes: `render.cut_id` is a foreign key and no ORM
+    # relationship declares the dependency, so nothing would order the two deletes.
+    session.flush()
+    session.delete(cut)
+    return removed
+
+
+@router.delete("/cuts/{cut_id}")
+def delete_cut(cut_id: int, session: Session = Depends(get_session)) -> dict:
+    cut = session.get(Cut, cut_id)
+    if cut is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown cut")
+    seq = session.get(Sequence, cut.sequence_id)
+    removed = _purge_cut(session, cut)
+    if seq is not None:
+        seq.updated_at = utcnow()
+        session.add(seq)
+    session.commit()
+    return {"deleted": cut_id, "files_removed": removed}
 
 
 # --------------------------------------------------------------------------- #
@@ -1082,14 +1149,9 @@ def delete_render(render_id: int, session: Session = Depends(get_session)) -> di
     render = session.get(Render, render_id)
     if render is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown render")
-    rendered = to_absolute(render.out_path)
-    if rendered and rendered.exists():
-        rendered.unlink(missing_ok=True)
-    for job in session.exec(select(Job).where(Job.render_id == render.id)).all():
-        session.delete(job)
-    session.delete(render)
+    removed = _purge_render(session, render)
     session.commit()
-    return {"deleted": render_id}
+    return {"deleted": render_id, "files_removed": removed}
 
 
 # --------------------------------------------------------------------------- #

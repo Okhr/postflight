@@ -53,6 +53,9 @@ class CutOut(BaseSchema):
     # opening anything.
     rendered: bool = False
     graded: bool = False
+    # How many files exist because of this cut, stabilized and graded together.
+    # Deleting a cut deletes them, and the dialog that asks says how many.
+    files: int = 0
 
 
 class QueueRender(BaseSchema):
@@ -61,6 +64,9 @@ class QueueRender(BaseSchema):
 
     id: int
     template: str
+    # The graded file made from it, when there is one. A stabilized clip and its
+    # graded version are two files, and the row hands over either.
+    grade_id: int | None = None
 
 
 class QueueCut(BaseSchema):

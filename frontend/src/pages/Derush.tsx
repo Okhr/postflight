@@ -29,18 +29,12 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { DeleteCutDialog } from "@/components/DeleteCutDialog";
 import { GyroChart, PLOT_HEIGHT } from "@/components/GyroChart";
 import { RenameDialog } from "@/components/RenameDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -94,9 +88,8 @@ interface LocalCut {
   label: string;
   start_frame: number;
   end_frame: number;
-  /** A stabilized file exists for it. Read only by the delete dialog, which says so
-   *  rather than letting anyone think the file goes with the range. */
-  rendered: boolean;
+  /** Files made from it. Read only by the delete dialog, which says how many go. */
+  files: number;
 }
 
 function toLocal(cuts: Cut[]): LocalCut[] {
@@ -106,7 +99,7 @@ function toLocal(cuts: Cut[]): LocalCut[] {
     label: c.label,
     start_frame: c.start_frame,
     end_frame: c.end_frame,
-    rendered: c.rendered,
+    files: c.files,
   }));
 }
 
@@ -353,7 +346,7 @@ function Editor({ sequenceId }: { sequenceId: number }) {
             label: `sequence ${cuts.length + 1}`,
             start_frame: start,
             end_frame: end,
-            rendered: false,
+            files: 0,
           },
         ].sort((a, b) => a.start_frame - b.start_frame),
       );
@@ -899,35 +892,13 @@ function Editor({ sequenceId }: { sequenceId: number }) {
         }
       />
 
-      <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Delete {deleting?.label}?</DialogTitle>
-          </DialogHeader>
-          {/* Said only when it is true: a sequence nobody has stabilized has no file
-              to reassure anyone about. */}
-          {deleting?.rendered && (
-            <p className="text-sm text-muted-foreground">
-              The stabilized file stays on disk. Only the marked range goes.
-            </p>
-          )}
-          <DialogFooter>
-            <Button variant="ghost" size="sm" onClick={() => setDeleting(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => {
-                if (deleting) commit(cuts.filter((c) => c.key !== deleting.key));
-                setDeleting(null);
-              }}
-            >
-              Delete
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Deleted by rewriting the list, like every other edit on this page, so the
+          row goes before the request does. `replace_cuts` purges what it made. */}
+      <DeleteCutDialog
+        cut={deleting}
+        onClose={() => setDeleting(null)}
+        onConfirm={() => commit(cuts.filter((c) => c.key !== deleting?.key))}
+      />
     </div>
   );
 }

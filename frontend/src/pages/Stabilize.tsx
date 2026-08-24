@@ -17,6 +17,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Download, Droplet, Loader2, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
+import { DeleteCutDialog, type Doomed } from "@/components/DeleteCutDialog";
 import { TemplatesCard } from "@/components/TemplatesCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,7 +37,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { api, mediaUrl, type Folder, type QueueRush, type Render, type Template } from "@/lib/api";
+import {
+  api,
+  mediaUrl,
+  type Folder,
+  type QueueRender,
+  type QueueRush,
+  type Render,
+  type Template,
+} from "@/lib/api";
 import { folderColor } from "@/lib/colors";
 import { etaLabel, formatDuration } from "@/lib/format";
 import { usePersistentState } from "@/lib/persist";
@@ -116,6 +125,7 @@ function Queue({ highlight }: { highlight?: number }) {
   /** `null` means nobody has touched a box, so the default stands. */
   const [picked, setPicked] = useState<Set<number> | null>(null);
   const [shut, setShut] = useState<Set<string>>(new Set());
+  const [doomed, setDoomed] = useState<Doomed | null>(null);
 
   const { data: queue } = useQuery({
     queryKey: ["stabilize-queue"],
@@ -282,11 +292,13 @@ function Queue({ highlight }: { highlight?: number }) {
                 }
                 highlight={highlight}
                 name={label}
+                doom={setDoomed}
               />
             ))}
           </div>
         )}
       </CardContent>
+      <DeleteCutDialog cut={doomed} onClose={() => setDoomed(null)} />
     </Card>
   );
 }
@@ -324,6 +336,8 @@ interface RowProps {
   toggle: (key: string) => void;
   highlight?: number;
   name: (id: string) => string;
+  /** Ask for a sequence to be deleted. The dialog belongs to the whole queue. */
+  doom: (cut: Doomed) => void;
 }
 
 function FolderRow({ node, depth, ...rest }: { node: Node; depth: number } & RowProps) {
@@ -360,9 +374,10 @@ function FolderRow({ node, depth, ...rest }: { node: Node; depth: number } & Row
             {node.folder?.name ?? "Global"}
           </span>
         </button>
-        <span className="tnum shrink-0 pr-1 text-xs text-muted-foreground">
+        <span className="tnum shrink-0 text-xs text-muted-foreground">
           {formatDuration(lengthOf(node))}
         </span>
+        <span className="w-6 shrink-0" />
       </div>
       {open && (
         <div>
@@ -413,9 +428,10 @@ function RushRow({ rush, depth, ...rest }: { rush: QueueRush; depth: number } & 
         >
           {rush.label}
         </Link>
-        <span className="tnum shrink-0 pr-1 text-xs text-muted-foreground">
+        <span className="tnum shrink-0 text-xs text-muted-foreground">
           {formatDuration(length)}
         </span>
+        <span className="w-6 shrink-0" />
       </div>
       {open &&
         rush.cuts.map((cut) => (
@@ -432,6 +448,7 @@ function CutRow({
   locked,
   flip,
   name,
+  doom,
 }: { cut: QueueRush["cuts"][number]; depth: number } & RowProps) {
   const done = locked.has(cut.id);
   return (
@@ -457,18 +474,36 @@ function CutRow({
           </Badge>
         ))}
         {cut.done.map((file) => (
-          <Made key={file.id} id={file.id} label={name(file.template)} />
+          <Made key={file.id} file={file} label={name(file.template)} />
         ))}
       </span>
-      <span className="tnum w-12 shrink-0 pr-1 text-right text-xs text-muted-foreground">
+      <span className="tnum w-12 shrink-0 text-right text-xs text-muted-foreground">
         {formatDuration(cut.duration_ms)}
       </span>
+      {/* Always drawn, like the derush table: an icon that appears on hover is an
+          icon nobody knows is there. */}
+      <Button
+        size="icon"
+        variant="ghost"
+        title="Delete sequence"
+        className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+        onClick={() =>
+          doom({
+            id: cut.id,
+            label: cut.label,
+            files: cut.done.length + cut.done.filter((file) => file.grade_id).length,
+          })
+        }
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
     </div>
   );
 }
 
 /** A file that exists. Named by its profile, because that is what tells two apart. */
-function Made({ id, label }: { id: number; label: string }) {
+function Made({ file, label }: { file: QueueRender; label: string }) {
+  const id = file.id;
   const queryClient = useQueryClient();
   const remove = useMutation({
     mutationFn: () => api.deleteRender(id),
@@ -497,9 +532,17 @@ function Made({ id, label }: { id: number; label: string }) {
         <DropdownMenuItem asChild>
           <a href={mediaUrl.download(id)}>
             <Download className="h-3.5 w-3.5" />
-            Download
+            {file.grade_id ? "Download stabilized" : "Download"}
           </a>
         </DropdownMenuItem>
+        {file.grade_id && (
+          <DropdownMenuItem asChild>
+            <a href={mediaUrl.gradedDownload(file.grade_id)}>
+              <Download className="h-3.5 w-3.5" />
+              Download graded
+            </a>
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onClick={() => remove.mutate()}>
           <Trash2 className="h-3.5 w-3.5" />
           Delete

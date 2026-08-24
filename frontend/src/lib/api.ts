@@ -21,6 +21,8 @@ export interface Clip {
 export interface QueueRender {
   id: number;
   template: string;
+  /** Its graded version, when one exists. Two files, so two ways to download. */
+  grade_id: number | null;
 }
 
 /** A sequence as the stabilize queue lists it, with what has been made from it. */
@@ -57,6 +59,8 @@ export interface Cut {
   /** A stabilized file exists for it, and a graded one on top of that. */
   rendered: boolean;
   graded: boolean;
+  /** How many files exist because of it. Deleting it deletes them. */
+  files: number;
 }
 
 export interface Render {
@@ -483,6 +487,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ cuts }),
     }),
+
+  /** Deleting a sequence deletes what was made from it, files included. */
+  deleteCut: (id: number) =>
+    request<{ deleted: number; files_removed: string[] }>(`/cuts/${id}`, { method: "DELETE" }),
 
   /** Everything that can be stabilized, grouped as the tree draws it. One request:
    *  the page has to say what is left to do, which it cannot do a rush at a time. */

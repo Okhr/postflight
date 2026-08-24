@@ -940,8 +940,8 @@ aucun toast de succès : à ce rythme, ce serait du bruit ; seul un échec parle
 
 La contrepartie de l'écriture immédiate est que **la suppression demande confirmation**,
 le seul geste du derush qui ne se refait pas d'un clic. Le dialogue ne porte une phrase
-que si la sequence a une stab (« le fichier reste sur le disque ») : dire ça d'une
-sequence dont personne n'a rien produit serait rassurer sur un fichier qui n'existe pas.
+que si des fichiers en sont sortis, et il en dit le compte : dire quoi que ce soit d'une
+sequence dont personne n'a rien produit serait parler d'un fichier qui n'existe pas.
 
 **Les sequences sont un tableau**, dans une colonne de 24 rem qui passe à 30 rem quand
 l'écran le permet : nom, in, out, longueur et les deux actions sur une seule ligne, tout
@@ -966,16 +966,50 @@ Maintenant `CutIn` porte un `id` optionnel : présent, c'est une mise à jour ; 
 une création ; ce que l'appelant ne renvoie pas est supprimé. Un id qui appartient à une
 autre séquence n'est **pas** adopté.
 
-Pour les rendus d'un cut qu'on supprime, deux traitements et non un :
+### Supprimer un parent supprime ses enfants
 
-| état du rendu | traitement | pourquoi |
-|---|---|---|
-| `done` / `failed` | `cut_id = NULL` | le fichier vaut quelque chose, seul le lien part |
-| `queued` / `running` | rendu supprimé | son sujet a disparu, et un job en vol s'arrête au battement suivant |
+Règle posée par florian le 2026-08-24 : « de manière générale, supprimer un parent
+supprime aussi toujours ses enfants, le user aura téléchargé les fichiers avant si
+besoin ». Elle remplace un traitement par état du rendu, où un rendu `done` gardait son
+fichier et perdait seulement son `cut_id`. Ce qui restait était un clip dans `out/` que
+**plus aucune vue ne pouvait nommer** : tout l'affichage d'un rendu pend du cut, et le
+seul endroit où il réapparaissait était la liste plate de la page Color.
 
-Détacher un rendu en file serait le désastre silencieux : un `cut_id` nul veut dire « le
-rush entier » pour `prepare`, donc un rendu de dix secondes reviendrait long de quatre
-minutes.
+Deux fuites du même genre étaient là depuis le début, trouvées en appliquant la règle :
+`delete_render` ne touchait ni la ligne `grade` ni le fichier étalonné, et `grade.render_id`
+est unique **mais pas une clé étrangère**, donc rien ne s'en plaignait. D'où
+`_purge_render` (le rendu, son grade, son fichier étalonné, leurs jobs) et `_purge_cut`
+par dessus, appelés par les trois chemins : la suppression d'un rendu, celle d'un cut,
+celle d'un rush.
+
+Un détail qui a coûté un test rouge : **il faut un `flush()` entre les rendus et le cut**.
+`render.cut_id` est une vraie clé étrangère et aucune relation ORM ne la déclare, donc
+rien n'ordonne les deux `DELETE` et SQLite refuse celui du cut. C'est le même piège qui
+rendait `replace_cuts` obligé de traiter les rendus d'abord.
+
+Ce que la règle a fait disparaître : le `cut_id = NULL`, et avec lui le désastre
+silencieux qu'il fallait éviter à la main (un `cut_id` nul veut dire « le rush entier »
+pour `prepare`, donc un rendu de dix secondes revenait long de quatre minutes). Un rendu
+en file dont le cut part est supprimé, et son job en vol s'arrête au battement suivant.
+
+**Le geste vit partout où on voit une sequence** : la ligne de la file Stabilize (icône
+toujours dessinée, comme le reste de cette table), l'arbre de gauche (au survol, comme
+les actions de dossier juste au-dessus) et le derush. Un seul composant,
+`DeleteCutDialog`, parce que ce qui compte est la phrase : une sequence n'est que deux
+numéros de frame, donc la perdre ne coûte rien, alors que ce qu'elle a produit est un
+fichier. C'est cette asymétrie que le dialogue est là pour dire, avec le compte exact
+(`CutOut.files`, les rendus finis plus les étalonnages finis, calculé par l'API et non
+recoupé côté front).
+
+Le derush, lui, supprime toujours en réécrivant la liste qu'il édite (`onConfirm`), parce
+que c'est ainsi que tous ses autres gestes écrivent et que la ligne doit disparaître avant
+la requête. `replace_cuts` passe par le même `_purge_cut`, donc les deux chemins font
+exactement la même chose.
+
+**Et un clip stabilisé se télécharge dans ses deux versions.** Le badge du profil porte
+« Download stabilized » et « Download graded », la seconde seulement quand un fichier
+étalonné existe, ce que la file publie en `QueueRender.grade_id` : deux fichiers, deux
+adresses, aucune requête de plus.
 
 ### Le numéro de frame avait deux menteurs
 
