@@ -166,7 +166,10 @@ export function GradedVideo({
         <video
           ref={videoRef}
           src={src}
-          className={cn("block w-full", !broken && "invisible absolute inset-0")}
+          className={cn(
+            "mx-auto block max-h-[65vh] max-w-full",
+            !broken && "invisible absolute inset-0",
+          )}
           playsInline
           muted
           onLoadedMetadata={(event) => setLength(event.currentTarget.duration * 1000)}
@@ -185,7 +188,12 @@ export function GradedVideo({
           // not even reloading the element. So it gets said rather than suffered.
           onError={() => setUndecodable(true)}
         />
-        <canvas ref={canvasRef} className={cn("block w-full", broken && "hidden")} />
+        {/* Capped by height as well as width: a 9:16 clip at full width pushed the
+            controls and the histogram off the screen. */}
+        <canvas
+          ref={canvasRef}
+          className={cn("mx-auto block max-h-[65vh] max-w-full", broken && "hidden")}
+        />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">

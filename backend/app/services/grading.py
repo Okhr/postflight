@@ -36,7 +36,8 @@ from .procs import ProcessError, run_with_progress
 
 log = logging.getLogger(__name__)
 
-# 10-bit legal range, which is what signalstats reports on these files.
+# 10-bit legal range. The analysis converts to 10 bits before measuring, so this
+# holds whatever the clip's own depth is.
 LEGAL_BLACK = 64.0
 LEGAL_WHITE = 940.0
 LEGAL_SPAN = LEGAL_WHITE - LEGAL_BLACK
@@ -52,7 +53,11 @@ DEFAULTS: dict[str, Any] = {
     "temperature": 6500,    # K, 3000 .. 10000 (6500 = untouched)
     "shadows": 0.0,         # -1 .. 1, lifts or crushes the low end
     "highlights": 0.0,      # -1 .. 1, recovers or pushes the high end
-    "auto_levels": False,
+    # Where black and white sit, as a fraction of the legal range: 0 and 1 leave the
+    # clip alone. Unlike everything above, these two belong to one clip and do not
+    # travel: what is unused range on this shot is picture on the next.
+    "black_point": 0.0,     # 0 .. 0.9
+    "white_point": 1.0,     # 0.1 .. 1
 }
 
 
@@ -123,7 +128,13 @@ def analyse(source: Path) -> Analysis:
     cmd = [
         settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostats",
         "-i", str(source),
-        "-vf", f"fps={settings.grade_analysis_fps},scale=480:-2,signalstats,metadata=print:file=-",
+        # `format` before `signalstats`, and it is not cosmetic: signalstats reports in
+        # the source's own bit depth, while every constant here is 10-bit legal range.
+        # The renders were 10-bit until the day they were not, and the same clip then
+        # measured y_high 183 on a 64-940 scale with every frame "clipping black".
+        # Converting first makes the numbers mean the same thing at any depth.
+        "-vf", (f"fps={settings.grade_analysis_fps},scale=480:-2,format=yuv420p10le,"
+                "signalstats,metadata=print:file=-"),
         "-f", "null", "-",
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
@@ -198,15 +209,33 @@ def _curve(shadows: float, highlights: float) -> str | None:
     return f"curves=m='0/0 0.25/{low:.3f} 0.75/{high:.3f} 1/1'"
 
 
-def auto_levels(values: dict, analysis: dict | None) -> tuple[float, float] | None:
-    """The luma stretch to apply, as (low point, gain), or None for none at all.
+def levels(values: dict) -> tuple[float, float] | None:
+    """The luma stretch the two points ask for, as (low point, gain), or None.
 
-    Its own function because the live preview runs in the browser and has to apply
-    exactly this, without repeating the decisions: which side is already clipped, and
-    whether there is enough unused range to be worth touching. The browser executes,
-    the server decides.
+    Arithmetic, no decision: the points are what the sliders say. The browser has to
+    apply exactly this while a slider moves, so the formula lives on both sides; what
+    must not live twice is a judgement, and there is none here.
     """
-    if not values.get("auto_levels") or not analysis:
+    black = min(max(float(values.get("black_point", 0.0)), 0.0), 1.0)
+    white = min(max(float(values.get("white_point", 1.0)), 0.0), 1.0)
+    if white - black < 0.05:  # a stretch that steep is a bug, not an intention
+        return None
+    if black <= 0.0 and white >= 1.0:
+        return None
+    lo = BLACK_N + black * (WHITE_N - BLACK_N)
+    hi = BLACK_N + white * (WHITE_N - BLACK_N)
+    return lo, (WHITE_N - BLACK_N) / max(hi - lo, 1e-3)
+
+
+def suggest_levels(analysis: dict | None) -> dict[str, float] | None:
+    """Where the two points would go if measured off the clip, or None for nowhere.
+
+    This is the judgement, and it stays here: which side is already clipped, and
+    whether there is enough unused range to be worth reclaiming. The button writes
+    what this returns into the sliders, so the reasoning happens once and the result
+    is then visible and editable rather than applied invisibly at render time.
+    """
+    if not analysis:
         return None
     low = max(0.0, (analysis.get("y_low", LEGAL_BLACK) - LEGAL_BLACK) / LEGAL_SPAN)
     high = min(1.0, (analysis.get("y_high", LEGAL_WHITE) - LEGAL_BLACK) / LEGAL_SPAN)
@@ -219,13 +248,10 @@ def auto_levels(values: dict, analysis: dict | None) -> tuple[float, float] | No
         high = 1.0
     if high - low <= 0.15 or (low <= 0.0 and high >= 1.0):
         return None
-    # Back to fractions of full scale, where the expression is depth-proof.
-    lo = BLACK_N + low * (WHITE_N - BLACK_N)
-    hi = BLACK_N + high * (WHITE_N - BLACK_N)
-    return lo, (WHITE_N - BLACK_N) / max(hi - lo, 1e-3)
+    return {"black_point": round(low, 4), "white_point": round(high, 4)}
 
 
-def build_filters(params: dict, analysis: dict | None = None) -> list[str]:
+def build_filters(params: dict) -> list[str]:
     """The ffmpeg chain, in the order it has to be applied."""
     values = merge_params(params)
     chain: list[str] = []
@@ -241,8 +267,8 @@ def build_filters(params: dict, analysis: dict | None = None) -> list[str]:
     # where neutral is the middle of the range and not zero, turns the picture
     # black. Worse, it only did so *sometimes*: with another RGB filter in the
     # chain, ffmpeg inserted a conversion and the same parameters behaved.
-    if (levels := auto_levels(values, analysis)):
-        lo, gain = levels
+    if (stretch := levels(values)):
+        lo, gain = stretch
         chain.append(
             "lutyuv=y='clip(((val/maxval)-{lo:.5f})*{gain:.5f}+{black:.5f},"
             "{black:.5f},{white:.5f})*maxval'".format(
@@ -268,8 +294,8 @@ def build_filters(params: dict, analysis: dict | None = None) -> list[str]:
     return chain
 
 
-def filter_string(params: dict, analysis: dict | None = None, extra: list[str] | None = None) -> str:
-    chain = build_filters(params, analysis) + (extra or [])
+def filter_string(params: dict, extra: list[str] | None = None) -> str:
+    chain = build_filters(params) + (extra or [])
     return ",".join(chain) if chain else "null"
 
 
@@ -282,7 +308,6 @@ def preview_frame(
     dest: Path,
     at_ms: float,
     params: dict,
-    analysis: dict | None = None,
     width: int | None = None,
 ) -> Path:
     """One graded frame as JPEG. Measured at 0.32 s, hence usable live."""
@@ -293,7 +318,7 @@ def preview_frame(
         "-ss", f"{max(at_ms, 0) / 1000:.3f}",
         "-i", str(source),
         "-frames:v", "1",
-        "-vf", filter_string(params, analysis, extra=[scale]),
+        "-vf", filter_string(params, extra=[scale]),
         "-q:v", "4",
         str(dest),
     ]
@@ -307,7 +332,6 @@ def render(
     source: Path,
     dest: Path,
     params: dict,
-    analysis: dict | None = None,
     frame_count: int = 0,
     progress_cb: Callable[[float, str], None] | None = None,
 ) -> Path:
@@ -319,7 +343,7 @@ def render(
     cmd = [
         settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostats", "-y",
         "-i", str(source),
-        "-vf", filter_string(params, analysis),
+        "-vf", filter_string(params),
         "-c:v", "libx264",
         "-preset", settings.grade_x264_preset,
         "-crf", str(settings.grade_crf),
@@ -348,6 +372,6 @@ def render(
     partial.replace(dest)
     log.info(
         "Graded %s (%.1f MB) with %s",
-        dest.name, dest.stat().st_size / (1 << 20), filter_string(params, analysis),
+        dest.name, dest.stat().st_size / (1 << 20), filter_string(params),
     )
     return dest

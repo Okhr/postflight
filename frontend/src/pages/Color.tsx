@@ -44,6 +44,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import {
   NEUTRAL_GRADE,
@@ -55,6 +56,7 @@ import {
   type Render,
 } from "@/lib/api";
 import { folderColor } from "@/lib/colors";
+import { levelsOf } from "@/lib/grade-shader";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -67,9 +69,26 @@ const CONTROLS = [
   { key: "highlights", label: "Highlights", min: -1, max: 1, step: 0.02, unit: "", neutral: 0 },
 ] as const;
 
+/**
+ * Black and white points, kept apart from the six above.
+ *
+ * They are parameters like the others, with one difference that shapes the page: they
+ * belong to a clip. What is unused range on this shot is picture on the next, so they
+ * sit above a separator and the copy dialog leaves them where they are.
+ */
+const POINTS = [
+  { key: "black_point", label: "Black point", min: 0, max: 0.9, step: 0.005, neutral: 0 },
+  { key: "white_point", label: "White point", min: 0.1, max: 1, step: 0.005, neutral: 1 },
+] as const;
+
 /** A look that would change nothing, so there is nothing to encode. */
 function isNeutral(params: GradeParams): boolean {
-  return CONTROLS.every((control) => params[control.key] === control.neutral) && !params.auto_levels;
+  return [...CONTROLS, ...POINTS].every((control) => params[control.key] === control.neutral);
+}
+
+/** The six that travel. Copying a look must not carry one clip's measurement. */
+function travelling(look: GradeParams, keep: GradeParams): GradeParams {
+  return { ...look, black_point: keep.black_point, white_point: keep.white_point };
 }
 
 // --------------------------------------------------------------------------- //
@@ -169,6 +188,7 @@ export function Color() {
           profile={profile}
           others={clips.filter((clip) => clip.id !== selected)}
           folders={folders ?? []}
+          gradeOf={gradeOf}
         />
       ) : (
         <p className="pt-2 text-sm text-muted-foreground">Pick a clip.</p>
@@ -404,12 +424,14 @@ function Editor({
   profile,
   others,
   folders,
+  gradeOf,
 }: {
   renderId: number;
   render?: Render;
   profile: (id: string) => string;
   others: Render[];
   folders: Folder[];
+  gradeOf: Map<number, Grade>;
 }) {
   const queryClient = useQueryClient();
   const [params, setParams] = useState<GradeParams>(NEUTRAL_GRADE);
@@ -497,7 +519,7 @@ function Editor({
             <GradedVideo
               src={mediaUrl.render(renderId)}
               plan={{
-                levels: showBefore ? null : (grade?.levels ?? null),
+                levels: showBefore ? null : levelsOf(params.black_point, params.white_point),
                 exposure: showBefore ? 0 : params.exposure,
                 shadows: showBefore ? 0 : params.shadows,
                 highlights: showBefore ? 0 : params.highlights,
@@ -536,38 +558,47 @@ function Editor({
               <CardTitle className="text-sm">Look</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button
-                size="sm"
-                variant={params.auto_levels ? "default" : "outline"}
-                className="w-full"
-                onClick={() => commit({ ...params, auto_levels: !params.auto_levels })}
-                title="Stretches the unused luma range of this clip. A side that already clips is left alone."
+              {POINTS.map((point) => (
+                <Range
+                  key={point.key}
+                  control={point}
+                  params={params}
+                  setParams={setParams}
+                  commit={commit}
+                  format={(value) => `${Math.round(value * 100)} %`}
+                />
+              ))}
+              <span
+                className="block"
+                title={
+                  grade?.suggested
+                    ? "Puts the points on the unused range measured in this clip. A side that already clips is left where it is."
+                    : "Nothing to reclaim: this clip already uses its range"
+                }
               >
-                <Wand2 className="h-4 w-4" />
-                Auto levels
-              </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full"
+                  disabled={!grade?.suggested}
+                  onClick={() => grade?.suggested && commit({ ...params, ...grade.suggested })}
+                >
+                  <Wand2 className="h-4 w-4" />
+                  Measure this clip
+                </Button>
+              </span>
+
+              <Separator />
 
               {CONTROLS.map((control) => (
-                <div key={control.key} className="space-y-1">
-                  <div className="flex items-baseline justify-between text-sm">
-                    <span>{control.label}</span>
-                    <span className="tnum text-muted-foreground">
-                      {params[control.key].toFixed(control.step < 1 ? 2 : 0)}
-                      {control.unit}
-                    </span>
-                  </div>
-                  {/* Written on release. Every pointer move would be a request per pixel. */}
-                  <Slider
-                    value={[params[control.key]]}
-                    min={control.min}
-                    max={control.max}
-                    step={control.step}
-                    onValueChange={([value]) =>
-                      setParams((previous) => ({ ...previous, [control.key]: value }))
-                    }
-                    onValueCommit={([value]) => commit({ ...params, [control.key]: value })}
-                  />
-                </div>
+                <Range
+                  key={control.key}
+                  control={control}
+                  params={params}
+                  setParams={setParams}
+                  commit={commit}
+                  format={(value) => `${value.toFixed(control.step < 1 ? 2 : 0)}${control.unit}`}
+                />
               ))}
 
               <div className="flex items-center gap-2 pt-1">
@@ -658,6 +689,42 @@ function Editor({
         clips={others}
         folders={folders}
         profile={profile}
+        gradeOf={gradeOf}
+      />
+    </div>
+  );
+}
+
+/** One slider and its readout. Written on release, never on every pointer move. */
+function Range({
+  control,
+  params,
+  setParams,
+  commit,
+  format,
+}: {
+  control: { key: keyof GradeParams; label: string; min: number; max: number; step: number };
+  params: GradeParams;
+  setParams: (update: (previous: GradeParams) => GradeParams) => void;
+  commit: (next: GradeParams) => void;
+  format: (value: number) => string;
+}) {
+  const value = params[control.key] as number;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between text-sm">
+        <span>{control.label}</span>
+        <span className="tnum text-muted-foreground">{format(value)}</span>
+      </div>
+      <Slider
+        value={[value]}
+        min={control.min}
+        max={control.max}
+        step={control.step}
+        onValueChange={([next]) =>
+          setParams((previous) => ({ ...previous, [control.key]: next }))
+        }
+        onValueCommit={([next]) => commit({ ...params, [control.key]: next })}
       />
     </div>
   );
@@ -677,6 +744,7 @@ function CopyDialog({
   clips,
   folders,
   profile,
+  gradeOf,
 }: {
   open: boolean;
   onClose: () => void;
@@ -684,14 +752,19 @@ function CopyDialog({
   clips: Render[];
   folders: Folder[];
   profile: (id: string) => string;
+  gradeOf: Map<number, Grade>;
 }) {
   const queryClient = useQueryClient();
   const [picked, setPicked] = useState<Set<number>>(new Set());
 
   const copy = useMutation({
     mutationFn: async () => {
+      // Each target keeps its own black and white points: they were measured on its
+      // own picture, and this look was measured on another.
       const results = await Promise.allSettled(
-        [...picked].map((id) => api.saveGrade(id, params)),
+        [...picked].map((id) =>
+          api.saveGrade(id, travelling(params, gradeOf.get(id)?.params ?? NEUTRAL_GRADE)),
+        ),
       );
       return results.filter((result) => result.status === "rejected").length;
     },

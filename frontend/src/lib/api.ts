@@ -147,7 +147,11 @@ export interface GradeParams {
   temperature: number;
   shadows: number;
   highlights: number;
-  auto_levels: boolean;
+  /** Where black and white sit, as a fraction of the legal range. These two belong
+   *  to one clip: what is unused range here is picture on the next one, so they do
+   *  not travel with a copied look. */
+  black_point: number;
+  white_point: number;
 }
 
 export interface GradeAnalysis {
@@ -176,9 +180,9 @@ export interface Grade {
   progress: number;
   params: GradeParams;
   analysis: Partial<GradeAnalysis>;
-  /** What auto-levels resolves to, as [low, gain], or null when it does nothing.
-   *  Decided on the server so the browser preview never reasons about it twice. */
-  levels: [number, number] | null;
+  /** Where the two points would go if measured off this clip, or null for nowhere.
+   *  The judgement is the server's; the button just writes it into the sliders. */
+  suggested: { black_point: number; white_point: number } | null;
   out_name: string | null;
   size_bytes: number | null;
   error: string | null;
@@ -194,7 +198,8 @@ export const NEUTRAL_GRADE: GradeParams = {
   temperature: 6500,
   shadows: 0,
   highlights: 0,
-  auto_levels: false,
+  black_point: 0,
+  white_point: 1,
 };
 
 export interface Job {
@@ -537,7 +542,8 @@ export function gradeQuery(params: GradeParams, atMs: number): string {
     temperature: String(Math.round(params.temperature)),
     shadows: params.shadows.toFixed(3),
     highlights: params.highlights.toFixed(3),
-    auto_levels: String(params.auto_levels),
+    black_point: params.black_point.toFixed(4),
+    white_point: params.white_point.toFixed(4),
   }).toString();
 }
 

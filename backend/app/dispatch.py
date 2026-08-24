@@ -349,8 +349,10 @@ def _prepare_grade(session: Session, job: Job) -> dict[str, Any]:
     return {
         "source": render.out_path,
         "dest": to_relative(settings.graded_dir / f"{stem}__{grade.params_hash}.mp4"),
+        # The analysis used to travel with the job, because the filter chain needed it
+        # to resolve auto-levels. The two points carry that now, so the spec is the
+        # look and nothing else.
         "params": grade.params,
-        "analysis": grade.analysis or None,
         "frame_count": max(render.end_frame - render.start_frame + 1, 0),
     }
 

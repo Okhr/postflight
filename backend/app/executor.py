@@ -161,7 +161,6 @@ def _run_grade(spec: dict[str, Any], progress: ProgressCallback) -> dict[str, An
         source,
         dest,
         spec.get("params") or {},
-        analysis=spec.get("analysis"),
         frame_count=spec.get("frame_count") or 0,
         progress_cb=progress,
     )

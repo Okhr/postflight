@@ -231,10 +231,11 @@ class GradeOut(BaseSchema):
     progress: float
     params: dict[str, Any] = Field(default_factory=dict)
     analysis: dict[str, Any] = Field(default_factory=dict)
-    # The luma stretch auto-levels resolves to, as [low, gain], or null for none.
-    # The live preview runs in the browser and applies it as given: whether a side is
-    # already clipped is decided here, once, and never reasoned about twice.
-    levels: list[float] | None = None
+    # Where the two points would go if measured off this clip, or null for nowhere.
+    # The judgement lives on the server (which side already clips, whether there is
+    # enough unused range to bother); the button writes the answer into the sliders,
+    # so it ends up visible and editable instead of applied invisibly at render time.
+    suggested: dict[str, float] | None = None
     out_name: str | None = None
     size_bytes: int | None = None
     error: str | None = None

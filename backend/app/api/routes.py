@@ -206,7 +206,7 @@ def _grade_out(session: Session, grade: Grade) -> schemas.GradeOut:
         progress=grade.progress,
         params=(params := grading_service.merge_params(grade.params)),
         analysis=grade.analysis or {},
-        levels=list(levels) if (levels := grading_service.auto_levels(params, grade.analysis)) else None,
+        suggested=grading_service.suggest_levels(grade.analysis),
         out_name=out_path.name if out_path else None,
         size_bytes=out_path.stat().st_size if out_path and out_path.exists() else None,
         error=grade.error,
@@ -1219,7 +1219,8 @@ async def grade_preview(
     temperature: int = Query(6500),
     shadows: float = Query(0.0),
     highlights: float = Query(0.0),
-    auto_levels: bool = Query(False),
+    black_point: float = Query(0.0, ge=0, le=1),
+    white_point: float = Query(1.0, ge=0, le=1),
     session: Session = Depends(get_session),
 ) -> Response:
     """One graded frame, straight from the clip.
@@ -1237,13 +1238,13 @@ async def grade_preview(
     params = {
         "exposure": exposure, "contrast": contrast, "saturation": saturation,
         "temperature": temperature, "shadows": shadows, "highlights": highlights,
-        "auto_levels": auto_levels,
+        "black_point": black_point, "white_point": white_point,
     }
     dest = settings.tmp_dir / f"preview_{render_id}_{grading_service.params_hash(params)}_{int(at_ms)}.jpg"
     if not dest.exists():
         try:
             await run_in_threadpool(
-                grading_service.preview_frame, source, dest, at_ms, params, grade.analysis
+                grading_service.preview_frame, source, dest, at_ms, params
             )
         except (grading_service.GradeError, OSError) as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc

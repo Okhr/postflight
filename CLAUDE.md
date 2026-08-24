@@ -293,6 +293,57 @@ blancs inventée sur une image moitié ciel, moitié herbe sèche).
 L'auto-niveaux ne pousse jamais un côté déjà écrêté : mesuré, remonter le point
 blanc d'un plan dont le ciel touche le plafond le brûle complètement.
 
+### Point noir et point blanc sont deux curseurs, pas un bouton
+
+Demandé par florian le 2026-08-25 : « on va ajouter les points noirs et points blancs
+comme curseurs, le bouton il faut le renommer et il va bouger ça, mais on va séparer les
+2 curseurs et les mettre en haut au-dessus d'un séparateur parce qu'ils vont pas pouvoir
+être move to another clip ».
+
+Ça change la nature du geste. Avant, `auto_levels` était un booléen et la décision se
+prenait **au moment du rendu**, invisible : le serveur mesurait le clip, choisissait, et
+la sortie l'appliquait. Maintenant `black_point` et `white_point` sont deux paramètres
+comme les autres, en fraction de la plage légale (0 et 1 = on ne touche à rien), et le
+bouton (« Measure this clip ») **écrit dedans**. Ce qui était un raisonnement caché
+devient une valeur qu'on voit et qu'on corrige.
+
+Le partage du code suit cette frontière :
+
+- **`levels(values)`** est de l'arithmétique sur ce que disent les curseurs, donc elle
+  existe **des deux côtés** (`grading.levels` et `levelsOf` dans le shader) : l'aperçu
+  doit suivre un curseur pendant qu'il glisse, un aller-retour n'est pas envisageable.
+- **`suggest_levels(analysis)`** est le jugement (quel côté écrête déjà, reste-t-il assez
+  de plage inutilisée pour valoir la peine) et il n'existe **qu'au serveur**, publié en
+  `GradeOut.suggested`. Le bouton n'écrit que ce qu'il renvoie.
+
+**Ils ne voyagent pas.** Le dialogue « Copy to » conserve les points de chaque cible :
+une plage inutilisée ici est de l'image sur le plan d'à côté. C'est ce qui justifie le
+séparateur, et la seule raison pour laquelle la carte a deux groupes.
+
+Sur un clip qui n'a rien à récupérer, le bouton est **désactivé** et le dit au survol.
+Cas réel mesuré le 2026-08-25 : 90 % des images contiennent du noir vrai et 43 % du blanc
+vrai, donc les deux côtés sont bloqués et il n'y a pas de proposition. Les curseurs
+restent, eux.
+
+### La profondeur de bits a cassé l'analyse, sans rien dire
+
+`signalstats` rapporte dans la profondeur de la **source**, or toutes les constantes ici
+sont en plage légale 10 bits (64-940). Tant que les rendus sortaient en 10 bits ça
+coïncidait. Le jour où ils sont passés en 8 bits (voir le GOP ouvert plus bas), le même
+plan a mesuré `y_high` à **183** sur une échelle 64-940, avec « 100 % des images qui
+écrêtent le noir », et le bouton s'est tu sans que rien ne signale d'erreur.
+
+Corrigé en convertissant **avant** de mesurer (`format=yuv420p10le` devant `signalstats`)
+plutôt qu'en lisant la profondeur : les nombres veulent alors dire la même chose quelle
+que soit la source. Contre-épreuve : la même mire encodée en 8 et en 10 bits mesure à
+moins de 20 niveaux près, là où l'erreur d'échelle était d'un facteur quatre.
+
+Deux détails qui ont failli me coûter une heure de plus. L'analyse est **mise en cache**
+dans `grade.analysis` et ne se refait pas, donc une base déjà mesurée garde ses chiffres
+faux : il faut vider la colonne. Et la source de test `gradients` de ffmpeg **se
+réamorce au hasard** à chaque appel : mes deux encodages ne contenaient pas la même
+image, et la comparaison ne prouvait rien.
+
 ### Color : un arbre, aucun bouton Save, et deux gestes séparés
 
 Refonte du 2026-08-24, sur le constat de florian : « c'est tout pété ça marche, et ça
@@ -361,10 +412,10 @@ il écrête après chaque étage.** En gardant tout en flottant, le ciel diverge
 niveaux (30,6 dB) ; en écrêtant à chaque étage, 39,1 dB et 2 niveaux d'écart moyen, deux
 images indiscernables côte à côte.
 
-**Les décisions restent au serveur.** `auto_levels` arrive dans `GradeOut` sous forme de
-`levels` déjà résolu (`[low, gain]` ou `null`) : quel côté est déjà écrêté et si
-l'étirement vaut la peine est un raisonnement, et un raisonnement ne doit pas exister
-deux fois. Le shader n'est qu'un exécutant.
+**Le jugement reste au serveur, la formule est des deux côtés.** `GradeOut.suggested`
+dit où les deux points iraient si on les mesurait ; l'étirement lui-même se calcule dans
+le navigateur (`levelsOf`), parce que l'aperçu suit le curseur pendant qu'il glisse. Ce
+qui ne doit pas exister deux fois est le raisonnement, pas l'arithmétique.
 
 **Deux bugs de shader que seul le harnais a attrapés** : une LUT en `R32F` ne
 s'échantillonne pas en `LINEAR` sans extension, et une texture incomplète se lit comme
@@ -464,109 +515,6 @@ Et la page le dit maintenant au lieu de figer : l'élément vidéo émet bien un
 `error` (code 3), donc une ligne apparaît sous l'image. Un remontage automatique a été
 écarté parce qu'il ne répare pas, mesuré.
 
-### L'aperçu en shader : une seconde implémentation, mesurée
-
-Le modèle est celui de Resolve ou Lightroom : un aperçu GPU qui suit les curseurs, un
-rendu final qui fait foi. Donc oui, la chaîne couleur existe deux fois, et le fichier
-écrit vient toujours de ffmpeg.
-
-**Les formules ont été trouvées par la mesure, pas dans la doc** : une mire de 256 gris
-et huit patchs colorés passée dans chaque filtre, valeurs relues, candidats comparés.
-
-| filtre | ce qu'il fait vraiment | écart de la reproduction |
-|---|---|---|
-| `exposure` | `out = in * 2^EV`, sur les valeurs encodées, sans linéarisation | 0,5 niveau |
-| `eq` contrast | `(v - 0,5) * C + 0,5` en luma normalisée | 1,5 niveau |
-| `eq` saturation | `(u - 128) * S + 128` sur la chroma | 1,6 niveau |
-| `colortemperature` | un gain par canal RGB, sur les valeurs encodées | 1,7 niveau |
-| `curves` | spline cubique naturelle sur les quatre points | 1,1 niveau |
-| `lutyuv` | l'étirement de luma, que le serveur résout et envoie | exact |
-
-**Le détail qui décide de tout : ffmpeg repasse par du 8 bits entre les filtres, donc
-il écrête après chaque étage.** En gardant tout en flottant, le ciel divergeait de 18
-niveaux (30,6 dB) ; en écrêtant à chaque étage, 39,1 dB et 2 niveaux d'écart moyen, deux
-images indiscernables côte à côte.
-
-**Les décisions restent au serveur.** `auto_levels` arrive dans `GradeOut` sous forme de
-`levels` déjà résolu (`[low, gain]` ou `null`) : quel côté est déjà écrêté et si
-l'étirement vaut la peine est un raisonnement, et un raisonnement ne doit pas exister
-deux fois. Le shader n'est qu'un exécutant.
-
-**Deux bugs de shader que seul le harnais a attrapés** : une LUT en `R32F` ne
-s'échantillonne pas en `LINEAR` sans extension, et une texture incomplète se lit comme
-zéro, donc la courbe noircissait toute l'image (5,9 dB) ; et à 6500 K l'approximation de
-Tanner Helland ne vaut pas exactement `[1, 1, 1]` mais `[1, 0,996, 0,980]`, soit 2 % de
-bleu appliqués à un moment où ffmpeg n'insère pas le filtre du tout.
-
-**Le plancher de la mesure est le décodeur, pas le shader.** Comparé dans le navigateur
-contre une frame PNG pleine résolution produite par le ffmpeg du conteneur :
-
-| cas | PSNR |
-|---|---|
-| **contrôle, paramètres neutres** (le shader ne fait rien) | **29,7 dB** |
-| exposition +0,4 EV | 31,0 dB |
-| contraste + saturation | 27,2 dB |
-| température 7400 K | 28,0 dB |
-| courbe | 28,9 dB |
-| auto-levels | 32,6 dB |
-| tout ensemble | 33,2 dB |
-
-Le contrôle neutre est la clé de lecture : à paramètres neutres le shader recopie la
-texture, donc ces 29,7 dB sont l'écart entre **le décodeur de Chrome et celui de
-ffmpeg**. Il est **affine** (mesuré : pente 0,945, offset +12,9), donc l'aperçu est
-légèrement plus clair et moins contrasté que le fichier final. Tous les cas tombent à
-±3 dB du contrôle : le shader n'ajoute rien à ce plancher.
-
-**Le clip stabilisé était en H.264 10 bits** (`yuv420p10le`, Gyroflow suit la source),
-et c'est devenu bien plus qu'un écart de mesure. Voir ci-dessous.
-
-### Le lecteur que le seek tuait : H.264 High 10
-
-Rapporté le 2026-08-24, en trois observations qui décrivent exactement le défaut :
-« des fois ça marche », « quand je touche aux boutons darkest et tout ça casse », « seul
-un changement de clip répare », « le scrub casse aussi ». Lecture depuis le début : bon.
-Darkest / Median / Brightest : ce sont des **seeks**. Le scrub aussi. Changer de clip
-remonte un `<video>` neuf, d'où la réparation.
-
-Mesuré dans le navigateur sur le vrai fichier : le premier seek lève
-`MEDIA_ERR_DECODE` (`PIPELINE_ERROR_DECODE: Failed to send video packet for decoding`),
-et **plus rien ne le rattrape** : recharger l'élément avec le même `src` puis re-seeker
-échoue pareil, aux quatre essais. Le profil `High 10` n'est décodé en matériel par aucun
-navigateur, et le repli logiciel de Chrome lâche au premier saut.
-
-**Le champ existe, et il ne se devinait pas** : `output.pixel_format` dans le projet
-Gyroflow, vide par défaut (« suivre la source »), trouvé comme toujours par
-`--export-project 1`. Contre-épreuve sur une source 10 bits fabriquée pour ça :
-
-| `output.pixel_format` | sortie |
-|---|---|
-| `""` (défaut) | `High 10 / yuv420p10le` |
-| `"yuv420p"` | `High / yuv420p` |
-
-Forcé dans `build_preset`, et **seulement pour H.264**, qui est le codec fait pour être
-partagé et le seul dont le profil 10 bits soit une impasse. HEVC et ProRes gardent leur
-profondeur, et un template qui nomme un format le garde. Conséquence : **les rendus
-faits avant ce correctif restent illisibles**, il faut les refaire.
-
-À ne pas confondre avec le derush : ses proxys sont en `yuv420p` (vérifié sur les deux),
-donc le lecteur de cette page-là n'a jamais eu ce problème.
-
-Et la page le dit maintenant au lieu de figer : l'élément vidéo émet bien un événement
-`error` (code 3), donc une ligne apparaît sous l'image. Un remontage automatique a été
-écarté parce qu'il ne répare pas, mesuré.
-
-Deux détails d'implémentation : `preserveDrawingBuffer: true`, parce que l'histogramme
-et le harnais relisent le canvas après composition ; et le décalage d'alignement pour
-comparer, mesuré et non deviné, est d'**une demi-frame** (`-ss T` de ffmpeg prend la
-frame suivante là où Chrome à `currentTime = T` montre celle qui contient T ; sans ça la
-mesure tombait à 28,7 dB au lieu de 35,3).
-
-**L'alternative écartée**, chiffrée avant de choisir : rendre un extrait animé par
-ffmpeg à la demande. Sur le proxy 1280x960 60p, chaîne complète, 4 s d'extrait coûtent
-3,1 s (1,3x le temps réel), et **1,4 s si on réduit l'image avant les filtres** (3,0x,
-parce qu'ils travaillent sur quatre fois moins de pixels). `colortemperature` coûte à lui
-seul plus que tous les autres réunis. Utilisable, mais 1,4 s d'attente à chaque
-vérification contre du temps réel.
 
 ## Biais connu : Gyroflow rend +3 frames
 

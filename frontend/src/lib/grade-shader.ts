@@ -28,8 +28,24 @@
 const BLACK_N = 64 / 1023;
 const WHITE_N = 940 / 1023;
 
+/**
+ * The luma stretch two points ask for, as [low, gain], or null for none.
+ *
+ * The same arithmetic as `grading.levels` on the server, and it has to be here too:
+ * the preview follows a slider while it moves, so waiting for a round trip is not an
+ * option. What must never exist twice is the *judgement* about where the points
+ * should go, and that one stays on the server, in `suggest_levels`.
+ */
+export function levelsOf(black: number, white: number): [number, number] | null {
+  if (white - black < 0.05) return null;
+  if (black <= 0 && white >= 1) return null;
+  const low = BLACK_N + black * (WHITE_N - BLACK_N);
+  const high = BLACK_N + white * (WHITE_N - BLACK_N);
+  return [low, (WHITE_N - BLACK_N) / Math.max(high - low, 1e-3)];
+}
+
 export interface GradePlan {
-  /** [low, gain] from the server, or null when auto-levels does nothing here. */
+  /** [low, gain], from `levelsOf`, or null when the points are where they started. */
   levels: [number, number] | null;
   exposure: number;
   shadows: number;
