@@ -8,13 +8,30 @@ from __future__ import annotations
 
 import mimetypes
 import re
+import unicodedata
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 CHUNK_SIZE = 1 << 18  # 256 Kio
 _RANGE = re.compile(r"bytes=(\d*)-(\d*)")
+
+
+def _disposition(name: str) -> str:
+    """Both forms of the filename, because a header is ASCII and a label is not.
+
+    `filename=` carries an accent-stripped version for whatever cannot read the other,
+    and `filename*=` the real one, percent-encoded (RFC 5987). Sending only the first
+    would turn "Quissac étalonné" into a mangled name, and only the second loses the
+    oldest clients.
+    """
+    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    # A separator in a download name is the browser's problem to sanitize, and not
+    # every one of them does. Nothing legitimate has one, so it goes here.
+    plain = re.sub(r'["\\/]', "", plain).strip() or "download"
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(name, safe='')}"
 
 
 def _guess_type(path: Path) -> str:
@@ -39,7 +56,7 @@ def serve_file(path: Path, request: Request, download_name: str | None = None) -
 
     file_size = path.stat().st_size
     media_type = _guess_type(path)
-    disposition = f'attachment; filename="{download_name}"' if download_name else None
+    disposition = _disposition(download_name) if download_name else None
 
     range_header = request.headers.get("range")
     if not range_header:

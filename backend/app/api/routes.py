@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 from collections import Counter
 from collections.abc import Iterable
@@ -1296,9 +1297,11 @@ def get_graded_file(grade_id: int, request: Request, session: Session = Depends(
 def download_graded_file(grade_id: int, request: Request, session: Session = Depends(get_session)) -> Response:
     grade = session.get(Grade, grade_id)
     path = to_absolute(grade.out_path) if grade else None
-    if path is None:
+    if path is None or grade is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "graded file not found")
-    return media.serve_file(path, request, download_name=path.name)
+    render = session.get(Render, grade.render_id)
+    name = _render_name(session, render, path, graded=True) if render else path.name
+    return media.serve_file(path, request, download_name=name)
 
 
 # --------------------------------------------------------------------------- #
@@ -1440,6 +1443,41 @@ async def get_gyro_chart(
     return media.serve_file(chart, request)
 
 
+# Anything a filesystem or a header would choke on. Accents stay: the name goes out
+# in both an ASCII form and a UTF-8 one, so they survive.
+_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+
+
+def _pretty_name(parts: Iterable[str], suffix: str) -> str:
+    """The name a downloaded file takes: what the interface calls it.
+
+    On disk a render is `DJI_20260711191722_0025_D__h_1080__c00.mp4`, which is right
+    where it lives (the worker cache addresses files by path, and the parts have to be
+    unambiguous) and wrong in a downloads folder. Here it is the rush, the sequence and
+    the profile, the same three words the row above the file says.
+    """
+    clean = [re.sub(r"\s{2,}", " ", _UNSAFE.sub(" ", part)).strip() for part in parts]
+    return " - ".join(part for part in clean if part) + suffix
+
+
+def _render_name(session: Session, render: Render, path: Path, graded: bool = False) -> str:
+    seq = session.get(Sequence, render.sequence_id)
+    cut = session.get(Cut, render.cut_id) if render.cut_id else None
+    try:
+        profile = gyroflow_service.get_template(render.template).label
+    except gyroflow_service.GyroflowError:
+        profile = render.template  # a profile deleted since: its id is all that is left
+    return _pretty_name(
+        [
+            seq.label if seq else "",
+            cut.label if cut else "",
+            profile,
+            "graded" if graded else "",
+        ],
+        path.suffix,
+    )
+
+
 @router.get("/media/render/{render_id}")
 def get_render_file(render_id: int, request: Request, session: Session = Depends(get_session)) -> Response:
     render = session.get(Render, render_id)
@@ -1453,6 +1491,6 @@ def get_render_file(render_id: int, request: Request, session: Session = Depends
 def download_render(render_id: int, request: Request, session: Session = Depends(get_session)) -> Response:
     render = session.get(Render, render_id)
     path = to_absolute(render.out_path) if render else None
-    if path is None:
+    if path is None or render is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "render file not found")
-    return media.serve_file(path, request, download_name=path.name)
+    return media.serve_file(path, request, download_name=_render_name(session, render, path))

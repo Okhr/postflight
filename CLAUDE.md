@@ -1031,6 +1031,22 @@ visible à 20 px d'un téléchargement, un clic de travers détruit cent mégaoc
 une sequence : le dialogue d'un rendu dit que la sequence reste, donc qu'il suffit de
 relancer, ce qui est exactement ce qui distingue les deux suppressions.
 
+**Le fichier servi porte le nom que l'interface donne aux choses**, pas celui du disque
+(florian, même jour). Sur le volume un rendu s'appelle
+`DJI_20260711191722_0025_D__h_1080__c00.mp4`, ce qui est juste là où il vit (le cache du
+worker adresse par chemin, et les parts doivent être sans ambiguïté) et illisible dans un
+dossier de téléchargements. Ce qui sort est `<rush> - <sequence> - <profil>.mp4`, les
+trois mots que dit la ligne d'où vient le fichier, plus « - graded » pour la version
+étalonnée. Mesuré dans le navigateur : Chrome propose bien « Rush 1 rush rush rush rush
+rush - dive - h_1080p_h264.mp4 » pour 273 Mo.
+
+Deux détails qui ont demandé du soin. Un profil supprimé depuis ne laisse que son id, et
+c'est **mieux que rien** : c'est la seule chose qui distingue deux fichiers d'une même
+sequence. Et **l'entête part deux fois** : `filename=` sans accents pour les vieux
+clients, `filename*=UTF-8''` percent-encodé pour le vrai nom (RFC 5987), sans quoi un
+libellé français ressortirait mutilé. Les séparateurs (`/`, `"`) sont retirés des deux
+côtés : un navigateur est censé s'en occuper, tous ne le font pas.
+
 **Un placeholder nomme le champ, il ne montre pas un exemple.** « Vertical 4K » dans le
 nom d'un profil se lisait comme une valeur déjà saisie ; c'est « Profile name »
 (florian, même jour).
