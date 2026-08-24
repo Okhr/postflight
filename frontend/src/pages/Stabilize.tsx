@@ -19,7 +19,7 @@ import { toast } from "sonner";
 
 import { DeleteCutDialog, type Doomed } from "@/components/DeleteCutDialog";
 import { TemplatesCard } from "@/components/TemplatesCard";
-import { Badge } from "@/components/ui/badge";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -517,10 +517,19 @@ function Made({ file, label }: { file: QueueRender; label: string }) {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Badge variant="secondary" className="cursor-pointer font-normal">
-          {label}
-        </Badge>
+      {/* The trigger is the badge, rather than `asChild` around one. `Badge` is a
+          plain function that drops the ref it is handed, so Radix had no element to
+          anchor its menu to and drew it nowhere: the menu was in the DOM the whole
+          time, which is why reading the DOM proved nothing. Its own button is also
+          what makes it reachable by keyboard, and a div inside a button is not
+          valid markup. */}
+      <DropdownMenuTrigger
+        className={cn(
+          badgeVariants({ variant: "secondary" }),
+          "cursor-pointer font-normal focus-visible:ring-1 focus-visible:ring-ring",
+        )}
+      >
+        {label}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem asChild>

@@ -1011,6 +1011,26 @@ exactement la même chose.
 étalonné existe, ce que la file publie en `QueueRender.grade_id` : deux fichiers, deux
 adresses, aucune requête de plus.
 
+#### Le badge qui ouvrait un menu invisible
+
+Rapporté par florian le 2026-08-24, « le clic sur le badge ne fait rien », et c'est le
+même piège que le playhead : **`Badge` est une fonction simple qui laisse tomber la ref
+qu'on lui passe.** Avec `DropdownMenuTrigger asChild`, Radix n'avait donc aucun élément
+pour ancrer son popper, et le menu se dessinait nulle part. Il était pourtant bien monté :
+mon test lisait `[role=menuitem]` dans le DOM, y trouvait Grade / Download / Delete, et
+concluait à tort que ça marchait. **Le DOM n'est pas l'écran.** La capture prise au même
+instant ne montrait aucun menu, et personne ne l'avait regardée.
+
+Le trigger **porte** maintenant les classes du badge (`badgeVariants`) au lieu d'en
+envelopper un : son propre `<button>` a une ref, et un `<div>` dans un `<button>` n'est
+de toute façon pas du balisage valide. Mesuré après coup avec trois lectures
+indépendantes : la boîte de l'item (1195, 633) juste sous celle du badge (1203, 601),
+`elementFromPoint` au centre de l'item qui renvoie bien « Grade », et l'octet d'écran qui
+change. Plus le clavier, que le div n'avait jamais eu : focus, Entrée ouvre, Échap ferme.
+
+À retenir pour tout `asChild` : il exige un composant qui transmet sa ref. Dans ce dépôt
+seuls `Button`, les `<a>`/`<button>` nus et les `Link` de react-router en sont.
+
 ### Le numéro de frame avait deux menteurs
 
 Bug rapporté le 2026-08-21 : avancer image par image demandait souvent deux clics pour
