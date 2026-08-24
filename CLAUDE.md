@@ -1011,6 +1011,30 @@ exactement la même chose.
 étalonné existe, ce que la file publie en `QueueRender.grade_id` : deux fichiers, deux
 adresses, aucune requête de plus.
 
+#### Les trois actions sont dessinées, pas pliées dans un menu
+
+Choix de florian le 2026-08-24, après le correctif ci-dessous : « j'aimerais plutôt
+afficher les trois boutons directement dans le badge avec le texte au hover ». Le badge
+porte donc le nom du profil puis trois icônes (goutte, flèche, poubelle), leurs noms au
+survol par le `title` natif, comme tout ce qui est tronqué ou muet ailleurs. Un badge qui
+ouvre un menu ressemble à une étiquette, et c'est bien ce qui s'était passé.
+
+**Le fichier étalonné ne se télécharge pas d'ici.** Deux flèches côte à côte ne se lisent
+pas sans leur texte, et l'endroit où prendre un clip étalonné est la page qui l'a
+étalonné. La goutte se **remplit** à la place (`QueueRender.grade_id`), donc la ligne dit
+quand même qu'un fichier existe.
+
+**Et la suppression d'un rendu demande confirmation**, elle aussi (florian, même jour).
+Elle ne le demandait pas quand elle était au fond d'un menu ; avec une poubelle toujours
+visible à 20 px d'un téléchargement, un clic de travers détruit cent mégaoctets. D'où
+`DeleteDialog`, la présentation seule, et `DeleteCutDialog` par dessus pour le geste sur
+une sequence : le dialogue d'un rendu dit que la sequence reste, donc qu'il suffit de
+relancer, ce qui est exactement ce qui distingue les deux suppressions.
+
+**Un placeholder nomme le champ, il ne montre pas un exemple.** « Vertical 4K » dans le
+nom d'un profil se lisait comme une valeur déjà saisie ; c'est « Profile name »
+(florian, même jour).
+
 #### Le badge qui ouvrait un menu invisible
 
 Rapporté par florian le 2026-08-24, « le clic sur le badge ne fait rien », et c'est le

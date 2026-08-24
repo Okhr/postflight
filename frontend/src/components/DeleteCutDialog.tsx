@@ -9,14 +9,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { DeleteDialog } from "@/components/DeleteDialog";
 import { api } from "@/lib/api";
 
 export interface Doomed {
@@ -47,36 +40,23 @@ export function DeleteCutDialog({
     onError: (error: Error) => toast.error(error.message),
   });
 
+  const files = cut?.files ?? 0;
   return (
-    <Dialog open={cut !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>Delete {cut?.label}?</DialogTitle>
-        </DialogHeader>
-        {cut !== null && cut.files > 0 && (
-          <p className="text-sm text-muted-foreground">
-            {cut.files === 1
-              ? "The stabilized file made from it is deleted with it."
-              : `The ${cut.files} files made from it are deleted with it.`}
-          </p>
-        )}
-        <DialogFooter>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => {
-              if (onConfirm) onConfirm();
-              else if (cut?.id) remove.mutate(cut.id);
-              onClose();
-            }}
-          >
-            Delete
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <DeleteDialog
+      open={cut !== null}
+      title={`Delete ${cut?.label}?`}
+      note={
+        files === 0
+          ? undefined
+          : files === 1
+            ? "The stabilized file made from it is deleted with it."
+            : `The ${files} files made from it are deleted with it.`
+      }
+      onClose={onClose}
+      onConfirm={() => {
+        if (onConfirm) onConfirm();
+        else if (cut?.id) remove.mutate(cut.id);
+      }}
+    />
   );
 }

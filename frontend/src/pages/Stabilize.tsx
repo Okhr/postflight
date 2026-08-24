@@ -18,17 +18,12 @@ import { ChevronRight, Download, Droplet, Loader2, Trash2, X } from "lucide-reac
 import { toast } from "sonner";
 
 import { DeleteCutDialog, type Doomed } from "@/components/DeleteCutDialog";
+import { DeleteDialog } from "@/components/DeleteDialog";
 import { TemplatesCard } from "@/components/TemplatesCard";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
 import {
   Select,
@@ -501,10 +496,22 @@ function CutRow({
   );
 }
 
-/** A file that exists. Named by its profile, because that is what tells two apart. */
+/**
+ * A file that exists. Named by its profile, because that is what tells two apart, and
+ * carrying what can be done to it.
+ *
+ * The three actions are drawn, not folded into a menu: a badge that opens one looks
+ * like a label, and this row is where the work made so far is handed over. Their names
+ * are on hover, the way every other truncated or icon-only thing here says what it is.
+ *
+ * The graded file is not downloaded from here. Two download arrows side by side do not
+ * read without their text, and the place to take a graded clip is the page that graded
+ * it. The droplet lights up instead, so the row still says one exists.
+ */
 function Made({ file, label }: { file: QueueRender; label: string }) {
   const id = file.id;
   const queryClient = useQueryClient();
+  const [asking, setAsking] = useState(false);
   const remove = useMutation({
     mutationFn: () => api.deleteRender(id),
     onSuccess: () => {
@@ -515,49 +522,31 @@ function Made({ file, label }: { file: QueueRender; label: string }) {
     onError: (error: Error) => toast.error(error.message),
   });
 
+  const action = "rounded p-0.5 text-secondary-foreground/70 transition-colors hover:bg-foreground/10 hover:text-foreground";
   return (
-    <DropdownMenu>
-      {/* The trigger is the badge, rather than `asChild` around one. `Badge` is a
-          plain function that drops the ref it is handed, so Radix had no element to
-          anchor its menu to and drew it nowhere: the menu was in the DOM the whole
-          time, which is why reading the DOM proved nothing. Its own button is also
-          what makes it reachable by keyboard, and a div inside a button is not
-          valid markup. */}
-      <DropdownMenuTrigger
-        className={cn(
-          badgeVariants({ variant: "secondary" }),
-          "cursor-pointer font-normal focus-visible:ring-1 focus-visible:ring-ring",
-        )}
-      >
-        {label}
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem asChild>
-          <Link to={`/color/${id}`}>
-            <Droplet className="h-3.5 w-3.5" />
-            Grade
-          </Link>
-        </DropdownMenuItem>
-        <DropdownMenuItem asChild>
-          <a href={mediaUrl.download(id)}>
-            <Download className="h-3.5 w-3.5" />
-            {file.grade_id ? "Download stabilized" : "Download"}
-          </a>
-        </DropdownMenuItem>
-        {file.grade_id && (
-          <DropdownMenuItem asChild>
-            <a href={mediaUrl.gradedDownload(file.grade_id)}>
-              <Download className="h-3.5 w-3.5" />
-              Download graded
-            </a>
-          </DropdownMenuItem>
-        )}
-        <DropdownMenuItem onClick={() => remove.mutate()}>
-          <Trash2 className="h-3.5 w-3.5" />
-          Delete
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <span className={cn(badgeVariants({ variant: "secondary" }), "gap-1 pl-2 pr-1 font-normal")}>
+      {label}
+      <Link to={`/color/${id}`} title="Grade" className={action}>
+        <Droplet className={cn("h-3 w-3", file.grade_id && "fill-current")} />
+      </Link>
+      <a href={mediaUrl.download(id)} title="Download" className={action}>
+        <Download className="h-3 w-3" />
+      </a>
+      <button type="button" title="Delete" onClick={() => setAsking(true)} className={action}>
+        <Trash2 className="h-3 w-3" />
+      </button>
+      <DeleteDialog
+        open={asking}
+        title={`Delete the ${label} file?`}
+        note={
+          file.grade_id
+            ? "Its graded version is deleted with it. The sequence stays, so it can be rendered again."
+            : "The sequence stays, so it can be rendered again."
+        }
+        onClose={() => setAsking(false)}
+        onConfirm={() => remove.mutate()}
+      />
+    </span>
   );
 }
 

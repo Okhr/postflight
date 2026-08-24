@@ -293,7 +293,7 @@ function NameDialog({
         >
           <Input
             autoFocus
-            placeholder="Vertical 4K"
+            placeholder="Profile name"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
           />
@@ -416,6 +416,7 @@ function EditForm({
     >
       <div className="space-y-2">
         <Input
+          placeholder="Profile name"
           value={form.label}
           onChange={(event) => setForm((f) => ({ ...f, label: event.target.value }))}
         />
