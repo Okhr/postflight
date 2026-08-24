@@ -293,6 +293,51 @@ blancs inventée sur une image moitié ciel, moitié herbe sèche).
 L'auto-niveaux ne pousse jamais un côté déjà écrêté : mesuré, remonter le point
 blanc d'un plan dont le ciel touche le plafond le brûle complètement.
 
+### Color : un arbre, aucun bouton Save, et deux gestes séparés
+
+Refonte du 2026-08-24, sur le constat de florian : « c'est tout pété ça marche, et ça
+respecte pas le naming ». La page marchait, elle **parlait une autre langue** : son titre
+et sa liste disaient `DJI_20260809144616_0034_D__h_1080__c00.mp4` et `h_1080` sous un
+arbre qui dit « Rush 1 » et « dive ». Même défaut que Stabilize avant-hier, au même
+endroit du raisonnement (un recoupement côté front à partir d'un nom de fichier).
+
+Elle a maintenant la forme de Stabilize, parce qu'elle répond à la même question un cran
+plus loin :
+
+- **L'arbre groupé** (dossier, rush, clip) à la place de la liste plate, chaque clip
+  nommé « sequence · profil », le profil en badge dans l'entête. Deux champs de plus sur
+  `RenderOut` suffisent : `folder_id` pour grouper, et `duration_ms`, que la page
+  calculait **à 60 fps en dur** sur un rush en 60000/1001.
+- **Aucun bouton Save.** Chaque curseur écrit **au relâchement** (`onValueCommit` de
+  Radix), comme le derush. Mesuré : zéro requête pendant le glisser, une au relâchement.
+- **« Copy to »** ouvre le même arbre avec des cases à trois états et écrit le look sur
+  les clips choisis. Il **n'encode rien** : régler un look et dépenser des minutes
+  d'encodage sont deux décisions, et florian les veut séparées (« je règle un clip et je
+  copie sur les autres »).
+- **Le lot est un bouton en tête de la colonne**, « Render N looks », qui prend tous les
+  looks réglés dont le fichier n'existe pas. Une requête par clip, comme le lancement de
+  Stabilize.
+- **La carte « Measured » a disparu** au profit de l'histogramme, passé en bande pleine
+  largeur sous les contrôles. C'était trois lignes de prose sur des mesures que la courbe
+  montre, et la règle de ce projet dit qu'une carte porte des données, pas un paragraphe.
+- **Une raison au survol, jamais en prose.** « Neutral look, nothing to apply. » sous un
+  bouton mort est devenu son `title`. Attention : un bouton désactivé ne reçoit pas
+  d'événement de pointeur (`disabled:pointer-events-none`), donc le `title` va sur un
+  `span` autour.
+
+### Changer le look annule l'encodage en vol
+
+Trouvé en testant la page, pas par raisonnement : j'ai réglé un contraste, lancé le
+rendu, puis remis à zéro, et le worker a continué à encoder **un fichier neutre** à 24 %.
+`save_grade` ne remettait à `draft` que depuis `done` ou `failed`, donc un job en vol
+survivait à un changement de look et écrivait le look d'avant.
+
+Corrigé comme ailleurs : le job part et le worker s'arrête au battement suivant. Le
+garde-fou qui compte est l'autre moitié : **on ne compare pas les états mais les
+hashes**, et un `PUT` qui ne change rien ne touche à rien. Sans ça, une page qui écrit à
+chaque relâchement de curseur tuerait un encodage au premier curseur relâché sur sa
+propre valeur.
+
 ### L'aperçu en shader : une seconde implémentation, mesurée
 
 Le modèle est celui de Resolve ou Lightroom : un aperçu GPU qui suit les curseurs, un

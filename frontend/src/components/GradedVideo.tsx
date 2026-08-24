@@ -10,6 +10,7 @@
  * The histogram reads the pixels the shader produced, so it always describes what is on
  * screen rather than what the parameters ought to give.
  */
+import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play } from "lucide-react";
 
@@ -29,11 +30,15 @@ export function GradedVideo({
   src,
   plan,
   marks = [],
+  actions,
   className,
 }: {
   src: string;
   plan: GradePlan;
   marks?: Mark[];
+  /** Dropped in the control row. What compares before and after belongs next to the
+   *  play button, not on a line of its own under the picture. */
+  actions?: React.ReactNode;
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -212,13 +217,12 @@ export function GradedVideo({
             {point.label}
           </Button>
         ))}
-        <canvas
-          ref={histRef}
-          width={192}
-          height={48}
-          className="ml-auto h-12 w-48 rounded bg-muted/30"
-        />
+        {actions && <span className="ml-auto flex items-center gap-2">{actions}</span>}
       </div>
+
+      {/* Full width, under the controls: it replaced a card of prose about the same
+          measurements, and a 48 px thumbnail in a corner would not have. */}
+      <canvas ref={histRef} width={512} height={64} className="h-16 w-full rounded bg-muted/30" />
       {broken && (
         <p className="text-sm text-red-400">
           No GPU preview here ({broken}), showing the clip ungraded.

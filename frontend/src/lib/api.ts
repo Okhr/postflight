@@ -71,6 +71,10 @@ export interface Render {
   sequence_label: string;
   cut_label: string;
   cut_id: number | null;
+  /** Where its rush sits, so a list of clips groups like every other list here. */
+  folder_id: number | null;
+  /** From the rush's own fps, not from a frame count over an assumed 60. */
+  duration_ms: number;
   template: string;
   state: RenderState;
   progress: number;

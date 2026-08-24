@@ -1,32 +1,62 @@
+/**
+ * Colour grading of the stabilized clips, one look per clip, into a new file.
+ *
+ * The page is shaped like Stabilize, because it answers the same kind of question one
+ * step later: the clips are grouped the way the sidebar groups them, named the way the
+ * rest of the interface names things (rush, sequence, profile, never a filename), and
+ * what is tuned but not yet written can be rendered in one go.
+ *
+ * Two gestures stay separate, which is how florian works: a look is tuned on one clip
+ * by eye, then copied to the others, and rendering is a decision of its own.
+ *
+ * There is no save button. Every slider writes when it is released, like the derush,
+ * so what is on screen is what is stored. The preview is a shader (see
+ * lib/grade-shader): an approximation of the encode, 39 dB from it, and the file that
+ * gets written always comes from ffmpeg.
+ */
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Download, Eye, RotateCcw, Save, Trash2, Wand2 } from "lucide-react";
+import {
+  ChevronRight,
+  Copy,
+  Download,
+  Droplet,
+  Eye,
+  Loader2,
+  RotateCcw,
+  Trash2,
+  Wand2,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { GradedVideo } from "@/components/GradedVideo";
 import { StateBadge } from "@/components/StateBadge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
 import {
   NEUTRAL_GRADE,
   api,
   mediaUrl,
+  type Folder,
+  type Grade,
   type GradeParams,
   type Render,
 } from "@/lib/api";
+import { folderColor } from "@/lib/colors";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { cn } from "@/lib/utils";
-
-/**
- * Colour grading of the stabilized clips, one look per clip, into a new file.
- *
- * The preview is a real ffmpeg still frame (measured at 0.32 s) rather than a
- * shader copy of the same maths: what is on screen goes through exactly the
- * filters of the final encode, so there is nothing to keep in sync.
- */
 
 const CONTROLS = [
   { key: "exposure", label: "Exposure", min: -2, max: 2, step: 0.05, unit: " EV", neutral: 0 },
@@ -37,7 +67,67 @@ const CONTROLS = [
   { key: "highlights", label: "Highlights", min: -1, max: 1, step: 0.02, unit: "", neutral: 0 },
 ] as const;
 
-/** Waits for the slider to settle before asking the server for a new frame. */
+/** A look that would change nothing, so there is nothing to encode. */
+function isNeutral(params: GradeParams): boolean {
+  return CONTROLS.every((control) => params[control.key] === control.neutral) && !params.auto_levels;
+}
+
+// --------------------------------------------------------------------------- //
+// The clips, grouped
+// --------------------------------------------------------------------------- //
+
+interface Rush {
+  id: number;
+  label: string;
+  clips: Render[];
+}
+
+interface Node {
+  folder: Folder | null;
+  children: Node[];
+  rushes: Rush[];
+}
+
+/** What a clip is called: its sequence and the profile it was rendered with. */
+function clipName(clip: Render, profile: (id: string) => string): string {
+  return [clip.cut_label, profile(clip.template)].filter(Boolean).join(" · ");
+}
+
+function rushesIn(clips: Render[], folderId: number | null): Rush[] {
+  const mine = clips.filter((clip) => clip.folder_id === folderId);
+  const order: number[] = [];
+  const byRush = new Map<number, Rush>();
+  for (const clip of mine) {
+    let rush = byRush.get(clip.sequence_id);
+    if (!rush) {
+      rush = { id: clip.sequence_id, label: clip.sequence_label || clip.sequence_key, clips: [] };
+      byRush.set(clip.sequence_id, rush);
+      order.push(clip.sequence_id);
+    }
+    rush.clips.push(clip);
+  }
+  return order.map((id) => byRush.get(id) as Rush);
+}
+
+function clipsOf(node: Node): Render[] {
+  return [...node.rushes.flatMap((rush) => rush.clips), ...node.children.flatMap(clipsOf)];
+}
+
+/** Only what has a clip in it: this is the list of what can be graded, not the library. */
+function build(folders: Folder[], clips: Render[]): Node[] {
+  const node = (folder: Folder): Node => ({
+    folder,
+    children: folders
+      .filter((child) => child.parent_id === folder.id)
+      .map(node)
+      .filter((child) => clipsOf(child).length > 0),
+    rushes: rushesIn(clips, folder.id),
+  });
+
+  const roots = folders.filter((folder) => folder.parent_id === null).map(node);
+  const global: Node = { folder: null, children: [], rushes: rushesIn(clips, null) };
+  return [global, ...roots].filter((entry) => clipsOf(entry).length > 0);
+}
 
 export function Color() {
   const { id } = useParams();
@@ -54,54 +144,32 @@ export function Color() {
     queryFn: api.grades,
     refetchInterval: 3_000,
   });
+  const { data: folders } = useQuery({ queryKey: ["folders"], queryFn: api.folders });
+  const { data: templates } = useQuery({ queryKey: ["templates"], queryFn: api.templates });
 
-  const stabilized = (renders ?? []).filter((render) => render.state === "done");
+  const clips = (renders ?? []).filter((render) => render.state === "done");
   const gradeOf = new Map((grades ?? []).map((grade) => [grade.render_id, grade]));
+  const profile = (template: string) =>
+    templates?.find((option) => option.id === template)?.label ?? template;
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[17rem_minmax(0,1fr)]">
-      <aside className="lg:sticky lg:top-4 lg:self-start">
-        <div className="mb-2 flex items-baseline justify-between px-1">
-          <h2 className="text-sm font-medium">Stabilized clips</h2>
-          <span className="tnum text-sm text-muted-foreground">{stabilized.length}</span>
-        </div>
-        {stabilized.length === 0 ? (
-          <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
-            Nothing stabilized yet. See <Link to="/stabilisation" className="underline">Stabilize</Link>.
-          </p>
-        ) : (
-          <ul className="max-h-[calc(100vh-10rem)] space-y-1 overflow-y-auto pr-1">
-            {stabilized.map((render) => {
-              const grade = gradeOf.get(render.id);
-              return (
-                <li key={render.id}>
-                  <Link
-                    to={`/color/${render.id}`}
-                    className={cn(
-                      "block rounded-md border p-2 transition-colors",
-                      render.id === selected
-                        ? "border-primary bg-accent"
-                        : "border-transparent hover:bg-accent/50",
-                    )}
-                  >
-                    <span className="block truncate text-sm font-medium">
-                      {render.out_name ?? `render ${render.id}`}
-                    </span>
-                    <span className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                      {render.template}
-                      {grade && grade.state !== "draft" && <StateBadge state={grade.state} />}
-                      {grade?.state === "done" && "graded"}
-                    </span>
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </aside>
-
+    <div className="grid items-start gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
+      <Clips
+        tree={build(folders ?? [], clips)}
+        grades={grades ?? []}
+        gradeOf={gradeOf}
+        profile={profile}
+        selected={selected}
+      />
       {selected ? (
-        <Editor key={selected} renderId={selected} render={stabilized.find((r) => r.id === selected)} />
+        <Editor
+          key={selected}
+          renderId={selected}
+          render={clips.find((clip) => clip.id === selected)}
+          profile={profile}
+          others={clips.filter((clip) => clip.id !== selected)}
+          folders={folders ?? []}
+        />
       ) : (
         <p className="pt-2 text-sm text-muted-foreground">Pick a clip.</p>
       )}
@@ -109,11 +177,244 @@ export function Color() {
   );
 }
 
-function Editor({ renderId, render }: { renderId: number; render?: Render }) {
+/** The picker, and the one thing that can be done to all of them at once. */
+function Clips({
+  tree,
+  grades,
+  gradeOf,
+  profile,
+  selected,
+}: {
+  tree: Node[];
+  grades: Grade[];
+  gradeOf: Map<number, Grade>;
+  profile: (id: string) => string;
+  selected?: number;
+}) {
+  const queryClient = useQueryClient();
+  const waiting = grades.filter((grade) => grade.state === "draft" && !isNeutral(grade.params));
+
+  const renderAll = useMutation({
+    mutationFn: async () => {
+      const results = await Promise.allSettled(
+        waiting.map((grade) => api.applyGrade(grade.render_id)),
+      );
+      return results.filter((result) => result.status === "rejected").length;
+    },
+    onSuccess: (failed) => {
+      if (failed) toast.error(`${failed} refused`);
+      queryClient.invalidateQueries({ queryKey: ["grades"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const count = tree.flatMap(clipsOf).length;
+  return (
+    <aside className="lg:sticky lg:top-4 lg:self-start">
+      <div className="mb-2 flex items-baseline justify-between px-1">
+        <h2 className="text-sm font-medium">Stabilized clips</h2>
+        <span className="tnum text-sm text-muted-foreground">{count}</span>
+      </div>
+
+      {count === 0 ? (
+        <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+          Nothing stabilized yet. See{" "}
+          <Link to="/stabilisation" className="underline">
+            Stabilize
+          </Link>
+          .
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {waiting.length > 0 && (
+            <Button
+              size="sm"
+              className="w-full"
+              disabled={renderAll.isPending}
+              onClick={() => renderAll.mutate()}
+            >
+              Render {waiting.length} look{waiting.length > 1 ? "s" : ""}
+            </Button>
+          )}
+          <div className="max-h-[calc(100vh-12rem)] space-y-0.5 overflow-y-auto pr-1">
+            {tree.map((node) => (
+              <FolderRow
+                key={node.folder?.id ?? "global"}
+                node={node}
+                depth={0}
+                selected={selected}
+                gradeOf={gradeOf}
+                profile={profile}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </aside>
+  );
+}
+
+interface RowProps {
+  selected?: number;
+  gradeOf: Map<number, Grade>;
+  profile: (id: string) => string;
+  /** Present in the copy dialog, absent in the picker: a row is then a checkbox. */
+  picked?: Set<number>;
+  flip?: (ids: number[], on: boolean) => void;
+}
+
+function FolderRow({ node, depth, ...rest }: { node: Node; depth: number } & RowProps) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 py-1 text-sm">
+        <span style={{ width: depth * 12 }} />
+        {rest.picked && rest.flip && (
+          <Tick ids={clipsOf(node).map((clip) => clip.id)} {...rest} />
+        )}
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+        >
+          <ChevronRight
+            className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-90")}
+          />
+          <span
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full",
+              node.folder
+                ? (folderColor(node.folder.color)?.dot ?? "bg-muted")
+                : "bg-muted-foreground/50",
+            )}
+          />
+          <span className="truncate font-medium" title={node.folder?.name ?? "Global"}>
+            {node.folder?.name ?? "Global"}
+          </span>
+        </button>
+      </div>
+      {open && (
+        <div>
+          {node.rushes.map((rush) => (
+            <RushRow key={rush.id} rush={rush} depth={depth + 1} {...rest} />
+          ))}
+          {node.children.map((child) => (
+            <FolderRow key={child.folder?.id} node={child} depth={depth + 1} {...rest} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RushRow({ rush, depth, ...rest }: { rush: Rush; depth: number } & RowProps) {
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 py-1 text-sm text-muted-foreground">
+        <span style={{ width: depth * 12 }} />
+        {rest.picked && rest.flip && <Tick ids={rush.clips.map((clip) => clip.id)} {...rest} />}
+        <span className="truncate" title={rush.label}>
+          {rush.label}
+        </span>
+      </div>
+      {rush.clips.map((clip) => (
+        <ClipRow key={clip.id} clip={clip} depth={depth + 1} {...rest} />
+      ))}
+    </div>
+  );
+}
+
+/** A checkbox that can also be neither on nor off, which a rush often is. */
+function Tick({ ids, picked, flip }: { ids: number[] } & RowProps) {
+  const taken = ids.filter((id) => picked?.has(id)).length;
+  return (
+    <Checkbox
+      checked={taken === 0 ? false : taken === ids.length ? true : "indeterminate"}
+      onCheckedChange={() => flip?.(ids, taken !== ids.length)}
+    />
+  );
+}
+
+function ClipRow({
+  clip,
+  depth,
+  selected,
+  gradeOf,
+  profile,
+  picked,
+  flip,
+}: { clip: Render; depth: number } & RowProps) {
+  const grade = gradeOf.get(clip.id);
+  const name = clipName(clip, profile);
+  const body = (
+    <>
+      <span className="truncate" title={name}>
+        {name}
+      </span>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
+        {(grade?.state === "queued" || grade?.state === "running") && (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        )}
+        <span title={grade?.state === "done" ? "Graded" : "Not graded"}>
+          <Droplet
+            className={cn(
+              "h-3 w-3",
+              grade?.state === "done" ? "fill-current" : "text-muted-foreground/30",
+            )}
+          />
+        </span>
+        <span className="tnum text-xs text-muted-foreground">
+          {formatDuration(clip.duration_ms)}
+        </span>
+      </span>
+    </>
+  );
+
+  if (picked && flip) {
+    return (
+      <label className="flex cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1 text-sm hover:bg-accent/40">
+        <span style={{ width: depth * 12 }} />
+        <Checkbox checked={picked.has(clip.id)} onCheckedChange={() => flip([clip.id], !picked.has(clip.id))} />
+        {body}
+      </label>
+    );
+  }
+
+  return (
+    <Link
+      to={`/color/${clip.id}`}
+      className={cn(
+        "flex items-center gap-1.5 rounded-md py-1 pr-1 text-sm transition-colors",
+        clip.id === selected ? "bg-accent" : "hover:bg-accent/50",
+      )}
+    >
+      <span style={{ width: depth * 12 }} />
+      {body}
+    </Link>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// The editor
+// --------------------------------------------------------------------------- //
+
+function Editor({
+  renderId,
+  render,
+  profile,
+  others,
+  folders,
+}: {
+  renderId: number;
+  render?: Render;
+  profile: (id: string) => string;
+  others: Render[];
+  folders: Folder[];
+}) {
   const queryClient = useQueryClient();
   const [params, setParams] = useState<GradeParams>(NEUTRAL_GRADE);
   const [showBefore, setShowBefore] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [copying, setCopying] = useState(false);
 
   const { data: grade, isLoading } = useQuery({
     queryKey: ["grade", renderId],
@@ -123,16 +424,13 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
   });
 
   useEffect(() => {
-    if (!grade) return;
-    setParams(grade.params);
-    setDirty(false);
+    if (grade) setParams(grade.params);
   }, [grade?.id, grade?.params]);
 
+  /** No save button: a gesture that changes the look writes it. */
   const save = useMutation({
-    mutationFn: () => api.saveGrade(renderId, params),
+    mutationFn: (next: GradeParams) => api.saveGrade(renderId, next),
     onSuccess: () => {
-      setDirty(false);
-      toast.success("Look saved");
       queryClient.invalidateQueries({ queryKey: ["grade", renderId] });
       queryClient.invalidateQueries({ queryKey: ["grades"] });
     },
@@ -140,14 +438,10 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
   });
 
   const apply = useMutation({
-    mutationFn: async () => {
-      await api.saveGrade(renderId, params);
-      return api.applyGrade(renderId);
-    },
+    mutationFn: () => api.applyGrade(renderId),
     onSuccess: () => {
-      setDirty(false);
-      toast.success("Grading queued");
-      queryClient.invalidateQueries();
+      queryClient.invalidateQueries({ queryKey: ["grade", renderId] });
+      queryClient.invalidateQueries({ queryKey: ["grades"] });
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -155,39 +449,41 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
   const remove = useMutation({
     mutationFn: (gradeId: number) => api.deleteGrade(gradeId),
     onSuccess: () => {
-      toast.success("Graded file deleted");
-      queryClient.invalidateQueries();
+      queryClient.invalidateQueries({ queryKey: ["grade", renderId] });
+      queryClient.invalidateQueries({ queryKey: ["grades"] });
+      queryClient.invalidateQueries({ queryKey: ["stabilize-queue"] });
     },
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const analysis = grade?.analysis ?? {};
-  const neutral = useMemo(
-    () => CONTROLS.every((c) => params[c.key] === c.neutral) && !params.auto_levels,
-    [params],
-  );
-
-  const set = <K extends keyof GradeParams>(key: K, value: GradeParams[K]) => {
-    setParams((previous) => ({ ...previous, [key]: value }));
-    setDirty(true);
+  /** Show it, then write it. Called on release, not on every pointer move. */
+  const commit = (next: GradeParams) => {
+    setParams(next);
+    save.mutate(next);
   };
+
+  const analysis = grade?.analysis ?? {};
+  const neutral = useMemo(() => isNeutral(params), [params]);
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Analysing the clip…</p>;
 
-  const references = [
+  const marks = [
     { label: "Darkest", ms: analysis.darkest_ms },
     { label: "Median", ms: analysis.median_ms },
     { label: "Brightest", ms: analysis.brightest_ms },
-  ].filter((r) => r.ms !== undefined);
+  ].filter((mark): mark is { label: string; ms: number } => mark.ms !== undefined);
 
   return (
     <div className="min-w-0 space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="truncate text-sm font-semibold">{render?.out_name ?? `render ${renderId}`}</h1>
+        <h1 className="truncate text-sm font-semibold">
+          {render?.sequence_label || `render ${renderId}`}
+          {render?.cut_label && ` · ${render.cut_label}`}
+        </h1>
+        {render && <Badge variant="secondary" className="font-normal">{profile(render.template)}</Badge>}
         {grade && grade.state !== "draft" && <StateBadge state={grade.state} />}
         <span className="text-sm text-muted-foreground">
-          {render && formatDuration(((render.end_frame - render.start_frame + 1) / 60) * 1000)} ·{" "}
-          {render?.template}
+          {render && formatDuration(render.duration_ms)}
           {analysis.frames ? ` · analysed on ${analysis.frames} frames` : ""}
         </span>
         <Button asChild size="sm" variant="ghost" className="ml-auto">
@@ -195,37 +491,42 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
         </Button>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_19rem]">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_19rem]">
         <Card className="overflow-hidden">
           <CardContent className="p-3">
             <GradedVideo
               src={mediaUrl.render(renderId)}
               plan={{
                 levels: showBefore ? null : (grade?.levels ?? null),
-                exposure: showBefore ? 0 : (params.exposure as number),
-                shadows: showBefore ? 0 : (params.shadows as number),
-                highlights: showBefore ? 0 : (params.highlights as number),
-                contrast: showBefore ? 1 : (params.contrast as number),
-                saturation: showBefore ? 1 : (params.saturation as number),
-                temperature: showBefore ? 6500 : (params.temperature as number),
+                exposure: showBefore ? 0 : params.exposure,
+                shadows: showBefore ? 0 : params.shadows,
+                highlights: showBefore ? 0 : params.highlights,
+                contrast: showBefore ? 1 : params.contrast,
+                saturation: showBefore ? 1 : params.saturation,
+                temperature: showBefore ? 6500 : params.temperature,
               }}
-              marks={references.map((r) => ({ label: r.label, ms: r.ms ?? 0 }))}
+              marks={marks}
+              actions={
+                /* The reason a button is dead goes in a tooltip, not in a line of
+                   prose under it. A disabled button takes no pointer events, so the
+                   title has to sit on something around it. */
+                <span title={neutral ? "Nothing to compare: the look is neutral" : "Hold to see it ungraded"}>
+                  <Button
+                    size="sm"
+                    variant={showBefore ? "default" : "outline"}
+                    disabled={neutral}
+                    onMouseDown={() => setShowBefore(true)}
+                    onMouseUp={() => setShowBefore(false)}
+                    onMouseLeave={() => setShowBefore(false)}
+                    onTouchStart={() => setShowBefore(true)}
+                    onTouchEnd={() => setShowBefore(false)}
+                  >
+                    <Eye className="h-4 w-4" />
+                    {showBefore ? "Before" : "Compare"}
+                  </Button>
+                </span>
+              }
             />
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                variant={showBefore ? "default" : "outline"}
-                onMouseDown={() => setShowBefore(true)}
-                onMouseUp={() => setShowBefore(false)}
-                onMouseLeave={() => setShowBefore(false)}
-                onTouchStart={() => setShowBefore(true)}
-                onTouchEnd={() => setShowBefore(false)}
-              >
-                <Eye className="h-4 w-4" />
-                Hold to compare
-              </Button>
-              {showBefore && <span className="text-sm text-muted-foreground">before</span>}
-            </div>
           </CardContent>
         </Card>
 
@@ -239,7 +540,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
                 size="sm"
                 variant={params.auto_levels ? "default" : "outline"}
                 className="w-full"
-                onClick={() => set("auto_levels", !params.auto_levels)}
+                onClick={() => commit({ ...params, auto_levels: !params.auto_levels })}
                 title="Stretches the unused luma range of this clip. A side that already clips is left alone."
               >
                 <Wand2 className="h-4 w-4" />
@@ -251,18 +552,20 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
                   <div className="flex items-baseline justify-between text-sm">
                     <span>{control.label}</span>
                     <span className="tnum text-muted-foreground">
-                      {typeof params[control.key] === "number"
-                        ? (params[control.key] as number).toFixed(control.step < 1 ? 2 : 0)
-                        : ""}
+                      {params[control.key].toFixed(control.step < 1 ? 2 : 0)}
                       {control.unit}
                     </span>
                   </div>
+                  {/* Written on release. Every pointer move would be a request per pixel. */}
                   <Slider
-                    value={[params[control.key] as number]}
+                    value={[params[control.key]]}
                     min={control.min}
                     max={control.max}
                     step={control.step}
-                    onValueChange={([value]) => set(control.key, value as never)}
+                    onValueChange={([value]) =>
+                      setParams((previous) => ({ ...previous, [control.key]: value }))
+                    }
+                    onValueCommit={([value]) => commit({ ...params, [control.key]: value })}
                   />
                 </div>
               ))}
@@ -272,10 +575,7 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
                   size="sm"
                   variant="ghost"
                   disabled={neutral}
-                  onClick={() => {
-                    setParams(NEUTRAL_GRADE);
-                    setDirty(true);
-                  }}
+                  onClick={() => commit(NEUTRAL_GRADE)}
                 >
                   <RotateCcw className="h-4 w-4" />
                   Reset
@@ -284,57 +584,27 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
                   size="sm"
                   variant="outline"
                   className="ml-auto"
-                  disabled={!dirty || save.isPending}
-                  onClick={() => save.mutate()}
+                  disabled={neutral || others.length === 0}
+                  onClick={() => setCopying(true)}
+                  title="Give this look to other clips"
                 >
-                  <Save className="h-4 w-4" />
-                  {dirty ? "Save" : "Saved"}
+                  <Copy className="h-4 w-4" />
+                  Copy to
                 </Button>
               </div>
 
-              <Button
-                className="w-full"
-                disabled={neutral || apply.isPending || grade?.state === "running"}
-                onClick={() => apply.mutate()}
+              <span
+                className="block"
+                title={neutral ? "Nothing to encode: the look is neutral" : undefined}
               >
-                Render graded file
-              </Button>
-              {neutral && (
-                <p className="text-xs text-muted-foreground">
-                  Neutral look, nothing to apply.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Measured</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1 text-xs text-muted-foreground">
-              <p>
-                Blacks at {analysis.y_low ?? "-"}, whites at {analysis.y_high ?? "-"} on a 64-940
-                scale
-              </p>
-              <p>
-                Unused range: {Math.round((analysis.headroom_low ?? 0) * 100)}% low,{" "}
-                {Math.round((analysis.headroom_high ?? 0) * 100)}% high
-              </p>
-              {(analysis.clipped_white ?? 0) > 0.05 && (
-                <p className="flex items-center gap-1 text-amber-400">
-                  <AlertTriangle className="h-3 w-3" />
-                  {Math.round((analysis.clipped_white ?? 0) * 100)}% of frames clip the highlights
-                </p>
-              )}
-              {(analysis.clipped_black ?? 0) > 0.05 && (
-                <p className="flex items-center gap-1 text-amber-400">
-                  <AlertTriangle className="h-3 w-3" />
-                  {Math.round((analysis.clipped_black ?? 0) * 100)}% of frames crush the blacks
-                </p>
-              )}
-              {analysis.looks_log && (
-                <p className="text-amber-400">Log profile</p>
-              )}
+                <Button
+                  className="w-full"
+                  disabled={neutral || apply.isPending || grade?.state === "running"}
+                  onClick={() => apply.mutate()}
+                >
+                  Render graded file
+                </Button>
+              </span>
             </CardContent>
           </Card>
 
@@ -350,13 +620,18 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
                 {grade.error && <p className="text-red-400">{grade.error}</p>}
                 {grade.state === "done" && (
                   <>
-                    <p className="truncate text-muted-foreground">{grade.out_name}</p>
                     <p className="tnum text-muted-foreground">{formatBytes(grade.size_bytes)}</p>
                     <div className="flex gap-1">
                       <Button asChild size="sm" variant="outline">
                         <a href={mediaUrl.gradedDownload(grade.id)}>
                           <Download className="h-4 w-4" />
-                          Download
+                          Graded
+                        </a>
+                      </Button>
+                      <Button asChild size="sm" variant="ghost">
+                        <a href={mediaUrl.download(renderId)}>
+                          <Download className="h-4 w-4" />
+                          Stabilized
                         </a>
                       </Button>
                       <Button
@@ -375,6 +650,102 @@ function Editor({ renderId, render }: { renderId: number; render?: Render }) {
           )}
         </div>
       </div>
+
+      <CopyDialog
+        open={copying}
+        onClose={() => setCopying(false)}
+        params={params}
+        clips={others}
+        folders={folders}
+        profile={profile}
+      />
     </div>
+  );
+}
+
+/**
+ * Give this look to other clips.
+ *
+ * It writes the parameters and stops there. Rendering them is the button in the left
+ * column, because deciding what a clip looks like and deciding to spend minutes of
+ * encoding on it are two different decisions.
+ */
+function CopyDialog({
+  open,
+  onClose,
+  params,
+  clips,
+  folders,
+  profile,
+}: {
+  open: boolean;
+  onClose: () => void;
+  params: GradeParams;
+  clips: Render[];
+  folders: Folder[];
+  profile: (id: string) => string;
+}) {
+  const queryClient = useQueryClient();
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+
+  const copy = useMutation({
+    mutationFn: async () => {
+      const results = await Promise.allSettled(
+        [...picked].map((id) => api.saveGrade(id, params)),
+      );
+      return results.filter((result) => result.status === "rejected").length;
+    },
+    onSuccess: (failed) => {
+      if (failed) toast.error(`${failed} refused`);
+      else toast.success(`Look copied to ${picked.size} clip${picked.size > 1 ? "s" : ""}`);
+      queryClient.invalidateQueries({ queryKey: ["grades"] });
+      onClose();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const flip = (ids: number[], on: boolean) =>
+    setPicked((previous) => {
+      const next = new Set(previous);
+      for (const id of ids) {
+        if (on) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Copy this look to</DialogTitle>
+        </DialogHeader>
+        <div className="max-h-80 overflow-y-auto pr-1">
+          {build(folders, clips).map((node) => (
+            <FolderRow
+              key={node.folder?.id ?? "global"}
+              node={node}
+              depth={0}
+              gradeOf={new Map()}
+              profile={profile}
+              picked={picked}
+              flip={flip}
+            />
+          ))}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            disabled={picked.size === 0 || copy.isPending}
+            onClick={() => copy.mutate()}
+          >
+            Copy to {picked.size}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

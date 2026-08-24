@@ -120,12 +120,19 @@ def _render_out(
     render: Render, seq: Sequence | None = None, cut_label: str = ""
 ) -> schemas.RenderOut:
     out_path = to_absolute(render.out_path)
+    frames = render.end_frame - render.start_frame + 1
     return schemas.RenderOut(
         id=render.id or 0,
         sequence_id=render.sequence_id,
         sequence_key=seq.key if seq else "",
         sequence_label=seq.label if seq else "",
+        # Where its rush sits, so the colour page can group its clips the way every
+        # other list here is grouped.
+        folder_id=seq.folder_id if seq else None,
         cut_label=cut_label,
+        # From the rush's own fps. The colour page derived it from the frame count at
+        # a hardcoded 60, which is wrong on every 60000/1001 rush there is.
+        duration_ms=frame_to_ms(frames, seq.fps_num, seq.fps_den) if seq and seq.fps_num else 0.0,
         cut_id=render.cut_id,
         template=render.template,
         state=render.state.value,
@@ -1181,10 +1188,21 @@ def save_grade(
 ) -> schemas.GradeOut:
     render = _get_render(session, render_id)
     grade = _grade_for(session, render, analyse=False)
-    grade.params = grading_service.merge_params(payload.params)
-    grade.params_hash = grading_service.params_hash(grade.params)
-    if grade.state in {GradeState.DONE, GradeState.FAILED}:
-        grade.state = GradeState.DRAFT  # the look changed, the file no longer matches
+    params = grading_service.merge_params(payload.params)
+    changed = grading_service.params_hash(params) != grade.params_hash
+    grade.params = params
+    grade.params_hash = grading_service.params_hash(params)
+    # A look that moved makes whatever exists, or is being written, the wrong file. An
+    # encode in flight is cancelled the way a render of a deleted cut is: its job goes
+    # and the worker holding it stops on its next heartbeat. Guarded on the look having
+    # actually moved, because the page writes on every slider release and a write that
+    # changes nothing must not kill an encode.
+    if changed and grade.state is not GradeState.DRAFT:
+        for job in session.exec(select(Job).where(Job.grade_id == grade.id)).all():
+            session.delete(job)
+        grade.state = GradeState.DRAFT
+        grade.progress = 0.0
+        grade.error = None
     session.add(grade)
     session.commit()
     return _grade_out(session, grade)

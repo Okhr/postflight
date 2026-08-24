@@ -104,6 +104,8 @@ class RenderOut(BaseSchema):
     sequence_label: str = ""
     cut_label: str = ""
     cut_id: int | None
+    folder_id: int | None = None
+    duration_ms: float = 0.0
     template: str
     state: str
     progress: float
