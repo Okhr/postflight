@@ -1138,6 +1138,34 @@ Ce qui fait le travail de la page :
 - **Les templates restent en haut**, choix de florian contre ma proposition de les
   déplacer dans un dialogue.
 
+Quatre choses sont sorties du premier vrai usage de la page, le 2026-08-23, et la
+première était la plus grave.
+
+**Un rendu qui échoue ne dit rien de son rush.** `dispatch._fail` marquait la séquence
+en `FAILED` quel que soit le job, donc un rendu tué par un redémarrage sortait son rush
+de cette file (elle filtre sur `ready`) et affichait le stderr de Gyroflow à la place de
+sa durée dans l'arbre, à côté d'un fichier fusionné qui n'avait jamais été en cause.
+Seuls **merge et proxy** peuvent invalider un rush, ce sont eux qui le produisent. La
+ligne déjà abîmée en base a été remise à `ready` à la main.
+
+**Une sequence qui a déjà un fichier pour le profil choisi n'est plus cochable**, la
+case est désactivée et le dit au survol. Relancer écrivait un second fichier du même
+look, et c'est ce qui faisait passer un rendu échoué pour un rendu réussi : les deux
+existaient sur la même sequence, l'un ayant abouti. Cocher un dossier ne prend que ce
+qui est libre.
+
+**Les noms viennent de l'API, pas d'un recoupement côté front.** `RenderOut` et `JobOut`
+portent le label du rush et celui de la sequence. Un merge ou un proxy nomme le rush
+seul, un rendu ou un étalonnage nomme aussi sa sequence, donc la barre du haut dit
+« Rush 1 · dive » là où elle imprimait `DJI_20260809144616_0034_D` sous un arbre qui dit
+« Rush 1 ». Deux vocabulaires pour une chose sur un écran, c'était le défaut.
+
+**Une erreur tient sur une ligne.** Gyroflow rend ses trente dernières lignes de
+progression : affichées en entier, elles faisaient un mur rouge sur toute la page pour
+un seul fait. Première ligne, le reste au survol. Et un rendu en file ou en cours
+s'annule : supprimer le rendu supprime son job, et le worker s'arrête au battement
+suivant, ce qui existait déjà pour un cut supprimé.
+
 Deux détails d'implémentation qui ont une raison :
 
 - **`GET /stabilize/queue` répond en une requête**, avec trois SELECT et un assemblage en
@@ -1179,10 +1207,16 @@ formulaire ne montre pas (`smoothness_pitch/yaw/roll`, `adaptive_zoom_window`,
 **L'aspect est calculé, jamais stocké.** Il était dans `$meta` et pouvait contredire les
 dimensions écrites à côté. Retiré des deux templates livrés.
 
-**Un template livré ne se supprime pas, il se réinitialise.** Son fichier est dans
-l'image ; `seed_templates()` le recopie dans `data/templates` s'il manque, donc supprimer
-la copie éditée **est** le retour à l'original, et l'interface le dit (l'icône est une
-flèche de retour, pas une poubelle). Ceux créés à la main se suppriment pour de bon.
+**Un template livré se supprime pour de bon**, choix de florian le 2026-08-23 contre la
+version d'avant, où l'icône était une flèche de retour et où supprimer la copie éditée
+valait retour à l'original. Une icône qui veut dire deux choses selon la ligne ne se lit
+pas ; maintenant c'est une poubelle partout, et le dialogue dit que ce profil est livré
+avec l'application. Deux endroits à traiter pour que la suppression tienne : le fichier
+part de `data/templates`, **et** son id va dans `.removed`, sinon `seed_templates()` le
+recopie au démarrage suivant ; et `list_templates()` lit **les deux répertoires**, donc
+il faut aussi y filtrer, l'original étant toujours dans l'image. Une écriture sous un id
+supprimé l'oublie (un label qui retombe sur `h_1080` doit réapparaître, pas rester
+invisible). Conséquence assumée : plus de retour à l'original, il faut vider `.removed`.
 
 **Le décalage de cadre est une fraction, et il est violent.** Vérifié par deux rendus
 réels du clip de bench en 1080x1920 : entre `[0.0, 0.0]` et `[-0.5, 0.0]`, la même frame
