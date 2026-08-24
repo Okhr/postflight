@@ -391,9 +391,43 @@ ffmpeg**. Il est **affine** (mesuré : pente 0,945, offset +12,9), donc l'aperç
 légèrement plus clair et moins contrasté que le fichier final. Tous les cas tombent à
 ±3 dB du contrôle : le shader n'ajoute rien à ce plancher.
 
-Piste non explorée pour le réduire : **le clip stabilisé est en H.264 10 bits**
-(`yuv420p10le`, Gyroflow suit la source), ce que les navigateurs traitent mal. Sortir
-les rendus en 8 bits serait le premier essai si cet écart devient gênant.
+**Le clip stabilisé était en H.264 10 bits** (`yuv420p10le`, Gyroflow suit la source),
+et c'est devenu bien plus qu'un écart de mesure. Voir ci-dessous.
+
+### Le lecteur que le seek tuait : H.264 High 10
+
+Rapporté le 2026-08-24, en trois observations qui décrivent exactement le défaut :
+« des fois ça marche », « quand je touche aux boutons darkest et tout ça casse », « seul
+un changement de clip répare », « le scrub casse aussi ». Lecture depuis le début : bon.
+Darkest / Median / Brightest : ce sont des **seeks**. Le scrub aussi. Changer de clip
+remonte un `<video>` neuf, d'où la réparation.
+
+Mesuré dans le navigateur sur le vrai fichier : le premier seek lève
+`MEDIA_ERR_DECODE` (`PIPELINE_ERROR_DECODE: Failed to send video packet for decoding`),
+et **plus rien ne le rattrape** : recharger l'élément avec le même `src` puis re-seeker
+échoue pareil, aux quatre essais. Le profil `High 10` n'est décodé en matériel par aucun
+navigateur, et le repli logiciel de Chrome lâche au premier saut.
+
+**Le champ existe, et il ne se devinait pas** : `output.pixel_format` dans le projet
+Gyroflow, vide par défaut (« suivre la source »), trouvé comme toujours par
+`--export-project 1`. Contre-épreuve sur une source 10 bits fabriquée pour ça :
+
+| `output.pixel_format` | sortie |
+|---|---|
+| `""` (défaut) | `High 10 / yuv420p10le` |
+| `"yuv420p"` | `High / yuv420p` |
+
+Forcé dans `build_preset`, et **seulement pour H.264**, qui est le codec fait pour être
+partagé et le seul dont le profil 10 bits soit une impasse. HEVC et ProRes gardent leur
+profondeur, et un template qui nomme un format le garde. Conséquence : **les rendus
+faits avant ce correctif restent illisibles**, il faut les refaire.
+
+À ne pas confondre avec le derush : ses proxys sont en `yuv420p` (vérifié sur les deux),
+donc le lecteur de cette page-là n'a jamais eu ce problème.
+
+Et la page le dit maintenant au lieu de figer : l'élément vidéo émet bien un événement
+`error` (code 3), donc une ligne apparaît sous l'image. Un remontage automatique a été
+écarté parce qu'il ne répare pas, mesuré.
 
 Deux détails d'implémentation : `preserveDrawingBuffer: true`, parce que l'histogramme
 et le harnais relisent le canvas après composition ; et le décalage d'alignement pour

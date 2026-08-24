@@ -51,6 +51,7 @@ export function GradedVideo({
   const [at, setAt] = useState(0);
   const [length, setLength] = useState(0);
   const [broken, setBroken] = useState<string | null>(null);
+  const [undecodable, setUndecodable] = useState(false);
 
   planRef.current = plan;
 
@@ -178,6 +179,11 @@ export function GradedVideo({
           onTimeUpdate={(event) => setAt(event.currentTarget.currentTime * 1000)}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
+          // A decode that dies mid-seek leaves the picture frozen and every control
+          // dead, which reads as the page being broken. Measured on a 10-bit H.264
+          // render: the first seek raises MEDIA_ERR_DECODE and nothing recovers it,
+          // not even reloading the element. So it gets said rather than suffered.
+          onError={() => setUndecodable(true)}
         />
         <canvas ref={canvasRef} className={cn("block w-full", broken && "hidden")} />
       </div>
@@ -226,6 +232,11 @@ export function GradedVideo({
       {broken && (
         <p className="text-sm text-red-400">
           No GPU preview here ({broken}), showing the clip ungraded.
+        </p>
+      )}
+      {undecodable && (
+        <p className="text-sm text-red-400">
+          The browser cannot decode this clip. Render it again to get one it can play.
         </p>
       )}
     </div>

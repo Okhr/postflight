@@ -362,6 +362,15 @@ def build_preset(
         # Gyroflow's GPU encoding goes through AMF/NVENC; missing on many setups
         # (AMD iGPUs among them), where it then produces corrupted frames.
         output["use_gpu"] = False
+    # Gyroflow follows the source's bit depth, so a 10-bit HEVC rush came out as H.264
+    # High 10. Measured on a 10-bit source: an empty `pixel_format` gives back
+    # `yuv420p10le`, `yuv420p` gives `High/yuv420p`. High 10 is a profile no browser
+    # decodes and few editors like: Chrome plays the first seconds and then fails the
+    # first seek outright (`PIPELINE_ERROR_DECODE`), which is what broke the colour
+    # page's player. Only for H.264, which is the codec meant to be shared; HEVC and
+    # ProRes keep their depth, and a template that names a format keeps it.
+    if str(output.get("codec", "")).startswith("H.264") and not output.get("pixel_format"):
+        output["pixel_format"] = "yuv420p"
     preset["output"] = output
     return preset
 

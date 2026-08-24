@@ -8,6 +8,7 @@ and every one of those has to survive a save.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -221,3 +222,30 @@ def test_a_new_template_landing_on_a_deleted_id_is_listed(templates):
     assert made.id == "h_1080"
     assert [t.id for t in routes.get_templates()] == ["h_1080", "v_1080"]
     assert not (templates / gyroflow.REMOVED_FILE).exists()
+
+
+# --------------------------------------------------------------------------- #
+# What the preset forces on the way out
+# --------------------------------------------------------------------------- #
+
+def _preset(codec: str, **output) -> dict:
+    template = gyroflow.Template(
+        id="t", label="t", data={"output": {"codec": codec, **output}}
+    )
+    return gyroflow.build_preset(template, [[0.0, 1000.0]], Path("/tmp"), "out.mp4")["output"]
+
+
+def test_h264_comes_out_8_bit():
+    """Gyroflow follows the source's bit depth, and a 10-bit rush made H.264 High 10:
+    a profile no browser decodes. Measured on a 10-bit source, an empty pixel_format
+    gives yuv420p10le back and this one gives High/yuv420p."""
+    assert _preset("H.264/AVC")["pixel_format"] == "yuv420p"
+
+
+def test_hevc_keeps_its_depth():
+    """10-bit HEVC is worth having, and it is not the codec meant to be shared."""
+    assert _preset("H.265/HEVC").get("pixel_format", "") == ""
+
+
+def test_a_template_that_names_a_format_keeps_it():
+    assert _preset("H.264/AVC", pixel_format="yuv422p10le")["pixel_format"] == "yuv422p10le"
