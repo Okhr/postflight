@@ -34,9 +34,14 @@ export function JobsBar() {
                 <Badge variant="secondary" className="font-normal">
                   {KIND_LABELS[job.kind] ?? job.kind}
                 </Badge>
-                {job.sequence_key && (
-                  <span className="truncate text-muted-foreground" title={job.sequence_key}>
-                    {job.sequence_key}
+                {/* The names the rest of the interface uses. A merge or a proxy is
+                    about the whole rush and says only that; a render or a grade adds
+                    the sequence it is working on. The key is the file, kept on hover. */}
+                {(job.sequence_label || job.sequence_key) && (
+                  <span className="truncate text-muted-foreground" title={job.sequence_key ?? ""}>
+                    {[job.sequence_label || job.sequence_key, job.cut_label]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </span>
                 )}
               </span>

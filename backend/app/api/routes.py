@@ -109,12 +109,16 @@ def _cuts_out(session: Session, seq: Sequence, cuts: Iterable[Cut]) -> list[sche
     return out
 
 
-def _render_out(render: Render, seq: Sequence | None = None) -> schemas.RenderOut:
+def _render_out(
+    render: Render, seq: Sequence | None = None, cut_label: str = ""
+) -> schemas.RenderOut:
     out_path = to_absolute(render.out_path)
     return schemas.RenderOut(
         id=render.id or 0,
         sequence_id=render.sequence_id,
         sequence_key=seq.key if seq else "",
+        sequence_label=seq.label if seq else "",
+        cut_label=cut_label,
         cut_id=render.cut_id,
         template=render.template,
         state=render.state.value,
@@ -234,7 +238,51 @@ def _grade_for(session: Session, render: Render, analyse: bool = True) -> Grade:
     return grade
 
 
-def _job_out(job: Job, key: str | None = None) -> schemas.JobOut:
+def _job_names(session: Session, jobs: Iterable[Job]) -> dict[int, tuple[str, str, str]]:
+    """Per job: the rush key, the rush name, and the sequence name when there is one.
+
+    Resolved in bulk, four selects whatever the number of jobs: this feeds the bar at
+    the top of every page, which asks for it on a stream.
+    """
+    jobs = list(jobs)
+    rushes = {s.id: s for s in session.exec(select(Sequence)).all()}
+    render_ids = {j.render_id for j in jobs if j.render_id}
+    grade_ids = {j.grade_id for j in jobs if j.grade_id}
+    if grade_ids:
+        for grade in session.exec(select(Grade).where(Grade.id.in_(grade_ids))).all():  # type: ignore[union-attr]
+            render_ids.add(grade.render_id)
+    cut_of: dict[int, int | None] = {}
+    grade_render: dict[int, int] = {}
+    if grade_ids:
+        grade_render = {
+            g.id or 0: g.render_id
+            for g in session.exec(select(Grade).where(Grade.id.in_(grade_ids))).all()  # type: ignore[union-attr]
+        }
+    if render_ids:
+        cut_of = {
+            r.id or 0: r.cut_id
+            for r in session.exec(select(Render).where(Render.id.in_(render_ids))).all()  # type: ignore[union-attr]
+        }
+    cut_labels = {
+        c.id: c.label
+        for c in session.exec(select(Cut).where(Cut.id.in_([v for v in cut_of.values() if v])))  # type: ignore[union-attr]
+    } if any(cut_of.values()) else {}
+
+    out: dict[int, tuple[str, str, str]] = {}
+    for job in jobs:
+        rush = rushes.get(job.sequence_id) if job.sequence_id else None
+        render_id = job.render_id or (grade_render.get(job.grade_id or 0) if job.grade_id else None)
+        cut_id = cut_of.get(render_id or 0)
+        out[job.id or 0] = (
+            rush.key if rush else "",
+            rush.label if rush else "",
+            cut_labels.get(cut_id or 0, ""),
+        )
+    return out
+
+
+def _job_out(job: Job, names: tuple[str, str, str] | None = None) -> schemas.JobOut:
+    key, label, cut = names or ("", "", "")
     return schemas.JobOut(
         id=job.id or 0,
         kind=job.kind.value,
@@ -243,7 +291,9 @@ def _job_out(job: Job, key: str | None = None) -> schemas.JobOut:
         message=job.message,
         error=job.error,
         sequence_id=job.sequence_id,
-        sequence_key=key,
+        sequence_key=key or None,
+        sequence_label=label or None,
+        cut_label=cut or None,
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
@@ -746,6 +796,7 @@ def get_sequence(sequence_id: int, session: Session = Depends(get_session)) -> s
     ).all()
 
     base = _sequence_out(session, seq)
+    cut_names = {c.id or 0: c.label for c in cuts}
     return schemas.SequenceDetail(
         **base.model_dump(),
         clips=[
@@ -758,7 +809,9 @@ def get_sequence(sequence_id: int, session: Session = Depends(get_session)) -> s
             for c in clips
         ],
         cuts=_cuts_out(session, seq, cuts),
-        renders=[_render_out(r, seq) for r in renders],
+        renders=[
+            _render_out(r, seq, cut_names.get(r.cut_id or 0, "")) for r in renders
+        ],
     )
 
 
@@ -994,7 +1047,10 @@ def create_renders(
         session.commit()
         created.append(render)
 
-    return [_render_out(r, seq) for r in created]
+    named = {c.id: c.label for c in session.exec(
+        select(Cut).where(Cut.sequence_id == seq.id)
+    ).all()}
+    return [_render_out(r, seq, named.get(r.cut_id or 0, "")) for r in created]
 
 
 @router.get("/renders", response_model=list[schemas.RenderOut])
@@ -1007,7 +1063,18 @@ def list_renders(
         statement = statement.where(Render.state == state)
     renders = session.exec(statement).all()
     sequences = {s.id: s for s in session.exec(select(Sequence)).all()}
-    return [_render_out(r, sequences.get(r.sequence_id)) for r in renders]
+    # The sequence's name too: the pages that list renders name them the way the tree
+    # does, rush then sequence, and a render only knows its cut by id.
+    wanted = [r.cut_id for r in renders if r.cut_id]
+    cuts = (
+        {c.id: c.label for c in session.exec(select(Cut).where(Cut.id.in_(wanted))).all()}  # type: ignore[union-attr]
+        if wanted
+        else {}
+    )
+    return [
+        _render_out(r, sequences.get(r.sequence_id), cuts.get(r.cut_id or 0, ""))
+        for r in renders
+    ]
 
 
 @router.delete("/renders/{render_id}")
@@ -1186,8 +1253,8 @@ def list_jobs(
     if state:
         statement = statement.where(Job.state == state)
     jobs = session.exec(statement).all()
-    keys = {s.id: s.key for s in session.exec(select(Sequence)).all()}
-    return [_job_out(j, keys.get(j.sequence_id) if j.sequence_id else None) for j in jobs]
+    names = _job_names(session, jobs)
+    return [_job_out(j, names.get(j.id or 0)) for j in jobs]
 
 
 @router.post("/jobs/{job_id}/retry", response_model=schemas.JobOut)
@@ -1230,10 +1297,9 @@ async def stream_jobs(request: Request) -> StreamingResponse:
                         .where(Job.state.in_([JobState.QUEUED, JobState.RUNNING]))  # type: ignore[union-attr]
                         .order_by(Job.priority, Job.id)  # type: ignore[arg-type]
                     ).all()
-                    keys = {s.id: s.key for s in session.exec(select(Sequence)).all()}
+                    names = _job_names(session, jobs)
                     return [
-                        _job_out(j, keys.get(j.sequence_id) if j.sequence_id else None).model_dump(mode="json")
-                        for j in jobs
+                        _job_out(j, names.get(j.id or 0)).model_dump(mode="json") for j in jobs
                     ]
 
             payload = await run_in_threadpool(snapshot)

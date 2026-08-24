@@ -176,15 +176,26 @@ def test_a_template_made_here_is_deleted_for_good(templates):
     assert [t.id for t in routes.get_templates()] == ["h_1080", "v_1080"]
 
 
-def test_deleting_a_bundled_template_resets_it_instead(templates):
-    """Its file is inside the image, so it cannot go. Dropping the edited copy is the
-    only thing "delete" can mean, and that is a reset."""
+def test_a_bundled_template_is_deleted_for_good(templates):
+    """It used to reset instead, which made one icon mean two things. Now it goes, and
+    the seeding on the next start must not bring it back."""
     _patch("h_1080", smoothness=0.9)
 
-    assert routes.delete_template("h_1080")["outcome"] == "reset"
+    assert routes.delete_template("h_1080")["outcome"] == "deleted"
+    assert [t.id for t in routes.get_templates()] == ["v_1080"]
 
-    back = next(t for t in routes.get_templates() if t.id == "h_1080")
-    assert back.smoothness == 0.2
+    gyroflow.seed_templates()
+    assert [t.id for t in routes.get_templates()] == ["v_1080"]
+
+
+def test_the_other_bundled_templates_still_seed(templates):
+    """The removal list names one id, it does not stop the seeding."""
+    routes.delete_template("h_1080")
+    (templates / "v_1080.json").unlink()
+
+    gyroflow.seed_templates()
+
+    assert [t.id for t in routes.get_templates()] == ["v_1080"]
 
 
 def test_deleting_something_that_never_existed_is_a_404(templates):
@@ -197,3 +208,16 @@ def test_a_template_id_cannot_escape_its_directory(templates):
     """It names a file, so it is checked rather than trusted."""
     with pytest.raises(HTTPException):
         routes.delete_template("../../etc/passwd")
+
+
+def test_a_new_template_landing_on_a_deleted_id_is_listed(templates):
+    """The removal is remembered by id, and an id comes from the label, so a label
+    that lands on a deleted one has to clear it: otherwise the file would be written
+    and never listed."""
+    routes.delete_template("h_1080")
+
+    made = routes.create_template(schemas.TemplateIn(label="H 1080"))
+
+    assert made.id == "h_1080"
+    assert [t.id for t in routes.get_templates()] == ["h_1080", "v_1080"]
+    assert not (templates / gyroflow.REMOVED_FILE).exists()

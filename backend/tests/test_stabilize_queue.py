@@ -164,3 +164,49 @@ def test_rushes_come_oldest_first(session: Session, sequence: Sequence):
     queue = routes.stabilize_queue(session=session)
 
     assert [r.label for r in queue] == [old.label, "later"]
+
+
+# --------------------------------------------------------------------------- #
+# A failing render is not a failing rush
+# --------------------------------------------------------------------------- #
+
+def test_a_failed_render_does_not_invalidate_the_rush(session: Session, sequence: Sequence):
+    """Seen in use: one render killed by a restart marked the rush failed, which took
+    it out of this queue entirely and printed gyroflow's stderr on its row in the
+    tree. The merged file was never in question."""
+    from app import dispatch
+    from app.models import Job, JobKind, JobState
+
+    seq = _ready(session, sequence)
+    _cut(session, seq, "one", 100, 200)
+    render = _render(session, seq, None, "h_1080", RenderState.QUEUED)
+    job = Job(kind=JobKind.RENDER, state=JobState.RUNNING, sequence_id=seq.id,
+              render_id=render.id, payload={"render_id": render.id})
+    session.add(job)
+    session.commit()
+
+    dispatch._fail(session, job, "gyroflow exited with code -15")
+
+    session.refresh(seq)
+    session.refresh(render)
+    assert seq.state == SequenceState.READY
+    assert seq.error is None
+    assert render.state == RenderState.FAILED
+    assert routes.stabilize_queue(session=session)[0].id == seq.id
+
+
+def test_a_failed_proxy_does_invalidate_the_rush(session: Session, sequence: Sequence):
+    """The other half of the rule: without a proxy there is nothing to work on."""
+    from app import dispatch
+    from app.models import Job, JobKind, JobState
+
+    seq = _ready(session, sequence)
+    job = Job(kind=JobKind.PROXY, state=JobState.RUNNING, sequence_id=seq.id, payload={})
+    session.add(job)
+    session.commit()
+
+    dispatch._fail(session, job, "ffmpeg died")
+
+    session.refresh(seq)
+    assert seq.state == SequenceState.FAILED
+    assert seq.error == "ffmpeg died"

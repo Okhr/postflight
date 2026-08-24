@@ -63,6 +63,9 @@ export interface Render {
   id: number;
   sequence_id: number;
   sequence_key: string;
+  /** What the interface says: the rush's name, and the sequence's when there is one. */
+  sequence_label: string;
+  cut_label: string;
   cut_id: number | null;
   template: string;
   state: RenderState;
@@ -195,6 +198,9 @@ export interface Job {
   error: string | null;
   sequence_id: number | null;
   sequence_key: string | null;
+  /** A merge or a proxy names the rush; a render or a grade names its sequence too. */
+  sequence_label: string | null;
+  cut_label: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;

@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Download, Droplet, Loader2, Trash2, Zap } from "lucide-react";
+import { ChevronRight, Download, Droplet, Loader2, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { TemplatesCard } from "@/components/TemplatesCard";
@@ -134,17 +134,28 @@ function Queue({ highlight }: { highlight?: number }) {
 
   const tree = useMemo(() => build(folders ?? [], queue ?? []), [folders, queue]);
 
-  // Untouched, the queue offers exactly the work that is missing for this profile.
-  const fresh = useMemo(() => {
+  // What this profile has already produced, and therefore what cannot be asked for
+  // again: rendering it twice would leave two files of the same look.
+  const locked = useMemo(() => {
     const out = new Set<number>();
     for (const rush of queue ?? []) {
       for (const cut of rush.cuts) {
-        const made = [...cut.done, ...cut.busy].some((file) => file.template === template);
-        if (!made) out.add(cut.id);
+        if ([...cut.done, ...cut.busy].some((file) => file.template === template)) {
+          out.add(cut.id);
+        }
       }
     }
     return out;
   }, [queue, template]);
+
+  // Untouched, the queue offers exactly the work that is missing for this profile.
+  const fresh = useMemo(() => {
+    const out = new Set<number>();
+    for (const rush of queue ?? []) {
+      for (const cut of rush.cuts) if (!locked.has(cut.id)) out.add(cut.id);
+    }
+    return out;
+  }, [queue, locked]);
   const selection = picked ?? fresh;
 
   const flip = useCallback(
@@ -152,13 +163,14 @@ function Queue({ highlight }: { highlight?: number }) {
       setPicked((previous) => {
         const next = new Set(previous ?? fresh);
         for (const id of ids) {
-          if (on) next.add(id);
-          else next.delete(id);
+          if (on) {
+            if (!locked.has(id)) next.add(id);
+          } else next.delete(id);
         }
         return next;
       });
     },
-    [fresh],
+    [fresh, locked],
   );
 
   const chosen = useMemo(
@@ -200,7 +212,7 @@ function Queue({ highlight }: { highlight?: number }) {
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const everything = tree.flatMap(cutsOf);
+  const everything = tree.flatMap(cutsOf).filter((id) => !locked.has(id));
   const label = (id: string) => templates?.find((t) => t.id === id)?.label ?? id;
 
   return (
@@ -228,7 +240,6 @@ function Queue({ highlight }: { highlight?: number }) {
             disabled={!template || chosen.length === 0 || launch.isPending}
             onClick={() => launch.mutate()}
           >
-            <Zap className="h-4 w-4" />
             Stabilize {chosen.length}
           </Button>
         </div>
@@ -258,6 +269,7 @@ function Queue({ highlight }: { highlight?: number }) {
                 node={node}
                 depth={0}
                 selection={selection}
+                locked={locked}
                 flip={flip}
                 shut={shut}
                 toggle={(key) =>
@@ -280,17 +292,33 @@ function Queue({ highlight }: { highlight?: number }) {
 }
 
 /** A checkbox that can also be neither on nor off, which is what a folder often is. */
-function Box({ state, onChange }: { state: Mark; onChange: (on: boolean) => void }) {
+function Box({
+  state,
+  onChange,
+  disabled,
+  title,
+}: {
+  state: Mark;
+  onChange: (on: boolean) => void;
+  disabled?: boolean;
+  title?: string;
+}) {
   return (
-    <Checkbox
-      checked={state === "mixed" ? "indeterminate" : state === "on"}
-      onCheckedChange={() => onChange(state !== "on")}
-    />
+    <span title={title}>
+      <Checkbox
+        checked={state === "mixed" ? "indeterminate" : state === "on"}
+        disabled={disabled}
+        onCheckedChange={() => onChange(state !== "on")}
+      />
+    </span>
   );
 }
 
 interface RowProps {
   selection: Set<number>;
+  /** Sequences that already have a file, or a job, for the chosen profile. Rendering
+   *  one again would write a second file of the same look, so the box says no. */
+  locked: Set<number>;
   flip: (ids: number[], on: boolean) => void;
   shut: Set<string>;
   toggle: (key: string) => void;
@@ -301,13 +329,19 @@ interface RowProps {
 function FolderRow({ node, depth, ...rest }: { node: Node; depth: number } & RowProps) {
   const key = `folder-${node.folder?.id ?? "global"}`;
   const open = !rest.shut.has(key);
-  const ids = cutsOf(node);
+  const all = cutsOf(node);
+  const ids = all.filter((id) => !rest.locked.has(id));
 
   return (
     <div>
       <div className="flex items-center gap-2 rounded-md py-1 hover:bg-accent/40">
         <span style={{ width: depth * 16 }} />
-        <Box state={mark(ids, rest.selection)} onChange={(on) => rest.flip(ids, on)} />
+        <Box
+          state={mark(ids, rest.selection)}
+          onChange={(on) => rest.flip(ids, on)}
+          disabled={ids.length === 0}
+          title={ids.length === 0 ? "Everything here is already rendered" : undefined}
+        />
         <button
           type="button"
           onClick={() => rest.toggle(key)}
@@ -347,7 +381,7 @@ function FolderRow({ node, depth, ...rest }: { node: Node; depth: number } & Row
 function RushRow({ rush, depth, ...rest }: { rush: QueueRush; depth: number } & RowProps) {
   const key = `rush-${rush.id}`;
   const open = !rest.shut.has(key) || rush.id === rest.highlight;
-  const ids = rush.cuts.map((cut) => cut.id);
+  const ids = rush.cuts.map((cut) => cut.id).filter((id) => !rest.locked.has(id));
   const length = rush.cuts.reduce((sum, cut) => sum + cut.duration_ms, 0);
 
   return (
@@ -359,7 +393,12 @@ function RushRow({ rush, depth, ...rest }: { rush: QueueRush; depth: number } & 
         )}
       >
         <span style={{ width: depth * 16 }} />
-        <Box state={mark(ids, rest.selection)} onChange={(on) => rest.flip(ids, on)} />
+        <Box
+          state={mark(ids, rest.selection)}
+          onChange={(on) => rest.flip(ids, on)}
+          disabled={ids.length === 0}
+          title={ids.length === 0 ? "Every sequence here is already rendered" : undefined}
+        />
         <button
           type="button"
           onClick={() => rest.toggle(key)}
@@ -390,13 +429,20 @@ function CutRow({
   cut,
   depth,
   selection,
+  locked,
   flip,
   name,
 }: { cut: QueueRush["cuts"][number]; depth: number } & RowProps) {
+  const done = locked.has(cut.id);
   return (
     <div className="flex items-center gap-2 rounded-md py-1 hover:bg-accent/40">
       <span style={{ width: depth * 16 }} />
-      <Box state={selection.has(cut.id) ? "on" : "off"} onChange={(on) => flip([cut.id], on)} />
+      <Box
+        state={selection.has(cut.id) ? "on" : "off"}
+        onChange={(on) => flip([cut.id], on)}
+        disabled={done}
+        title={done ? "Already rendered with this profile" : undefined}
+      />
       <span className="min-w-0 flex-1 truncate text-sm" title={cut.label}>
         {cut.label}
       </span>
@@ -469,6 +515,11 @@ function Made({ id, label }: { id: number; label: string }) {
  * Finished files are not here: they are the material of the next step, and the queue
  * above already says which sequence has one. A failure stays until it is cleared,
  * since its sequence is back in the queue and the reason is the only thing left.
+ *
+ * Lines are named the way the queue names things, rush then sequence, and the queue is
+ * what gets asked: a render only knows the key of its rush, and printing
+ * `DJI_20260711191722_0025_D` under a tree that says "Rush 1" is two vocabularies for
+ * one thing on one screen.
  */
 function Active() {
   const queryClient = useQueryClient();
@@ -478,7 +529,7 @@ function Active() {
     refetchInterval: 3_000,
   });
   const { data: templates } = useQuery({ queryKey: ["templates"], queryFn: api.templates });
-  const remove = useMutation({
+  const drop = useMutation({
     mutationFn: api.deleteRender,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["renders"] });
@@ -492,6 +543,9 @@ function Active() {
   if (busy.length === 0 && failed.length === 0) return null;
 
   const name = (id: string) => templates?.find((t) => t.id === id)?.label ?? id;
+  /** Rush then sequence, the way the tree above says them. */
+  const who = (render: Render) =>
+    [render.sequence_label || render.sequence_key, render.cut_label].filter(Boolean).join(" · ");
 
   return (
     <Card>
@@ -504,18 +558,31 @@ function Active() {
         {busy.map((render) => (
           <div key={render.id} className="space-y-1">
             <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="truncate">{render.sequence_key}</span>
+              <span className="truncate" title={who(render)}>
+                {who(render)}
+              </span>
               <Badge variant="secondary" className="font-normal">
                 {name(render.template)}
               </Badge>
-              {render.state === "queued" ? (
+              {render.state === "queued" && (
                 <span className="text-sm text-muted-foreground">waiting</span>
-              ) : (
-                <span className="tnum ml-auto text-sm text-muted-foreground">
-                  {etaLabel(render.progress, render.started_at) ?? ""}
-                  <span className="ml-2">{Math.round(render.progress * 100)} %</span>
-                </span>
               )}
+              <span className="ml-auto flex items-center gap-2">
+                {render.state === "running" && (
+                  <span className="tnum text-sm text-muted-foreground">
+                    {etaLabel(render.progress, render.started_at) ?? ""}
+                    <span className="ml-2">{Math.round(render.progress * 100)} %</span>
+                  </span>
+                )}
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  title="Cancel"
+                  onClick={() => drop.mutate(render.id)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </span>
             </div>
             {render.state === "running" && (
               <Progress value={render.progress * 100} className="h-1.5" />
@@ -523,17 +590,23 @@ function Active() {
           </div>
         ))}
         {failed.map((render) => (
-          <div key={render.id} className="flex flex-wrap items-start gap-2 text-sm">
-            <span className="truncate">{render.sequence_key}</span>
+          <div key={render.id} className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="truncate" title={who(render)}>
+              {who(render)}
+            </span>
             <Badge variant="outline" className="font-normal">
               {name(render.template)}
             </Badge>
-            <p className="min-w-0 flex-1 text-red-400">{render.error ?? "failed"}</p>
+            {/* The first line, and the whole thing on hover: gyroflow hands back its
+                last thirty lines of progress, which is a wall of red over one fact. */}
+            <p className="min-w-0 flex-1 truncate text-red-400" title={render.error ?? ""}>
+              {(render.error ?? "failed").split("\n")[0]}
+            </p>
             <Button
               size="icon"
               variant="ghost"
               title="Clear"
-              onClick={() => remove.mutate(render.id)}
+              onClick={() => drop.mutate(render.id)}
             >
               <Trash2 className="h-4 w-4" />
             </Button>

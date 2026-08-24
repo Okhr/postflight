@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Copy, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -127,7 +127,7 @@ export function TemplatesCard() {
     onSuccess: (result) => {
       done();
       setDropping(null);
-      toast.success(result.outcome === "reset" ? `${result.template} reset` : `${result.template} deleted`);
+      toast.success(`${result.template} deleted`);
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -193,20 +193,16 @@ export function TemplatesCard() {
                     >
                       <Copy className="h-3.5 w-3.5" />
                     </Button>
+                    {/* One icon, one meaning. A shipped profile deletes like any
+                        other; the dialog is where it says it was shipped. */}
                     <Button
                       size="icon"
                       variant="ghost"
-                      // A bundled template's file is inside the image, so it cannot go:
-                      // dropping the edited copy is the only thing delete can mean here.
-                      title={template.bundled ? "Reset to the shipped version" : "Delete"}
+                      title="Delete"
                       className="h-7 w-7 text-muted-foreground hover:text-foreground"
                       onClick={() => setDropping(template)}
                     >
-                      {template.bundled ? (
-                        <RotateCcw className="h-3.5 w-3.5" />
-                      ) : (
-                        <Trash2 className="h-3.5 w-3.5" />
-                      )}
+                      <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 </TableCell>
@@ -234,13 +230,11 @@ export function TemplatesCard() {
       <Dialog open={dropping !== null} onOpenChange={(open) => !open && setDropping(null)}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>
-              {dropping?.bundled ? `Reset ${dropping?.label}?` : `Delete ${dropping?.label}?`}
-            </DialogTitle>
+            <DialogTitle>Delete {dropping?.label}?</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             {dropping?.bundled
-              ? "It goes back to the version shipped with the image. Your changes to it are lost."
+              ? "This is one of the profiles that ship with the app. Deleting it is final: it will not come back on the next start. Renders already made from it are untouched."
               : "Renders already made from it are untouched."}
           </p>
           <DialogFooter>
@@ -253,7 +247,7 @@ export function TemplatesCard() {
               disabled={drop.isPending}
               onClick={() => dropping && drop.mutate(dropping.id)}
             >
-              {dropping?.bundled ? "Reset" : "Delete"}
+              Delete
             </Button>
           </DialogFooter>
         </DialogContent>

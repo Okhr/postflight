@@ -805,7 +805,11 @@ def _fail(session: Session, job: Job, message: str) -> None:
     """Mark the job failed, and whatever it was producing along with it."""
     log.error("Job %s#%s failed: %s", job.kind.value, job.id, message)
 
-    if job.sequence_id:
+    # Only the steps that produce the rush itself can invalidate it. A render or a
+    # grade that fails says nothing about the merged file: marking the rush failed
+    # there took it out of the stabilize queue and printed a render's stderr on its
+    # row in the tree, over a job it had nothing to do with.
+    if job.sequence_id and job.kind in (JobKind.MERGE, JobKind.PROXY):
         sequence = session.get(Sequence, job.sequence_id)
         if sequence is not None:
             sequence.state = SequenceState.FAILED

@@ -132,15 +132,45 @@ class RenderResult:
     log_tail: str
 
 
+#: Bundled templates someone deleted on purpose. Without this the next start would
+#: put them back, and a delete that undoes itself is not a delete.
+REMOVED_FILE = ".removed"
+
+
+def _removed() -> set[str]:
+    path = settings.templates_dir / REMOVED_FILE
+    if not path.exists():
+        return set()
+    return {line.strip() for line in path.read_text().splitlines() if line.strip()}
+
+
+def _remember_removed(template_id: str) -> None:
+    path = settings.templates_dir / REMOVED_FILE
+    path.write_text("\n".join(sorted(_removed() | {template_id})) + "\n")
+
+
+def _forget_removed(template_id: str) -> None:
+    """Writing a template under an id that was deleted un-deletes it: otherwise
+    recreating a profile by the same name would produce a file nothing lists."""
+    ids = _removed() - {template_id}
+    path = settings.templates_dir / REMOVED_FILE
+    if ids:
+        path.write_text("\n".join(sorted(ids)) + "\n")
+    else:
+        path.unlink(missing_ok=True)
+
+
 def seed_templates() -> None:
     """Copy the bundled templates into `data/templates` so they can be edited
-    without rebuilding the image."""
+    without rebuilding the image. What was deleted stays deleted."""
     settings.templates_dir.mkdir(parents=True, exist_ok=True)
+    gone = _removed()
     for src in sorted(BUNDLED_TEMPLATES_DIR.glob("*.json")):
         dest = settings.templates_dir / src.name
-        if not dest.exists():
-            shutil.copy2(src, dest)
-            log.info("Template installed: %s", dest.name)
+        if src.stem in gone or dest.exists():
+            continue
+        shutil.copy2(src, dest)
+        log.info("Template installed: %s", dest.name)
 
 
 def _load_template_file(path: Path) -> Template | None:
@@ -171,12 +201,17 @@ def _bundled_ids() -> set[str]:
 def list_templates() -> list[Template]:
     seed_templates()
     bundled = _bundled_ids()
+    gone = _removed()
     templates: dict[str, Template] = {}
     for directory in (BUNDLED_TEMPLATES_DIR, settings.templates_dir):
         if not directory.is_dir():
             continue
         for path in sorted(directory.glob("*.json")):
             if tpl := _load_template_file(path):
+                # A deleted bundled template is still in the image, and the image is
+                # read here as well: without this it would come straight back.
+                if tpl.id in gone:
+                    continue
                 tpl.bundled = tpl.id in bundled
                 templates[tpl.id] = tpl  # data/ overrides the bundled one
     return sorted(templates.values(), key=lambda t: t.id)
@@ -212,6 +247,7 @@ def _write(template_id: str, label: str, description: str, data: dict[str, Any])
     path = _path_of(template_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(body, indent=2) + "\n")
+    _forget_removed(template_id)
     return get_template(template_id)
 
 
@@ -283,19 +319,19 @@ def create_template(label: str, copy_of: str | None = None) -> Template:
 
 
 def delete_template(template_id: str) -> str:
-    """Remove the editable copy. Answers what actually happened.
+    """Delete it, bundled or not.
 
-    A bundled template cannot be deleted: its file is inside the image, and dropping
-    the copy in `data/templates` is a reset, since the next listing seeds it again.
+    A bundled one used to reset instead, since its file lives in the image and the
+    next start copied it back. That made one icon mean two different things; now the
+    id is written to `.removed` so the copy never comes back. The original is still in
+    the image, so a deleted bundled template can be had again by clearing that file.
     """
     path = _path_of(template_id)
-    existed = path.exists()
-    if not existed and template_id not in _bundled_ids():
+    if not path.exists() and template_id not in _bundled_ids():
         raise GyroflowError(f"template inconnu : {template_id}")
     path.unlink(missing_ok=True)
     if template_id in _bundled_ids():
-        seed_templates()
-        return "reset"
+        _remember_removed(template_id)
     return "deleted"
 
 

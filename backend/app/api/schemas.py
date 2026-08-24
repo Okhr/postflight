@@ -93,6 +93,10 @@ class RenderOut(BaseSchema):
     id: int
     sequence_id: int
     sequence_key: str = ""
+    # What the interface calls things: the rush's name and the sequence's, since the
+    # key is a filename and the tree next to it says "Rush 1". One vocabulary.
+    sequence_label: str = ""
+    cut_label: str = ""
     cut_id: int | None
     template: str
     state: str
@@ -244,6 +248,10 @@ class JobOut(BaseSchema):
     error: str | None
     sequence_id: int | None
     sequence_key: str | None = None
+    # The names the interface uses. A merge or a proxy is about a whole rush, so it
+    # carries only the rush; a render or a grade is about one sequence of it.
+    sequence_label: str | None = None
+    cut_label: str | None = None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
