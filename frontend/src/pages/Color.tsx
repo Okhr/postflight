@@ -557,6 +557,7 @@ function ProfileRow({ clip, depth, ...rest }: { clip: Render; depth: number } & 
       <label className={cn(rowClass, "cursor-pointer pr-1")}>
         <Indent depth={depth} />
         <Checkbox checked={on} onCheckedChange={() => rest.flip?.([clip.id], !on)} />
+        <Twisty />
         <span className={badge}>{label}</span>
       </label>
     );
@@ -600,6 +601,7 @@ function GradeRow({ grade, depth, ...rest }: { grade: Grade; depth: number } & R
   return (
     <div className={cn(rowClass, grade.id === rest.selected && "bg-accent hover:bg-accent")}>
       <Indent depth={depth} />
+      <Twisty />
       <Link
         to={`/color/${grade.render_id}/${grade.id}`}
         className="min-w-0 flex-1 truncate"

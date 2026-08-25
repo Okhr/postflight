@@ -27,8 +27,16 @@ export function Indent({ depth }: { depth: number }) {
   return <span className="shrink-0" style={{ width: depth * INDENT }} />;
 }
 
-/** The chevron, which is also the whole hit area for opening a node. */
-export function Twisty({ open, onClick }: { open: boolean; onClick?: () => void }) {
+/**
+ * The chevron, which is also the whole hit area for opening a node.
+ *
+ * With no `open` at all it draws nothing and keeps the room: a row with no children
+ * still has to line its name up with the names of the rows that have some. Measured
+ * before this, on the colour tree, a grade's name started at x=416 under a profile at
+ * x=429, so a child sat to the left of its parent (florian, 2026-08-25).
+ */
+export function Twisty({ open, onClick }: { open?: boolean; onClick?: () => void }) {
+  if (open === undefined) return <span className="h-3 w-3 shrink-0" />;
   const icon = (
     <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-90")} />
   );

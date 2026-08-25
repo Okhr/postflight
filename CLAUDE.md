@@ -506,6 +506,19 @@ Un arbre unique et configurable a été écarté : il faudrait lui passer quel n
 sélectionnable, quelles cases, quelles actions à droite, ce qui est un sac de réglages
 pour prétendre que deux interactions sont une seule.
 
+**Une feuille réserve la place du chevron qu'elle n'a pas.** Rapporté par florian (« la
+ligne des grades a l'air plus à gauche que son parent ») et vrai aux pixels : le nom d'un
+grade commençait à **x=416** sous un profil à **x=429**, et sur Stabilize « chemin » à 433
+sous « Maison 1 » à 437. Une ligne sans enfants n'a pas de chevron, donc son nom
+remontait de 20 px et un cran d'indentation n'en fait que 16. `<Twisty />` sans `open`
+dessine donc le vide de la bonne taille. Mesuré après : 436 sous 429, et 453 sous 437,
+soit un cran complet. Ce défaut existait sur les deux pages avant l'harmonisation.
+
+Restent deux écarts de 4 px, qui sont normaux : le nom d'un dossier est poussé par sa
+pastille et celui d'un profil par le fond de son badge. L'œil s'aligne sur la marque
+visible, pas sur le glyphe, et depuis la pastille comme depuis le bord du badge le cran
+fait bien 16 px.
+
 ### Étalonner, changer un réglage, réétalonner
 
 Question de florian le 2026-08-25, et les trois cas ne se comportent pas pareil. Vérifié

@@ -447,6 +447,7 @@ function CutRow({
         disabled={done}
         title={done ? "Already rendered with this profile" : undefined}
       />
+      <Twisty />
       <span className="min-w-0 flex-1 truncate" title={cut.label}>
         {cut.label}
       </span>
