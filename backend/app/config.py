@@ -7,9 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Settings, overridable through `VS_*` environment variables."""
+    """Settings, overridable through `PF_*` environment variables."""
 
-    model_config = SettingsConfigDict(env_prefix="VS_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="PF_", env_file=".env", extra="ignore")
 
     data_dir: Path = Path("/data")
 
