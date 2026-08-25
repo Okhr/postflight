@@ -791,6 +791,21 @@ nomme un format le garde.
 À ne pas confondre avec le derush : ses proxys sont en `yuv420p` avec une IDR par
 seconde, donc ce lecteur-là n'a jamais eu ce problème.
 
+**Et un clip en H.265 n'est pas cassé, il est illisible ici.** Rapporté le 2026-08-25 sur
+un profil « Instagram » : le fichier est du `hevc / Main 10 / yuv420p10le`, et Chrome sous
+Linux n'a pas de décodeur HEVC. Le message disait « Render it again to get one it can
+play », ce qui est un mauvais conseil : réencoder avec le même profil redonne le même
+fichier. Le lecteur **demande donc au navigateur** (`canPlayType('video/mp4;
+codecs="hvc1..."')`, mesuré : `''` pour hvc1 et `probably` pour avc1) plutôt que de
+supposer, parce que le support HEVC de Chrome dépend de la plateforme. Quand la réponse
+est non, la ligne le dit avant que le lecteur meure, nomme le codec et dit quoi faire
+(étalonner un rendu H.264 de la même sequence). ProRes est traité pareil, et n'est lu par
+aucun navigateur.
+
+Conséquence assumée : **un clip HEVC ne s'étalonne pas dans cette interface**, faute
+d'aperçu. La chaîne ffmpeg saurait le faire, mais régler un look sans le voir n'a pas
+de sens.
+
 Et la page le dit maintenant au lieu de figer : l'élément vidéo émet bien un événement
 `error` (code 3), donc une ligne apparaît sous l'image. Un remontage automatique a été
 écarté parce qu'il ne répare pas, mesuré.
@@ -1038,11 +1053,22 @@ spinner sur chaque grade en cours dans l'arbre de Color.
 `JobOut.worker_name`, résolu en un select à côté des noms de rush. Rien ne disait où un
 job tournait, ce qui va avec un seul worker et rend aveugle à deux.
 
-**Le dialogue des workers détaille les débits, un par ligne** (même jour) : la valeur
-mesurée sur de vrais jobs en normal, sa provenance en gris (« 3 jobs · 47 at start »),
-et une section **Now** qui dit ce que la machine encode à l'instant, lue dans le même
-flux SSE que la barre. Les quatre lignes portent les mots des jobs (`merge`, `proxy`,
-`stabilize`, `color`), le même vocabulaire que les badges, via `jobKindLabel`.
+**Le dialogue des workers détaille les débits, un par ligne et un nombre par ligne**
+(même jour) : l'estimation courante, c'est-à-dire ce que les vrais jobs ont mesuré, à
+défaut le benchmark, et un `-` quand ni l'un ni l'autre (état réel, que le dispatcher
+traite comme inconnu et jamais comme lent). Ni titre de section ni provenance : « 3 jobs
+· 47 at start » a existé une heure, et florian l'a fait retirer, ce n'est pas ce qu'on
+lit une vitesse pour savoir. Plus une section **Now** qui dit ce que la machine encode à
+l'instant, lue dans le même flux SSE que la barre. Les quatre lignes portent les mots des
+jobs (`merge`, `proxy`, `stabilize`, `color`), le même vocabulaire que les badges, via
+`jobKindLabel`.
+
+**Pourquoi la fusion est en MB/s et pas en img/s** (question de florian) : `mp4_merge` ne
+décode rien. Il réécrit le `stbl` et recopie les octets, 4,4 s pour 4 Go, donc ce qui
+varie est une taille et pas un nombre d'images. C'est aussi ce que `_magnitude` renvoie
+pour un job de fusion, en mégaoctets, là où les trois autres renvoient un compte
+d'images : la fonction de coût divise l'ampleur par le débit, et les deux doivent parler
+la même unité.
 
 ### Deux jobs du même type sur un rush n'étaient pas des doublons
 

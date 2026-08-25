@@ -306,6 +306,8 @@ export function Color() {
 
   const profile = (template: string) =>
     templates?.find((option) => option.id === template)?.label ?? template;
+  const codecOf = (template: string) =>
+    templates?.find((option) => option.id === template)?.codec;
 
   /* The picker sits under the picture, not in a column of its own (florian, 2026-08-25).
      It costs a scroll when changing clip, which happens once per clip, and it gives the
@@ -345,6 +347,7 @@ export function Color() {
           gradeId={open.id}
           render={openRender}
           profile={profile}
+          codec={codecOf(openRender.template)}
           others={clips.filter((clip) => clip.id !== openRender.id)}
           folders={folders ?? []}
           gradesOf={gradesOf}
@@ -654,6 +657,7 @@ function Editor({
   gradeId,
   render,
   profile,
+  codec,
   others,
   folders,
   gradesOf,
@@ -662,6 +666,8 @@ function Editor({
   gradeId: number;
   render: Render;
   profile: (id: string) => string;
+  /** What this clip's profile renders, so an unplayable codec can be named. */
+  codec?: string;
   others: Render[];
   folders: Folder[];
   gradesOf: Map<number, Grade[]>;
@@ -797,6 +803,7 @@ function Editor({
                 marks={marks}
                 scopes={scopes}
                 sink={sink}
+                codec={codec}
                 actions={
                   /* The reason a button is dead goes in a tooltip, not in a line of
                      prose under it. A disabled button takes no pointer events, so the

@@ -5,10 +5,11 @@
  * what it decodes with, what it warps with, whether it reads the dispatcher's volume,
  * and how fast it actually is at each of the four jobs.
  *
- * Speeds get a line each (florian, 2026-08-25). They were one run-on line, which hid
- * the thing worth reading: a rate measured on real jobs and a rate measured by the
- * startup benchmark are not the same claim, and the benchmark overstates by a
- * fixed-ish factor (measured on this project: 28.0 img/s against 24.9 on real work).
+ * Speeds get a line each (florian, 2026-08-25), and one number each: how fast this
+ * machine is at that job right now. What real jobs measured wins over the startup
+ * benchmark, which overstates by a fixed-ish factor (measured here: 28.0 img/s against
+ * 24.9 on real work), and where the number came from is not what one reads a speed for.
+ * Putting them one per line is what caught a colour rate of 406 909 img/s.
  */
 import { Cpu, ServerOff } from "lucide-react";
 
@@ -44,33 +45,21 @@ function round(value: number): string {
 }
 
 /** Label on the left, value on the right, and the same widths in every card. */
-function Row({
-  label,
-  value,
-  note,
-}: {
-  label: string;
-  value: string;
-  /** What qualifies the value, in muted type: where it comes from, mostly. */
-  note?: string;
-}) {
+function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-4 py-0.5">
       <span className="shrink-0 text-muted-foreground">{label}</span>
-      <span className="min-w-0 text-right">
-        <span className="tnum">{value}</span>
-        {note && <span className="ml-2 text-xs text-muted-foreground">{note}</span>}
-      </span>
+      <span className="tnum min-w-0 truncate text-right">{value}</span>
     </div>
   );
 }
 
 /**
- * One speed, and where the number comes from.
+ * How fast this machine is at one job, as the dispatcher currently believes it.
  *
- * What real jobs measured wins over the benchmark, and both are shown when both exist:
- * the benchmark runs on half a second of footage and never leaves the page cache, so it
- * ranks machines and does not predict durations.
+ * The same number the cost function ranks on: what real jobs measured, falling back on
+ * the startup benchmark, and a dash when neither exists, which is a real state the
+ * dispatcher treats as unknown rather than as slow.
  */
 function SpeedRow({ worker, label, field, unit }: {
   worker: WorkerInfo;
@@ -78,27 +67,9 @@ function SpeedRow({ worker, label, field, unit }: {
   field: string;
   unit: string;
 }) {
-  const observed = worker.observed?.[field];
   const bench = (worker.rates as unknown as Record<string, number | null>)?.[field];
-  const samples = worker.observed?.[`${field}_n`] ?? 0;
-
-  if (!observed && !bench) {
-    return <Row label={label} value="not measured" />;
-  }
-  if (!observed) {
-    return <Row label={label} value={`${round(bench as number)} ${unit}`} note="at start" />;
-  }
-  return (
-    <Row
-      label={label}
-      value={`${round(observed)} ${unit}`}
-      note={
-        bench
-          ? `${samples} job${samples > 1 ? "s" : ""} · ${round(bench)} at start`
-          : `${samples} job${samples > 1 ? "s" : ""}`
-      }
-    />
-  );
+  const rate = worker.observed?.[field] || bench;
+  return <Row label={label} value={rate ? `${round(rate)} ${unit}` : "-"} />;
 }
 
 /** What this machine is on right now, which is the other half of "who does what". */
@@ -150,13 +121,10 @@ function WorkerCard({ worker, jobs }: { worker: WorkerInfo; jobs: Job[] }) {
       <Row label="stabilize" value={caps.stabilize_device || "CPU"} />
       <Row
         label="volume"
-        value={worker.shares_data ? "shared" : "own copy"}
-        note={
+        value={
           worker.shares_data
-            ? "nothing travels"
-            : link
-              ? `${round(link)} MB/s link`
-              : "link not measured"
+            ? "shared"
+            : `own copy${link ? `, ${round(link)} MB/s link` : ""}`
         }
       />
       {caps.ffmpeg_version && (
@@ -165,7 +133,6 @@ function WorkerCard({ worker, jobs }: { worker: WorkerInfo; jobs: Job[] }) {
       {caps.gyroflow_version && <Row label="gyroflow" value={caps.gyroflow_version} />}
 
       <Separator className="my-2" />
-      <p className="pb-1 text-xs uppercase tracking-wide text-muted-foreground">Speed</p>
       {RATES.map(([label, field, unit]) => (
         <SpeedRow key={field} worker={worker} label={label} field={field} unit={unit} />
       ))}

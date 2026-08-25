@@ -25,12 +25,29 @@ export interface Mark {
   ms: number;
 }
 
+/**
+ * The codec this browser has no decoder for, or null when it can play it.
+ *
+ * Asked of the browser, not hardcoded: HEVC support in Chrome depends on the platform,
+ * so "no browser plays H.265" is false somewhere. ProRes is nowhere. Measured on the
+ * real case that raised it (florian, 2026-08-25): a profile rendering H.265/HEVC gives
+ * a Main 10 file, and Chrome on Linux fails it, which read as the clip being broken.
+ */
+function undecodableCodec(codec: string | undefined): string | null {
+  if (!codec) return null;
+  if (/prores/i.test(codec)) return "ProRes";
+  if (!/265|hevc/i.test(codec)) return null;
+  const probe = document.createElement("video");
+  return probe.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') ? null : "H.265";
+}
+
 export function GradedVideo({
   src,
   plan,
   marks = [],
   scopes,
   sink,
+  codec,
   actions,
   className,
 }: {
@@ -42,6 +59,9 @@ export function GradedVideo({
   /** Where each painted frame goes to be drawn. Its own handle, not a prop callback:
    *  one frame lands per presentation, and the page must not re-render around it. */
   sink?: React.RefObject<ScopeSink | null>;
+  /** What the profile renders, from the template. A codec no browser here can decode
+   *  is worth naming before the player dies rather than after. */
+  codec?: string;
   /** Dropped in the control row. What compares before and after belongs next to the
    *  play button, not on a line of its own under the picture. */
   actions?: React.ReactNode;
@@ -57,6 +77,7 @@ export function GradedVideo({
   const [length, setLength] = useState(0);
   const [broken, setBroken] = useState<string | null>(null);
   const [undecodable, setUndecodable] = useState(false);
+  const missing = undecodableCodec(codec);
   const scopesRef = useRef(scopes);
   const sinkRef = useRef(sink);
 
@@ -292,10 +313,17 @@ export function GradedVideo({
           No GPU preview here ({broken}), showing the clip ungraded.
         </p>
       )}
-      {undecodable && (
+      {missing ? (
         <p className="text-sm text-red-400">
-          The browser cannot decode this clip. Render it again to get one it can play.
+          This profile renders {missing}, which this browser has no decoder for. The file
+          is fine: grade an H.264 render of the same sequence to see it here.
         </p>
+      ) : (
+        undecodable && (
+          <p className="text-sm text-red-400">
+            The browser cannot decode this clip. Render it again to get one it can play.
+          </p>
+        )
       )}
     </div>
   );
