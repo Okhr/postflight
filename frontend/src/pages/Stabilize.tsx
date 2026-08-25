@@ -217,7 +217,12 @@ function Queue({ highlight }: { highlight?: number }) {
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const everything = tree.flatMap(cutsOf).filter((id) => !locked.has(id));
+  // Two different kinds of nothing: no sequence at all, and every sequence already
+  // rendered with this profile. The first sends you to Derush, the second is the page
+  // saying the work is done, so it has to keep showing the tree.
+  const marked = tree.flatMap(cutsOf);
+  const everything = marked.filter((id) => !locked.has(id));
+  const done = marked.length > 0 && everything.length === 0;
   const label = (id: string) => templates?.find((t) => t.id === id)?.label ?? id;
 
   return (
@@ -237,8 +242,15 @@ function Queue({ highlight }: { highlight?: number }) {
             </SelectContent>
           </Select>
           <span className="text-sm text-muted-foreground">
-            {chosen.length} of {everything.length} sequence{everything.length === 1 ? "" : "s"}
-            {chosen.length > 0 && ` · ${formatDuration(total)}`}
+            {done ? (
+              `Every sequence is rendered with this profile`
+            ) : (
+              <>
+                {chosen.length} of {everything.length} sequence
+                {everything.length === 1 ? "" : "s"}
+                {chosen.length > 0 && ` · ${formatDuration(total)}`}
+              </>
+            )}
           </span>
           <Button
             className="ml-auto"
@@ -251,7 +263,7 @@ function Queue({ highlight }: { highlight?: number }) {
       </CardHeader>
 
       <CardContent>
-        {everything.length === 0 ? (
+        {marked.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             Nothing marked yet. See{" "}
             <Link to="/derush" className="underline">
@@ -265,6 +277,8 @@ function Queue({ highlight }: { highlight?: number }) {
               <Box
                 state={mark(everything, selection)}
                 onChange={(on) => flip(everything, on)}
+                disabled={done}
+                title={done ? "Every sequence is already rendered with this profile" : undefined}
               />
               <span className="text-sm text-muted-foreground">Everything waiting</span>
             </div>

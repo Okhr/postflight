@@ -1557,6 +1557,15 @@ un seul fait. Première ligne, le reste au survol. Et un rendu en file ou en cou
 s'annule : supprimer le rendu supprime son job, et le worker s'arrête au battement
 suivant, ce qui existait déjà pour un cut supprimé.
 
+**Deux « riens » différents, deux réponses.** Rapporté par florian le 2026-08-25 : quand
+toutes les sequences sont rendues avec le profil choisi, la page affichait « Nothing
+marked yet. See Derush. » alors qu'il y avait des sequences partout. Le test portait sur
+ce qui reste à faire (`everything`, les cuts libres) au lieu de ce qui existe (`marked`).
+Maintenant l'arbre reste affiché avec toutes ses cases désactivées et le compteur dit
+« Every sequence is rendered with this profile » ; le message vers Derush ne sort que
+s'il n'y a **aucune** sequence. Vérifié sur les deux profils du volume : `h_1080` donne
+0 case active et 7 désactivées, `v_1080p_h264` donne « 1 of 1 sequence · 0:43 ».
+
 Deux détails d'implémentation qui ont une raison :
 
 - **`GET /stabilize/queue` répond en une requête**, avec trois SELECT et un assemblage en
