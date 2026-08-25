@@ -1273,8 +1273,21 @@ def put_grade(
 
 
 @router.get("/grades/{grade_id}", response_model=schemas.GradeOut)
-def get_grade(grade_id: int, session: Session = Depends(get_session)) -> schemas.GradeOut:
-    return _grade_out(session, _get_grade(session, grade_id))
+async def get_grade(
+    grade_id: int, session: Session = Depends(get_session)
+) -> schemas.GradeOut:
+    """One grade, and the measurement of the clip it sits on.
+
+    The analysis is taken here as well as on the list, because this is the route the
+    editor opens with: it carries `suggested` and the three timestamps worth previewing,
+    and without it the Darkest / Median / Brightest buttons have nothing to point at.
+    Measured once per clip, then read off the render.
+    """
+    grade = _get_grade(session, grade_id)
+    render = session.get(Render, grade.render_id)
+    if render is not None:
+        await run_in_threadpool(_analyse_render, session, render)
+    return _grade_out(session, grade)
 
 
 @router.put("/grades/{grade_id}", response_model=schemas.GradeOut)

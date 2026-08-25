@@ -17,10 +17,12 @@ from app.config import settings
 from app.models import (
     Clip,
     ClipState,
+    Grade,
     Job,
     JobKind,
     JobState,
     Render,
+    RenderState,
     Sequence,
     SequenceState,
     Worker,
@@ -845,3 +847,59 @@ def test_a_worker_that_said_goodbye_is_gone_at_once(session: Session, sequence: 
     session.refresh(worker)
     assert not dispatch.is_online(worker)
     assert dispatch.available(session) == []
+
+
+def test_two_grades_of_one_rush_are_not_duplicates(session: Session, sequence: Sequence):
+    """The startup sweep keys on what a job writes, not on the rush it belongs to.
+
+    Keyed on the sequence, it dropped every render but the first when a rush was
+    stabilized in two formats at once, and every grade but the first once a clip could
+    hold several looks. Silently, at the next API restart, leaving a row queued for ever
+    with no job behind it. Measured on 2026-08-25: three queued grade jobs on two rushes
+    came back as two, then as none.
+    """
+    render = Render(
+        sequence_id=sequence.id,  # type: ignore[arg-type]
+        template="h_1080",
+        state=RenderState.DONE,
+        out_path="out/clip.mp4",
+    )
+    session.add(render)
+    session.commit()
+    session.refresh(render)
+
+    ids = []
+    for look in (7400, 5200):
+        grade = Grade(render_id=render.id, label=f"{look} K", params={"temperature": look})  # type: ignore[arg-type]
+        session.add(grade)
+        session.commit()
+        session.refresh(grade)
+        job = Job(
+            kind=JobKind.GRADE,
+            state=JobState.QUEUED,
+            sequence_id=sequence.id,
+            render_id=render.id,
+            grade_id=grade.id,
+            payload={"grade_id": grade.id},
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        ids.append(job.id)
+
+    assert dispatch.drop_stale_jobs(session) == (0, 0)
+    left = session.exec(select(Job).where(Job.kind == JobKind.GRADE)).all()
+    assert sorted(job.id for job in left) == sorted(ids)
+
+
+def test_two_proxies_of_one_rush_are_still_duplicates(session: Session, sequence: Sequence):
+    """The half of the rule that was right: a proxy is one per rush, and the second
+    would write over the first one's output."""
+    for _ in range(2):
+        session.add(
+            Job(kind=JobKind.PROXY, state=JobState.QUEUED, sequence_id=sequence.id, payload={})
+        )
+    session.commit()
+
+    assert dispatch.drop_stale_jobs(session) == (0, 1)
+    assert len(session.exec(select(Job).where(Job.kind == JobKind.PROXY)).all()) == 1

@@ -962,8 +962,16 @@ def drop_stale_jobs(session: Session) -> tuple[int, int]:
 
     Two cases. A sequence that was deleted or rebuilt leaves behind jobs pointing
     at nothing; keeping them would only fail them one by one, flagging errors that
-    are not errors. And several jobs of the same kind on the same sequence would
-    redo the same work, the later ones on top of the earlier one's output.
+    are not errors. And two jobs aimed at the same output would redo the same work,
+    the later one on top of the earlier one's file.
+
+    "The same output" is the key, and it is not the sequence. A merge or a proxy has
+    one per rush, so two of them are a duplicate; a render is per sequence and profile
+    and a grade is per look, so several of each on one rush is the normal case and
+    always was. Keyed on the sequence, this dropped every render but the first when a
+    rush was stabilized in several formats at once, and every grade but the first once
+    a clip could hold more than one look, silently, at the next API restart, leaving a
+    row queued forever with no job behind it. Found on 2026-08-25 by counting.
     """
     known = {seq.id for seq in session.exec(select(Sequence)).all()}
     queued = session.exec(
@@ -971,7 +979,7 @@ def drop_stale_jobs(session: Session) -> tuple[int, int]:
     ).all()
 
     orphans, duplicates = 0, 0
-    seen: set[tuple[int, JobKind]] = set()
+    seen: set[tuple[int, JobKind, int | None, int | None]] = set()
     for job in queued:
         if job.sequence_id is None:
             continue
@@ -979,7 +987,7 @@ def drop_stale_jobs(session: Session) -> tuple[int, int]:
             session.delete(job)
             orphans += 1
             continue
-        key = (job.sequence_id, job.kind)
+        key = (job.sequence_id, job.kind, job.render_id, job.grade_id)
         if key in seen:
             session.delete(job)
             duplicates += 1

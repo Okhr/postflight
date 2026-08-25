@@ -446,6 +446,14 @@ Six conséquences, dont trois qui n'avaient rien d'évident :
   c'est un changement de schéma qui a eu lieu une fois. Vu au démarrage : `Column added:
   grade.label`, `Column added: render.analysis`, `Index relaxed`.
 
+**L'analyse se mesure à l'ouverture d'un grade, pas seulement de la liste.** Régression
+introduite en déplaçant l'analyse sur le `render` puis rapportée par florian (« où sont
+passés les boutons pour aller à la frame la plus sombre ? ») : elle ne tournait que dans
+`GET /renders/{id}/grades`, que la page n'appelle pas. Sans analyse, pas de
+`darkest_ms`, donc pas de boutons Darkest / Median / Brightest et pas de `suggested`.
+`GET /grades/{id}` la mesure donc aussi, ce qui est la route avec laquelle l'éditeur
+s'ouvre.
+
 **La goutte suit l'état, pas le nom de fichier.** Un grade retombé en `draft` après un
 changement de réglage garde son fichier sur le disque (réutilisable si les curseurs
 reviennent exactement dessus), et ce fichier n'est **pas** ce look : la ligne ne l'affiche
@@ -984,6 +992,55 @@ le bail ne compte pas : c'est justement celui à qui on dit d'arrêter.
 Le nom d'un worker est son identité (`VS_WORKER_NAME`) et doit être **stable** :
 le hostname d'un conteneur a l'air stable et ne l'est pas, il change à chaque
 recréation et laisse une ligne `worker` orpheline derrière lui.
+
+### Plusieurs jobs à la fois : entre workers, pas dans un worker
+
+Question de florian le 2026-08-25. Les nombres, mesurés dans le code plutôt que
+racontés :
+
+| | valeur |
+|---|---|
+| types de job | `merge`, `proxy`, `render`, `grade` |
+| ordre de la file | `ORDER BY priority, id`, priorités **1** (scan manuel), **5** (proxy), **10** (fusion), **50** (rendu), **60** (étalonnage) |
+| cadence de demande d'un worker | 1 s (`POLL_INTERVAL_S`) |
+| jobs simultanés **par processus worker** | **1** |
+| bail / battement | 60 s, renouvelé toutes les 2 s |
+| réessais | `MAX_ATTEMPTS = 3`, uniquement par expiration de bail |
+
+**Le parallélisme est entre machines, pas dans une machine.** La boucle du worker est
+`claim()` puis `run_job()`, qui bloque jusqu'à la fin : un processus ne tient qu'un job.
+`VS_WORKER_CONCURRENCY` (défaut 1) est ce que le worker **déclare** au dispatcher, et
+`available()` s'en sert pour savoir s'il a de la place ; la boucle, elle, ne sait pas
+s'en servir. Deux jobs en même temps veut donc dire deux workers, ou deux conteneurs
+worker sur la même machine.
+
+Les priorités disent l'ordre, pas le nombre : fusion et proxy passent devant les rendus
+et les étalonnages parce qu'ils débloquent tout le reste, et à priorité égale c'est
+l'ordre de création.
+
+### Deux jobs du même type sur un rush n'étaient pas des doublons
+
+Bug trouvé le 2026-08-25 en répondant à la question ci-dessus, et **il précède les
+grades multiples** : `drop_stale_jobs`, qui tourne à chaque démarrage de l'API,
+dédoublonnait la file sur `(sequence_id, kind)`. Vrai pour une fusion et un proxy, qui
+sont uniques par rush et écriraient sur le même fichier ; faux pour un rendu, qui est par
+sequence et par profil, et pour un étalonnage, qui est par look.
+
+Effet mesuré : trois étalonnages en file sur deux rushes redescendent à deux après un
+redémarrage, puis à zéro au suivant, **en silence**, en laissant les lignes `queued`
+pour toujours avec aucun job derrière. Le même défaut mangeait les rendus d'un rush
+stabilisé en deux formats d'un coup.
+
+La clé porte maintenant sur ce que le job écrit : `(sequence_id, kind, render_id,
+grade_id)`. Contre-épreuve : avec l'ancienne clé le test `test_two_grades_of_one_rush_
+are_not_duplicates` échoue en journalisant « 1 duplicate queued job(s): dropped », avec
+la nouvelle il passe, et deux étalonnages du même rush survivent à un redémarrage réel
+(2 avant, 2 après, aucune ligne dans le journal).
+
+**Piège de méthode dans cette enquête** : mes lectures directes du fichier SQLite avec
+`python3 -c "import sqlite3"` étaient **périmées**, le WAL écrit par le conteneur ne
+m'étant pas visible. Elles affichaient une file vide pendant que l'API en rapportait
+trois. À lire par l'API, pas par le fichier.
 
 ### Le benchmark au démarrage : ranger les machines, pas prédire les durées
 
