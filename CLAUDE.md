@@ -322,10 +322,16 @@ séparateur, et la seule raison pour laquelle la carte a deux groupes.
 
 **Chaque curseur porte son échelle et sa sortie de secours.** Sous la piste, une ligne
 de trois nombres : les deux bornes aux extrémités, et le défaut **sous sa propre
-position**, parce que la moitié de ces réglages ont un défaut qui n'est pas le milieu de
-leur plage (contraste à 1 sur 0,5-1,6, température à 6500 sur 3000-10000). Il disparaît
-quand il coïncide avec une borne, ce qui est le cas des deux points. Les nombres y sont
-nus : l'unité est déjà dite une fois, dans la valeur au-dessus.
+position**. Il disparaît quand il coïncide avec une borne, ce qui est le cas des deux
+points. Les nombres y sont nus : l'unité est déjà dite une fois, dans la valeur
+au-dessus.
+
+**Toutes les plages sont symétriques autour de leur défaut**, y compris 3000-10000 K
+dont le milieu est pile 6500. Le contraste allait de 0,5 à 1,6 et faisait exception :
+« le fait que le défaut du contraste est pas au centre c'est chelou » (florian, le
+2026-08-25). Passé à 0,3-1,7, donc symétrique et plus large des deux
+côtés qu'avant, sachant qu'à 1,3 les deux extrémités écrêtent déjà (mesuré : 16 tombe à
+0 et 235 monte à 255) : le haut de la plage est expressif, pas précis.
 
 Un **cran sur la piste** a été essayé d'abord et abandonné : dessiné sur la piste il
 passe derrière la partie remplie de la barre et disparaît pour toute valeur au-delà du

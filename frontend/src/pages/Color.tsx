@@ -62,7 +62,11 @@ import { cn } from "@/lib/utils";
 
 const CONTROLS = [
   { key: "exposure", label: "Exposure", min: -2, max: 2, step: 0.05, unit: " EV", neutral: 0 },
-  { key: "contrast", label: "Contrast", min: 0.5, max: 1.6, step: 0.01, unit: "", neutral: 1 },
+  // Symmetric around 1, like every other control here: a default sitting off the centre
+  // of its own track reads as a mistake. It was 0.5 to 1.6, and the reach is worth
+  // having even though both ends already clip well before it (measured: at 1.3, legal
+  // black lands on 0 and legal white on 255).
+  { key: "contrast", label: "Contrast", min: 0.3, max: 1.7, step: 0.01, unit: "", neutral: 1 },
   { key: "saturation", label: "Saturation", min: 0, max: 2, step: 0.01, unit: "", neutral: 1 },
   { key: "temperature", label: "Temperature", min: 3000, max: 10000, step: 100, unit: " K", neutral: 6500 },
   { key: "shadows", label: "Shadows", min: -1, max: 1, step: 0.02, unit: "", neutral: 0 },
@@ -703,9 +707,8 @@ function Editor({
  *
  * The scale carries the two bounds and the default, the default sitting under its own
  * position on the track rather than in the middle of the line: half of these have a
- * default that is not the centre of their range (contrast at 1 of 0.5 to 1.6,
- * temperature at 6500 of 3000 to 10000), so its place is information. It is dropped
- * where it coincides with a bound, as it does for the two points.
+ * default that is not the centre of their track (the two points, whose default is a
+ * bound), so its place is information. It is dropped where it coincides with a bound.
  *
  * A notch on the track was tried first and abandoned: drawn on the track it sat
  * behind the filled part of the bar and disappeared for every value past the default,

@@ -52,7 +52,7 @@ BLACK_N = LEGAL_BLACK / LEGAL_WHITE
 
 DEFAULTS: dict[str, Any] = {
     "exposure": 0.0,        # EV, -2 .. 2
-    "contrast": 1.0,        # 0.5 .. 1.6
+    "contrast": 1.0,        # 0.3 .. 1.7
     "saturation": 1.0,      # 0 .. 2
     "temperature": 6500,    # K, 3000 .. 10000 (6500 = untouched)
     "shadows": 0.0,         # -1 .. 1, lifts or crushes the low end
