@@ -566,6 +566,7 @@ function Editor({
                   setParams={setParams}
                   commit={commit}
                   format={(value) => `${Math.round(value * 100)} %`}
+                  scale={(value) => String(Math.round(value * 100))}
                 />
               ))}
               <span
@@ -598,6 +599,7 @@ function Editor({
                   setParams={setParams}
                   commit={commit}
                   format={(value) => `${value.toFixed(control.step < 1 ? 2 : 0)}${control.unit}`}
+                  scale={(value) => String(Number(value.toFixed(2)))}
                 />
               ))}
 
@@ -696,24 +698,63 @@ function Editor({
 }
 
 /** One slider and its readout. Written on release, never on every pointer move. */
+/**
+ * One slider: its reading above, and its scale below.
+ *
+ * The scale carries the two bounds and the default, the default sitting under its own
+ * position on the track rather than in the middle of the line: half of these have a
+ * default that is not the centre of their range (contrast at 1 of 0.5 to 1.6,
+ * temperature at 6500 of 3000 to 10000), so its place is information. It is dropped
+ * where it coincides with a bound, as it does for the two points.
+ *
+ * A notch on the track was tried first and abandoned: drawn on the track it sat
+ * behind the filled part of the bar and disappeared for every value past the default,
+ * and no single colour reads on both the white fill and the dark remainder.
+ */
 function Range({
   control,
   params,
   setParams,
   commit,
   format,
+  scale,
 }: {
-  control: { key: keyof GradeParams; label: string; min: number; max: number; step: number };
+  control: {
+    key: keyof GradeParams;
+    label: string;
+    min: number;
+    max: number;
+    step: number;
+    neutral: number;
+  };
   params: GradeParams;
   setParams: (update: (previous: GradeParams) => GradeParams) => void;
   commit: (next: GradeParams) => void;
+  /** The reading above the slider, with its unit. */
   format: (value: number) => string;
+  /** The scale below it: bare numbers, since the unit is already stated once. */
+  scale: (value: number) => string;
 }) {
   const value = params[control.key] as number;
+  const home = (control.neutral - control.min) / (control.max - control.min);
   return (
     <div className="space-y-1">
       <div className="flex items-baseline justify-between text-sm">
-        <span>{control.label}</span>
+        <span className="flex items-center gap-1">
+          {control.label}
+          {/* Only on a slider that has been moved, which makes it both the way back
+              and the mark that says this one is off its default. */}
+          {value !== control.neutral && (
+            <button
+              type="button"
+              title={`Back to ${scale(control.neutral)}`}
+              onClick={() => commit({ ...params, [control.key]: control.neutral })}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <RotateCcw className="h-3 w-3" />
+            </button>
+          )}
+        </span>
         <span className="tnum text-muted-foreground">{format(value)}</span>
       </div>
       <Slider
@@ -726,6 +767,18 @@ function Range({
         }
         onValueCommit={([next]) => commit({ ...params, [control.key]: next })}
       />
+      <div className="relative h-3 text-[11px] text-muted-foreground">
+        <span className="tnum absolute left-0">{scale(control.min)}</span>
+        {home > 0.02 && home < 0.98 && (
+          <span
+            className="tnum absolute -translate-x-1/2"
+            style={{ left: `calc(0.5rem + (100% - 1rem) * ${home})` }}
+          >
+            {scale(control.neutral)}
+          </span>
+        )}
+        <span className="tnum absolute right-0">{scale(control.max)}</span>
+      </div>
     </div>
   );
 }

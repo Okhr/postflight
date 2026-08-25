@@ -320,6 +320,22 @@ Le partage du code suit cette frontière :
 une plage inutilisée ici est de l'image sur le plan d'à côté. C'est ce qui justifie le
 séparateur, et la seule raison pour laquelle la carte a deux groupes.
 
+**Chaque curseur porte son échelle et sa sortie de secours.** Sous la piste, une ligne
+de trois nombres : les deux bornes aux extrémités, et le défaut **sous sa propre
+position**, parce que la moitié de ces réglages ont un défaut qui n'est pas le milieu de
+leur plage (contraste à 1 sur 0,5-1,6, température à 6500 sur 3000-10000). Il disparaît
+quand il coïncide avec une borne, ce qui est le cas des deux points. Les nombres y sont
+nus : l'unité est déjà dite une fois, dans la valeur au-dessus.
+
+Un **cran sur la piste** a été essayé d'abord et abandonné : dessiné sur la piste il
+passe derrière la partie remplie de la barre et disparaît pour toute valeur au-delà du
+défaut, et aucune couleur unique ne se lit à la fois sur le blanc du remplissage et sur
+le gris sombre du reste.
+
+La **flèche de retour à côté du libellé n'apparaît que sur un curseur déplacé**, ce qui
+en fait à la fois le chemin du retour et la marque « celui-là a bougé ». Le bouton
+`Reset` global reste, pour tout remettre d'un coup.
+
 Sur un clip qui n'a rien à récupérer, le bouton est **désactivé** et le dit au survol.
 Cas réel mesuré le 2026-08-25 : 90 % des images contiennent du noir vrai et 43 % du blanc
 vrai, donc les deux côtés sont bloqués et il n'y a pas de proposition. Les curseurs
