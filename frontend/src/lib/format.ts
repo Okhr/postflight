@@ -91,3 +91,18 @@ export function etaLabel(progress: number, startedAt: string | null): string | n
   const hours = Math.floor(minutes / 60);
   return `~${hours}h${String(minutes % 60).padStart(2, "0")} left`;
 }
+
+/** What a job kind is called, everywhere one is named.
+
+ *  The same word on a progress line and on a worker's speed line: "stabilize" is the
+ *  kind of job, and `render` is only what the table calls the row. */
+const JOB_KINDS: Record<string, string> = {
+  merge: "merge",
+  proxy: "proxy",
+  render: "stabilize",
+  grade: "color",
+};
+
+export function jobKindLabel(kind: string): string {
+  return JOB_KINDS[kind] ?? kind;
+}

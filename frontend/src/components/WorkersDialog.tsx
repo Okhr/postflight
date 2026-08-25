@@ -1,5 +1,18 @@
+/**
+ * Everything behind the worker count in the sidebar.
+ *
+ * One card per machine, because that is where the hardware lives and no two are alike:
+ * what it decodes with, what it warps with, whether it reads the dispatcher's volume,
+ * and how fast it actually is at each of the four jobs.
+ *
+ * Speeds get a line each (florian, 2026-08-25). They were one run-on line, which hid
+ * the thing worth reading: a rate measured on real jobs and a rate measured by the
+ * startup benchmark are not the same claim, and the benchmark overstates by a
+ * fixed-ish factor (measured on this project: 28.0 img/s against 24.9 on real work).
+ */
 import { Cpu, ServerOff } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -7,7 +20,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { type WorkerInfo } from "@/lib/api";
+import { Separator } from "@/components/ui/separator";
+import { type Job, type WorkerInfo } from "@/lib/api";
+import { jobKindLabel } from "@/lib/format";
+import { useLiveJobs } from "@/lib/live";
 import { cn } from "@/lib/utils";
 
 function decodeLabel(worker: WorkerInfo): string {
@@ -15,50 +31,102 @@ function decodeLabel(worker: WorkerInfo): string {
   return backend === "cpu" ? "CPU" : backend.toUpperCase();
 }
 
-// The four rates the dispatcher ranks a worker on, and what each is measured in.
+/** The four rates the dispatcher ranks a worker on, named as the jobs are named. */
 const RATES: [label: string, key: string, unit: string][] = [
-  ["proxy", "proxy_fps", "img/s"],
-  ["render", "render_fps", "img/s"],
-  ["grade", "grade_fps", "img/s"],
   ["merge", "merge_mbps", "MB/s"],
+  ["proxy", "proxy_fps", "img/s"],
+  ["stabilize", "render_fps", "img/s"],
+  ["color", "grade_fps", "img/s"],
 ];
 
-/** One rate, preferring what real jobs measured over the startup benchmark.
- *
- *  The job count is worth showing: the benchmark runs on half a second of footage
- *  and overstates by a fixed-ish factor, so "28 img/s" and "22.7 img/s (4 jobs)"
- *  do not deserve to look alike.
- */
-function rateLabel(worker: WorkerInfo, key: string, unit: string): string | null {
-  const observed = worker.observed?.[key];
-  const bench = (worker.rates as unknown as Record<string, number | null>)?.[key];
-  const value = observed ?? bench;
-  if (!value) return null;
-  const samples = worker.observed?.[`${key}_n`] ?? 0;
-  const shown = value < 10 ? value.toFixed(1) : Math.round(value).toString();
-  return `${shown} ${unit}${samples ? ` (${samples} job${samples > 1 ? "s" : ""})` : ""}`;
+function round(value: number): string {
+  return value < 10 ? value.toFixed(1) : Math.round(value).toString();
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+/** Label on the left, value on the right, and the same widths in every card. */
+function Row({
+  label,
+  value,
+  note,
+}: {
+  label: string;
+  value: string;
+  /** What qualifies the value, in muted type: where it comes from, mostly. */
+  note?: string;
+}) {
   return (
-    <div className="flex justify-between gap-4 py-0.5">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-right">{value}</span>
+    <div className="flex items-baseline justify-between gap-4 py-0.5">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 text-right">
+        <span className="tnum">{value}</span>
+        {note && <span className="ml-2 text-xs text-muted-foreground">{note}</span>}
+      </span>
     </div>
   );
 }
 
-/** One card per worker, which is where the hardware actually lives. */
-function WorkerCard({ worker }: { worker: WorkerInfo }) {
+/**
+ * One speed, and where the number comes from.
+ *
+ * What real jobs measured wins over the benchmark, and both are shown when both exist:
+ * the benchmark runs on half a second of footage and never leaves the page cache, so it
+ * ranks machines and does not predict durations.
+ */
+function SpeedRow({ worker, label, field, unit }: {
+  worker: WorkerInfo;
+  label: string;
+  field: string;
+  unit: string;
+}) {
+  const observed = worker.observed?.[field];
+  const bench = (worker.rates as unknown as Record<string, number | null>)?.[field];
+  const samples = worker.observed?.[`${field}_n`] ?? 0;
+
+  if (!observed && !bench) {
+    return <Row label={label} value="not measured" />;
+  }
+  if (!observed) {
+    return <Row label={label} value={`${round(bench as number)} ${unit}`} note="at start" />;
+  }
+  return (
+    <Row
+      label={label}
+      value={`${round(observed)} ${unit}`}
+      note={
+        bench
+          ? `${samples} job${samples > 1 ? "s" : ""} · ${round(bench)} at start`
+          : `${samples} job${samples > 1 ? "s" : ""}`
+      }
+    />
+  );
+}
+
+/** What this machine is on right now, which is the other half of "who does what". */
+function Doing({ jobs }: { jobs: Job[] }) {
+  return (
+    <>
+      {jobs.map((job) => (
+        <div key={job.id} className="flex items-baseline gap-2 py-0.5">
+          <Badge variant="secondary" className="font-normal">
+            {jobKindLabel(job.kind)}
+          </Badge>
+          <span className="min-w-0 truncate text-muted-foreground">
+            {[job.sequence_label || job.sequence_key, job.cut_label].filter(Boolean).join(" · ")}
+          </span>
+          <span className="tnum ml-auto shrink-0">{Math.round(job.progress * 100)} %</span>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function WorkerCard({ worker, jobs }: { worker: WorkerInfo; jobs: Job[] }) {
   const caps = worker.capabilities;
   // Backends that were tried and refused, so a CPU fallback can be explained rather
   // than merely announced.
   const refused = Object.entries(caps.decode_probes ?? {}).filter(([, why]) => why);
-  const speeds = RATES.map(([label, key, unit]) => {
-    const shown = rateLabel(worker, key, unit);
-    return shown ? `${label} ${shown}` : null;
-  }).filter(Boolean) as string[];
   const link = worker.rates?.link_mbps;
+  const mine = jobs.filter((job) => job.worker_name === worker.name);
 
   return (
     <div className="rounded-md border p-3 text-sm">
@@ -82,17 +150,33 @@ function WorkerCard({ worker }: { worker: WorkerInfo }) {
       <Row label="stabilize" value={caps.stabilize_device || "CPU"} />
       <Row
         label="volume"
-        value={
+        value={worker.shares_data ? "shared" : "own copy"}
+        note={
           worker.shares_data
-            ? "shared"
-            : `own${link ? `, ${Math.round(link)} MB/s link` : ""}`
+            ? "nothing travels"
+            : link
+              ? `${round(link)} MB/s link`
+              : "link not measured"
         }
       />
-      {speeds.length > 0 && <Row label="speed" value={speeds.join(" · ")} />}
       {caps.ffmpeg_version && (
         <Row label="ffmpeg" value={caps.ffmpeg_version.replace("ffmpeg version ", "")} />
       )}
       {caps.gyroflow_version && <Row label="gyroflow" value={caps.gyroflow_version} />}
+
+      <Separator className="my-2" />
+      <p className="pb-1 text-xs uppercase tracking-wide text-muted-foreground">Speed</p>
+      {RATES.map(([label, field, unit]) => (
+        <SpeedRow key={field} worker={worker} label={label} field={field} unit={unit} />
+      ))}
+
+      {mine.length > 0 && (
+        <>
+          <Separator className="my-2" />
+          <p className="pb-1 text-xs uppercase tracking-wide text-muted-foreground">Now</p>
+          <Doing jobs={mine} />
+        </>
+      )}
 
       {refused.length > 0 && (
         <p className="mt-2 text-muted-foreground">
@@ -111,6 +195,7 @@ function WorkerCard({ worker }: { worker: WorkerInfo }) {
 
 /** The worker count in the sidebar, and everything behind it. */
 export function WorkersDialog({ workers }: { workers: WorkerInfo[] }) {
+  const jobs = useLiveJobs().filter((job) => job.state === "running");
   const online = workers.filter((w) => w.online);
   const none = online.length === 0;
 
@@ -125,22 +210,22 @@ export function WorkersDialog({ workers }: { workers: WorkerInfo[] }) {
           )}
         >
           {none ? <ServerOff className="h-3.5 w-3.5" /> : <Cpu className="h-3.5 w-3.5" />}
-          {none
-            ? "no worker"
-            : `${online.length} worker${online.length > 1 ? "s" : ""}`}
+          {none ? "no worker" : `${online.length} worker${online.length > 1 ? "s" : ""}`}
         </button>
       </DialogTrigger>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Workers</DialogTitle>
         </DialogHeader>
-        <div className="space-y-2">
+        <div className="max-h-[70vh] space-y-2 overflow-y-auto">
           {workers.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               None has registered. Check VS_API_URL on the worker.
             </p>
           ) : (
-            workers.map((worker) => <WorkerCard key={worker.id} worker={worker} />)
+            workers.map((worker) => (
+              <WorkerCard key={worker.id} worker={worker} jobs={jobs} />
+            ))
           )}
         </div>
       </DialogContent>

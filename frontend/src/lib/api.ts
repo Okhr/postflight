@@ -224,6 +224,8 @@ export interface Job {
   /** A merge or a proxy names the rush; a render or a grade names its sequence too. */
   sequence_label: string | null;
   cut_label: string | null;
+  /** The machine holding it, when one does. */
+  worker_name: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;

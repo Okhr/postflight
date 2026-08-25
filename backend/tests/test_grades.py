@@ -232,3 +232,22 @@ def test_the_clip_is_measured_once_for_all_its_grades(
 
     assert len(runs) == 1
     assert (session.get(Render, render.id) or render).analysis["frames"] == 10
+
+
+def test_the_heartbeat_moves_the_grade_s_own_bar(session: Session, sequence: Sequence):
+    """The colour editor reads `grade.progress`, not the job's.
+
+    It was only ever written at the end, so the bar under "Graded file" sat empty for
+    the whole encode and jumped to full (reported by florian on 2026-08-25). A render
+    already had this mirroring; a grade did not.
+    """
+    render = _clip(session, sequence)
+    grade = _put(session, render, "Golden hour", temperature=7400)
+    routes.apply_grade(grade.id, session=session)
+    job = session.exec(select(Job).where(Job.grade_id == grade.id)).one()
+    worker = dispatch.upsert_worker(session, "here", {}, 1)
+    assert dispatch._take(session, job.id, worker.id or 0)
+
+    assert dispatch.heartbeat(session, job.id, worker.id or 0, 0.42, "encoding") is True
+
+    assert (session.get(Grade, grade.id) or grade).progress == pytest.approx(0.42)

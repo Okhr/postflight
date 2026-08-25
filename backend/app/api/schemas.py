@@ -293,6 +293,9 @@ class JobOut(BaseSchema):
     # carries only the rush; a render or a grade is about one sequence of it.
     sequence_label: str | None = None
     cut_label: str | None = None
+    # Which machine is on it. Nothing said where a job ran, which is fine with one
+    # worker and blind with two.
+    worker_name: str | None = None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None

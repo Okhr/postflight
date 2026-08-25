@@ -446,6 +446,14 @@ Six conséquences, dont trois qui n'avaient rien d'évident :
   c'est un changement de schéma qui a eu lieu une fois. Vu au démarrage : `Column added:
   grade.label`, `Column added: render.analysis`, `Index relaxed`.
 
+**La barre de progression d'un grade était morte.** Rapporté par florian le 2026-08-25 :
+le battement de cœur recopiait la progression du job sur le `render` et **pas sur le
+`grade`**, donc `grade.progress` passait de 0 à 1 d'un coup et la carte sous l'éditeur
+affichait une barre vide pendant tout l'encodage. Corrigé dans `heartbeat`, avec un test
+qui écrit 0,42 et le relit sur la ligne. Au passage, le titre de la carte suit l'état
+(« Encoding », « Waiting for a worker », « Failed », « Graded file ») : il disait
+« Graded file » au-dessus d'une barre vide alors que le fichier n'existait pas encore.
+
 **L'analyse se mesure à l'ouverture d'un grade, pas seulement de la liste.** Régression
 introduite en déplaçant l'analyse sur le `render` puis rapportée par florian (« où sont
 passés les boutons pour aller à la frame la plus sombre ? ») : elle ne tournait que dans
@@ -1018,6 +1026,24 @@ Les priorités disent l'ordre, pas le nombre : fusion et proxy passent devant le
 et les étalonnages parce qu'ils débloquent tout le reste, et à priorité égale c'est
 l'ordre de création.
 
+**Ce que ça donne à l'écran.** Le flux SSE `/api/jobs/stream` envoie **tous** les jobs
+`queued` et `running` chaque seconde, et n'émet que quand la charge utile change. La
+barre du haut dessine donc **une ligne par job en cours**, chacune avec son type en
+badge, son nom (« Rush 1 · dive »), la machine qui la tient et sa propre progression,
+puis une ligne « N jobs queued » pour la file. Ailleurs, chaque page montre sa part : la
+carte « Running · N » de Stabilize, un badge à spinner sur la sequence concernée, un
+spinner sur chaque grade en cours dans l'arbre de Color.
+
+**Le nom du worker est sur la ligne** depuis le 2026-08-25 (demandé par florian) :
+`JobOut.worker_name`, résolu en un select à côté des noms de rush. Rien ne disait où un
+job tournait, ce qui va avec un seul worker et rend aveugle à deux.
+
+**Le dialogue des workers détaille les débits, un par ligne** (même jour) : la valeur
+mesurée sur de vrais jobs en normal, sa provenance en gris (« 3 jobs · 47 at start »),
+et une section **Now** qui dit ce que la machine encode à l'instant, lue dans le même
+flux SSE que la barre. Les quatre lignes portent les mots des jobs (`merge`, `proxy`,
+`stabilize`, `color`), le même vocabulaire que les badges, via `jobKindLabel`.
+
 ### Deux jobs du même type sur un rush n'étaient pas des doublons
 
 Bug trouvé le 2026-08-25 en répondant à la question ci-dessus, et **il précède les
@@ -1074,6 +1100,20 @@ D'où **deux colonnes** sur `worker` : `rates` (le benchmark, réécrit à chaqu
 enregistrement) et `observed` (ce que les vrais jobs ont prouvé, jamais touché par un
 enregistrement). Un redémarrage de conteneur ne doit pas jeter le seul chiffre qui
 vienne du vrai travail.
+
+**Un job qui n'a rien fait n'est pas une mesure.** Un étalonnage dont le fichier existe
+déjà (le hash du look est dans le nom) revient en quelques millisecondes sans encoder,
+avec `reused: True`. Replié dans la moyenne, ça donne un débit qui n'en est pas un :
+mesuré le 2026-08-25, **neuf étalonnages réutilisés avaient poussé le débit couleur de
+cette machine à 406 909 img/s**, ce qui l'aurait rendue la moins chère pour tout job de
+couleur à jamais. `observe` écarte donc un résultat `reused`, comme il écartait déjà une
+fusion faite en hardlink pour la même raison. Les valeurs déjà empoisonnées ont été
+effacées à la main (`grade_fps` et `merge_mbps`, le second mesuré sur des fusions de
+test entièrement en cache de pages).
+
+Trouvé en mettant **une ligne par débit** dans le dialogue des workers : la ligne unique
+d'avant, « proxy 61 img/s · render 28 img/s · grade 27 img/s · merge 114 MB/s », cachait
+l'absurdité. Un affichage qui montre un nombre à la fois est aussi un instrument.
 
 Trois détails qui ont été mesurés, pas devinés :
 

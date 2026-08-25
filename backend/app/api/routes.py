@@ -366,7 +366,9 @@ def _job_names(session: Session, jobs: Iterable[Job]) -> dict[int, tuple[str, st
     return out
 
 
-def _job_out(job: Job, names: tuple[str, str, str] | None = None) -> schemas.JobOut:
+def _job_out(
+    job: Job, names: tuple[str, str, str] | None = None, worker: str | None = None
+) -> schemas.JobOut:
     key, label, cut = names or ("", "", "")
     return schemas.JobOut(
         id=job.id or 0,
@@ -379,10 +381,28 @@ def _job_out(job: Job, names: tuple[str, str, str] | None = None) -> schemas.Job
         sequence_key=key or None,
         sequence_label=label or None,
         cut_label=cut or None,
+        worker_name=worker,
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
     )
+
+
+def _job_workers(session: Session, jobs: Iterable[Job]) -> dict[int, str]:
+    """Per job, the name of the machine holding it. One select, whatever the count."""
+    jobs = list(jobs)
+    wanted = {job.worker_id for job in jobs if job.worker_id}
+    if not wanted:
+        return {}
+    names = {
+        worker.id: worker.name
+        for worker in session.exec(select(Worker).where(Worker.id.in_(wanted))).all()  # type: ignore[attr-defined]
+    }
+    return {
+        job.id: names[job.worker_id]
+        for job in jobs
+        if job.id and job.worker_id and job.worker_id in names
+    }
 
 
 def _get_sequence(session: Session, sequence_id: int) -> Sequence:
@@ -1484,7 +1504,8 @@ def list_jobs(
         statement = statement.where(Job.state == state)
     jobs = session.exec(statement).all()
     names = _job_names(session, jobs)
-    return [_job_out(j, names.get(j.id or 0)) for j in jobs]
+    holders = _job_workers(session, jobs)
+    return [_job_out(j, names.get(j.id or 0), holders.get(j.id or 0)) for j in jobs]
 
 
 @router.post("/jobs/{job_id}/retry", response_model=schemas.JobOut)
@@ -1528,8 +1549,12 @@ async def stream_jobs(request: Request) -> StreamingResponse:
                         .order_by(Job.priority, Job.id)  # type: ignore[arg-type]
                     ).all()
                     names = _job_names(session, jobs)
+                    holders = _job_workers(session, jobs)
                     return [
-                        _job_out(j, names.get(j.id or 0)).model_dump(mode="json") for j in jobs
+                        _job_out(
+                            j, names.get(j.id or 0), holders.get(j.id or 0)
+                        ).model_dump(mode="json")
+                        for j in jobs
                     ]
 
             payload = await run_in_threadpool(snapshot)

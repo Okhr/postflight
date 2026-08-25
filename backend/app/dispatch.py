@@ -599,12 +599,20 @@ def heartbeat(
     job.lease_expires_at = utcnow() + timedelta(seconds=LEASE_S)
     session.add(job)
 
-    # A render carries its own progress bar, read by the derush page.
+    # A render and a grade each carry their own progress bar, read by the pages that
+    # show one clip instead of the whole queue. The grade half was missing until
+    # 2026-08-25: `grade.progress` went from 0 straight to 1, so the bar under the
+    # colour editor sat empty for the whole encode.
     if job.kind == JobKind.RENDER:
         render = session.get(Render, job.payload.get("render_id") or job.render_id)
         if render is not None:
             render.progress = job.progress
             session.add(render)
+    elif job.kind == JobKind.GRADE:
+        grade = session.get(Grade, job.payload.get("grade_id") or job.grade_id)
+        if grade is not None:
+            grade.progress = job.progress
+            session.add(grade)
     session.commit()
     return True
 
@@ -750,6 +758,12 @@ def observe(
         return
     worker = session.get(Worker, worker_id)
     if worker is None:
+        return
+    if result.get("reused"):
+        # The output was already there, so the elapsed time is a directory lookup and
+        # not a throughput. Measured on 2026-08-25, before this guard: nine reused
+        # grades had folded the colour rate up to 406 909 img/s, which would make this
+        # machine the cheapest for every colour job for ever.
         return
     if job.kind == JobKind.MERGE and result.get("method") != "mp4_merge":
         # A single-part sequence is hardlinked, not merged. Measured on a real 451 MB

@@ -1,14 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { etaLabel } from "@/lib/format";
+import { etaLabel, jobKindLabel } from "@/lib/format";
 import { useLiveJobs } from "@/lib/live";
-
-const KIND_LABELS: Record<string, string> = {
-  merge: "merge",
-  proxy: "proxy",
-  render: "stabilize",
-  grade: "color",
-};
 
 /**
  * Persistent progress bar, fed by the SSE stream the layout holds open.
@@ -32,7 +25,7 @@ export function JobsBar() {
               <span className="flex min-w-0 items-center gap-2">
                 <span>Running task</span>
                 <Badge variant="secondary" className="font-normal">
-                  {KIND_LABELS[job.kind] ?? job.kind}
+                  {jobKindLabel(job.kind)}
                 </Badge>
                 {/* The names the rest of the interface uses. A merge or a proxy is
                     about the whole rush and says only that; a render or a grade adds
@@ -43,6 +36,11 @@ export function JobsBar() {
                       .filter(Boolean)
                       .join(" · ")}
                   </span>
+                )}
+                {/* Which machine is on it (florian, 2026-08-25). One word, and the only
+                    thing that tells two identical-looking rows apart. */}
+                {job.worker_name && (
+                  <span className="shrink-0 text-muted-foreground">on {job.worker_name}</span>
                 )}
               </span>
               <span className="tnum shrink-0 text-muted-foreground">

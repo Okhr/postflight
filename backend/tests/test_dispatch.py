@@ -903,3 +903,47 @@ def test_two_proxies_of_one_rush_are_still_duplicates(session: Session, sequence
 
     assert dispatch.drop_stale_jobs(session) == (0, 1)
     assert len(session.exec(select(Job).where(Job.kind == JobKind.PROXY)).all()) == 1
+
+
+def test_a_reused_output_is_not_a_measurement(session: Session, sequence: Sequence):
+    """A grade whose file already exists returns in milliseconds without encoding.
+
+    Folded into the average, that is not a throughput: measured on 2026-08-25, nine
+    reused grades had pushed a worker's colour rate to 406 909 img/s, which would have
+    made it the cheapest machine for every colour job for ever.
+    """
+    render = Render(
+        sequence_id=sequence.id,  # type: ignore[arg-type]
+        template="h_1080",
+        state=RenderState.DONE,
+        out_path="out/clip.mp4",
+        start_frame=0,
+        end_frame=1799,
+    )
+    session.add(render)
+    session.commit()
+    session.refresh(render)
+    grade = Grade(render_id=render.id, label="Golden hour", params={"temperature": 7400})  # type: ignore[arg-type]
+    session.add(grade)
+    session.commit()
+    session.refresh(grade)
+    job = Job(
+        kind=JobKind.GRADE,
+        state=JobState.RUNNING,
+        sequence_id=sequence.id,
+        render_id=render.id,
+        grade_id=grade.id,
+        payload={"grade_id": grade.id, "render_id": render.id},
+    )
+    session.add(job)
+    session.commit()
+    worker = _worker(session, "here")
+
+    dispatch.observe(session, job, worker.id or 0, {"reused": True}, 0.004)
+    assert (session.get(Worker, worker.id) or worker).observed == {}
+
+    # The same job, actually encoded, is a measurement.
+    dispatch.observe(session, job, worker.id or 0, {"reused": False}, 60.0)
+    observed = (session.get(Worker, worker.id) or worker).observed
+    assert observed["grade_fps"] == pytest.approx(30.0)
+    assert observed["grade_fps_n"] == 1

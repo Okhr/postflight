@@ -965,11 +965,27 @@ function Editor({
           {grade && grade.state !== "draft" && (
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Graded file</CardTitle>
+                {/* The title says which of the four states this is. It said "Graded
+                    file" throughout, over an empty bar, while the file did not exist
+                    yet (florian, 2026-08-25). */}
+                <CardTitle className="text-sm">
+                  {grade.state === "done"
+                    ? "Graded file"
+                    : grade.state === "failed"
+                      ? "Failed"
+                      : grade.state === "running"
+                        ? "Encoding"
+                        : "Waiting for a worker"}
+                </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 {grade.state === "running" && (
-                  <Progress value={grade.progress * 100} className="h-1.5" />
+                  <>
+                    <Progress value={grade.progress * 100} className="h-1.5" />
+                    <p className="tnum text-muted-foreground">
+                      {Math.round(grade.progress * 100)} %
+                    </p>
+                  </>
                 )}
                 {grade.error && <p className="text-red-400">{grade.error}</p>}
                 {grade.state === "done" && (
