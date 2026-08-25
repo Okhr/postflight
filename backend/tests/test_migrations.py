@@ -11,6 +11,7 @@ from __future__ import annotations
 from sqlalchemy import Column, Integer, MetaData, String, Table, inspect, text
 from sqlmodel import SQLModel, create_engine
 
+from app import db as db_module
 from app.db import _add_missing_columns, _relax_grade_render_index
 
 
@@ -164,3 +165,33 @@ def test_relaxing_the_index_twice_is_harmless(tmp_path):
             text("SELECT count(*) FROM sqlite_master WHERE name='ix_grade_render_id'")
         ).scalar()
     assert indexes == 1
+
+
+def test_a_dead_column_is_dropped_once(tmp_path, monkeypatch):
+    """Two columns died: a rush's colour on 2026-08-20 and a grade's analysis today.
+
+    The rest of the migration only adds, so they would have sat there for ever. What
+    this checks is the "once" as much as the drop: it runs at every boot.
+    """
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE sequence (id INTEGER PRIMARY KEY, color VARCHAR)"))
+        connection.execute(text("INSERT INTO sequence (id, color) VALUES (1, 'amber')"))
+
+    monkeypatch.setattr(db_module, "DEAD_COLUMNS", (("sequence", "color"),))
+    db_module._drop_dead_columns(engine)
+    db_module._drop_dead_columns(engine)
+
+    assert "color" not in {c["name"] for c in inspect(engine).get_columns("sequence")}
+    with engine.begin() as connection:
+        assert connection.execute(text("SELECT count(*) FROM sequence")).scalar() == 1
+
+
+def test_a_column_that_is_not_there_is_not_an_error(tmp_path, monkeypatch):
+    """It runs on every database, including ones that never had the column."""
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE sequence (id INTEGER PRIMARY KEY)"))
+
+    monkeypatch.setattr(db_module, "DEAD_COLUMNS", (("sequence", "color"), ("nope", "gone")))
+    db_module._drop_dead_columns(engine)

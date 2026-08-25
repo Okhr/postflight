@@ -557,8 +557,16 @@ export const api = {
   /** Only what it produced, keeping the look ready to encode again. */
   deleteGradedFile: (gradeId: number) =>
     request<{ deleted: number }>(`/grades/${gradeId}/file`, { method: "DELETE" }),
+  /** Stop encoding this look, and keep the look. Queued or running. */
+  cancelGrade: (gradeId: number) =>
+    request<Grade>(`/grades/${gradeId}/cancel`, { method: "POST" }),
 
   jobs: (limit = 50) => request<Job[]>(`/jobs?limit=${limit}`),
+  /** Stop one job from the bar that shows it running. A merge or a proxy is refused:
+   *  nobody asked for it and the next scan would start it again. */
+  cancelJob: (id: number) => request<{ cancelled: number }>(`/jobs/${id}/cancel`, {
+    method: "POST",
+  }),
   retryJob: (id: number) => request<Job>(`/jobs/${id}/retry`, { method: "POST" }),
 };
 

@@ -458,9 +458,17 @@ def render(
         "--preset", str(project_path),
         "-f", "--stdout-progress",
     ]
-    log_tail = run_with_progress(
-        cmd, on_line, progress_cb, timeout=settings.gyroflow_timeout_s
-    )
+    try:
+        log_tail = run_with_progress(
+            cmd, on_line, progress_cb, timeout=settings.gyroflow_timeout_s
+        )
+    except Exception:
+        # Gyroflow writes `<output>.tmp` and renames it at the end, so a render that is
+        # killed (a cancel, a worker shutting down, a timeout) leaves a partial file
+        # nothing will ever look for again. Measured on this volume: 15.5 MB of one,
+        # from a render interrupted two days earlier.
+        (out_dir / f"{out_filename}.tmp").unlink(missing_ok=True)
+        raise
 
     out_path = _locate_output(out_dir / out_filename, out_dir, source)
     log.info(

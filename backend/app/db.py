@@ -143,6 +143,39 @@ def _relax_grade_render_index(engine: Engine) -> None:
     log.info("Index relaxed: grade.render_id is no longer unique")
 
 
+# Columns whose meaning died, with the day it did. The rest of this file only ever
+# adds, so without this they would sit there for ever; SQLite can drop a column since
+# 3.35 (the image ships 3.46). Listed one by one on purpose: a general "drop what the
+# model no longer declares" would delete a column the day someone forgets to declare it.
+DEAD_COLUMNS = (
+    # A rush carried a colour pill until 2026-08-20, when only folders kept one.
+    ("sequence", "color"),
+    # The clip's measurement moved onto `render` on 2026-08-25: it describes the clip
+    # and not the look, and a clip now holds several grades.
+    ("grade", "analysis"),
+)
+
+
+def _drop_dead_columns(engine: Engine) -> None:
+    """Drop the columns nothing reads any more, once each."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    for table, column in DEAD_COLUMNS:
+        if table not in tables:
+            continue
+        if column not in {c["name"] for c in inspector.get_columns(table)}:
+            continue
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(f'ALTER TABLE "{table}" DROP COLUMN "{column}"'))
+        except Exception as exc:  # noqa: BLE001 (a schema tidy-up must never stop a boot)
+            log.warning("Column %s.%s could not be dropped: %s", table, column, exc)
+            continue
+        log.info("Column dropped: %s.%s", table, column)
+
+
 def init_db() -> None:
     from . import models  # noqa: F401  (registers the tables)
 
@@ -150,6 +183,7 @@ def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     _add_missing_columns(engine)
     _relax_grade_render_index(engine)
+    _drop_dead_columns(engine)
 
 
 @contextmanager

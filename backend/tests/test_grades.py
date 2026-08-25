@@ -251,3 +251,71 @@ def test_the_heartbeat_moves_the_grade_s_own_bar(session: Session, sequence: Seq
     assert dispatch.heartbeat(session, job.id, worker.id or 0, 0.42, "encoding") is True
 
     assert (session.get(Grade, grade.id) or grade).progress == pytest.approx(0.42)
+
+
+def test_a_colour_job_can_be_stopped_while_it_runs(session: Session, sequence: Sequence):
+    """Reported missing by florian on 2026-08-25: a queued or running colour job had no
+    way out but changing a slider, which cancels it as a side effect of writing.
+
+    The look survives, because that is the whole point: what is thrown away is the
+    minutes of encoding, not the numbers.
+    """
+    render = _clip(session, sequence)
+    grade = _put(session, render, "Golden hour", temperature=7400)
+    routes.apply_grade(grade.id, session=session)
+    assert session.exec(select(Job).where(Job.grade_id == grade.id)).all()
+
+    after = routes.cancel_grade(grade.id, session=session)
+
+    assert after.state == "draft"
+    assert after.params["temperature"] == 7400
+    assert session.exec(select(Job).where(Job.grade_id == grade.id)).all() == []
+
+
+def test_a_grade_that_is_not_encoding_cannot_be_stopped(session: Session, sequence: Sequence):
+    """A draft has no job, and a done one has a file. Neither is a cancel."""
+    render = _clip(session, sequence)
+    grade = _put(session, render, "Golden hour", temperature=7400)
+
+    with pytest.raises(HTTPException) as raised:
+        routes.cancel_grade(grade.id, session=session)
+    assert raised.value.status_code == 409
+
+
+def test_the_bar_stops_a_stabilize_by_taking_its_render_with_it(
+    session: Session, sequence: Sequence
+):
+    """A cancelled render has no file and its row is what offers the sequence again, so
+    the row goes: the same gesture the stabilize queue has always had."""
+    render = _clip(session, sequence)
+    render.state = RenderState.RUNNING
+    session.add(render)
+    session.commit()
+    job = Job(
+        kind=JobKind.RENDER,
+        state=JobState.RUNNING,
+        sequence_id=sequence.id,
+        render_id=render.id,
+        payload={"render_id": render.id},
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+
+    routes.cancel_job(job.id, session=session)
+
+    assert session.get(Render, render.id) is None
+    assert session.get(Job, job.id) is None
+
+
+def test_a_merge_or_a_proxy_is_not_offered(session: Session, sequence: Sequence):
+    """Nobody asked for them, and the next scan would start them again."""
+    job = Job(kind=JobKind.PROXY, state=JobState.RUNNING, sequence_id=sequence.id, payload={})
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+
+    with pytest.raises(HTTPException) as raised:
+        routes.cancel_job(job.id, session=session)
+    assert raised.value.status_code == 409
+    assert session.get(Job, job.id) is not None

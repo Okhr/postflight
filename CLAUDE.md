@@ -1107,6 +1107,66 @@ la nouvelle il passe, et deux étalonnages du même rush survivent à un redéma
 m'étant pas visible. Elles affichaient une file vide pendant que l'API en rapportait
 trois. À lire par l'API, pas par le fichier.
 
+### Un arrêt propre rend le job, il ne le fait pas échouer
+
+Corrigé le 2026-08-25, et le mécanisme existait déjà : `release()` rend tout ce qu'un
+worker tient, **sans dépenser de tentative**, parce qu'être éteint n'est pas la faute du
+job. Le défaut était **l'ordre**. Sur SIGTERM, `procs.terminate_all()` tue le ffmpeg, la
+passe lève une `ProcessError`, et le worker rapportait cet échec ; ce rapport arrivait
+avant le `release`, qui ne trouvait alors plus rien en `RUNNING` à rendre. Résultat : un
+`docker compose restart worker` laissait un rendu **FAILED** à relancer à la main.
+
+`run_job` reçoit donc l'événement d'arrêt et **ne dit rien** quand il est armé : le job
+reste à nous, `release` le remet en file une seconde plus tard, et si le processus est tué
+avant d'avoir pu dire au revoir, le bail expire et le reaper fait la même chose. Vérifié
+en vrai : étalonnage à 4 %, `restart worker`, le grade repasse en `queued` et le job aussi.
+
+Les deux moitiés de la règle sont testées, parce que la seconde est celle qu'on casse en
+corrigeant la première : un job qui casse **de lui-même** doit toujours le dire, sinon il
+resterait `RUNNING` jusqu'à l'expiration du bail et serait réessayé pour rien.
+
+### Annuler un job
+
+Demandé le 2026-08-25 (« we cannot cancel a pending or running color job », « the top bar
+should allow us to cancel the running job »). Le mécanisme est le plus ancien du dépôt :
+**supprimer la ligne du job suffit**. `_held_by` ne le reconnaît plus, le battement suivant
+répond `ok: false`, et le worker tue son propre enfant. C'est déjà comme ça qu'un rendu de
+cut supprimé s'arrête ; l'annulation ne fait que donner un nom au geste.
+
+Deux routes, chacune adressée par ce que l'appelant a sous la main :
+
+- **`POST /grades/{id}/cancel`**, pour la page Color, qui connaît le grade et pas le job.
+  Le look est intact, le grade retombe en `draft`. Ouvert aussi en `queued` : attendre un
+  worker est un état dont on veut sortir.
+- **`POST /jobs/{id}/cancel`**, pour la barre du haut, qui connaît le job et pas ce qu'il
+  produit. Un rendu part **avec sa ligne** (`_purge_render`), puisque c'est cette ligne qui
+  remet la sequence dans la file de Stabilize ; un étalonnage laisse son look.
+
+**Une fusion et un proxy ne sont pas annulables**, et le bouton mort le dit au survol :
+personne ne les a demandés et le scan suivant les relancerait. C'est un 409 côté API, pas
+seulement un bouton désactivé.
+
+**Le dialogue est dans la barre et pas dans Color** : en haut, la croix est à 20 px d'une
+barre de progression et un clic de travers jette des minutes d'encodage ; dans la carte, le
+bouton s'appelle « Stop », on vient de le chercher, et rien du look n'est perdu.
+
+Au passage, une fuite réparée : **Gyroflow écrit `<sortie>.tmp` et renomme à la fin**, donc
+un rendu tué laissait un fichier partiel que plus rien ne nommait (mesuré : 15,5 Mo sur ce
+volume, d'un rendu interrompu deux jours plus tôt). `gyroflow.render` le supprime maintenant
+dans son chemin d'échec. L'étalonnage, lui, écrivait déjà dans un `.partial.mp4` nettoyé.
+
+### Les colonnes mortes se suppriment, une par une
+
+`db.DEAD_COLUMNS` liste les colonnes dont le sens est mort, avec le jour : `sequence.color`
+(le 2026-08-20, quand seuls les dossiers ont gardé une pastille) et `grade.analysis` (le
+2026-08-25, l'analyse ayant remonté sur `render`). SQLite sait supprimer une colonne depuis
+3.35 et l'image en livre 3.46. Vu au démarrage : `Column dropped: sequence.color`,
+`Column dropped: grade.analysis`.
+
+**Nommées une par une, jamais déduites.** Un « supprime ce que le modèle ne déclare plus »
+effacerait une colonne le jour où quelqu'un oublie de la déclarer. Et le tout est enveloppé
+dans un `try` qui journalise : un rangement de schéma ne doit jamais empêcher un démarrage.
+
 ### Le benchmark au démarrage : ranger les machines, pas prédire les durées
 
 Chaque worker mesure ses quatre débits **en exécutant les quatre vraies étapes** sur

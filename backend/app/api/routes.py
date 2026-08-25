@@ -1433,6 +1433,81 @@ def delete_look(look_id: int, session: Session = Depends(get_session)) -> dict:
     return {"deleted": look_id}
 
 
+def _stop_jobs(session: Session, jobs: Iterable[Job]) -> int:
+    """Take jobs out of the queue, and let the worker holding one find out.
+
+    Deleting the row is the whole mechanism: `_held_by` stops recognising the job, the
+    next heartbeat is answered `ok: false`, and the worker kills its own child. That is
+    how a render of a deleted cut has always been stopped; this only gives the gesture
+    a name of its own.
+    """
+    stopped = 0
+    for job in jobs:
+        session.delete(job)
+        stopped += 1
+    return stopped
+
+
+@router.post("/grades/{grade_id}/cancel", response_model=schemas.GradeOut)
+def cancel_grade(grade_id: int, session: Session = Depends(get_session)) -> schemas.GradeOut:
+    """Stop encoding this look, and keep the look.
+
+    Reachable while queued as well as while running: waiting for a worker is a state
+    one wants out of too. The file is not written, and nothing of the look is lost, so
+    there is nothing to warn about beyond the minutes already spent.
+    """
+    grade = _get_grade(session, grade_id)
+    if grade.state not in (GradeState.QUEUED, GradeState.RUNNING):
+        raise HTTPException(status.HTTP_409_CONFLICT, "this grade is not being encoded")
+    _stop_jobs(session, session.exec(select(Job).where(Job.grade_id == grade.id)).all())
+    grade.state = GradeState.DRAFT
+    grade.progress = 0.0
+    grade.error = None
+    session.add(grade)
+    session.commit()
+    session.refresh(grade)
+    return _grade_out(session, grade)
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: int, session: Session = Depends(get_session)) -> dict:
+    """Stop one job, whatever kind it is, from the bar that shows it running.
+
+    What happens to what it was producing depends on the kind, and only two kinds are
+    a decision anybody made: a stabilize goes with its render row, which is what puts
+    the sequence back in the queue, and a colour job leaves its look alone. A merge or
+    a proxy is not offered, because nobody asked for it and the next scan would start
+    it again: the interface says so on the dead button rather than in a paragraph.
+    """
+    job = session.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown job")
+    if job.state not in (JobState.QUEUED, JobState.RUNNING):
+        raise HTTPException(status.HTTP_409_CONFLICT, "this job is already finished")
+    if job.kind in (JobKind.MERGE, JobKind.PROXY):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "a merge or a proxy is what makes the rush usable, and the next scan would "
+            "start it again",
+        )
+
+    if job.kind == JobKind.GRADE:
+        grade = session.get(Grade, job.payload.get("grade_id") or job.grade_id)
+        if grade is not None:
+            grade.state = GradeState.DRAFT
+            grade.progress = 0.0
+            grade.error = None
+            session.add(grade)
+        _stop_jobs(session, [job])
+    else:
+        render = session.get(Render, job.payload.get("render_id") or job.render_id)
+        _stop_jobs(session, [job])
+        if render is not None:
+            _purge_render(session, render)
+    session.commit()
+    return {"cancelled": job_id}
+
+
 @router.delete("/grades/{grade_id}/file")
 def delete_graded_file(grade_id: int, session: Session = Depends(get_session)) -> dict:
     """Throw away what a grade produced, and keep the grade.

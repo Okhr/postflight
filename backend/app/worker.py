@@ -344,6 +344,7 @@ def run_job(
     claimed: dict[str, Any],
     lease: dict[str, Any],
     workspace: Workspace | None = None,
+    stopping: threading.Event | None = None,
 ) -> None:
     """Execute one claimed job and report the outcome. Never raises.
 
@@ -373,6 +374,15 @@ def run_job(
         except Exception as exc:  # noqa: BLE001 (a job that breaks must not take the worker down)
             if beat.lost:
                 log.warning("Job %s stopped because it was taken away", job_id)
+                return
+            if stopping is not None and stopping.is_set():
+                # We killed this ffmpeg ourselves, on the way out. Reporting a failure
+                # here would be a lie, and it would win the race: `release` gives back
+                # what this worker holds without spending an attempt, but only what is
+                # still RUNNING, and the failure report gets there first. So say nothing
+                # and let the job be handed back. If this process is killed before it can
+                # say goodbye, the lease lapses and the reaper does the same thing.
+                log.info("Job %s given back: this worker is shutting down", job_id)
                 return
             message = str(exc)
             if isinstance(exc, procs.ProcessError) and exc.log_tail:
@@ -488,7 +498,7 @@ def main() -> None:
             stop.wait(POLL_INTERVAL_S)
             continue
 
-        run_job(client, worker_id, claimed, lease, workspace)
+        run_job(client, worker_id, claimed, lease, workspace, stopping=stop)
 
     if worker_id:
         # Give the jobs back at once instead of leaving the queue idle until the

@@ -8,6 +8,7 @@ gives up in each of the ways it can lose a job.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -142,3 +143,65 @@ def test_a_missing_part_is_named(session):
 def test_an_empty_merge_is_refused(session):
     with pytest.raises(SpecError, match="no destination|no part"):
         execute({"kind": "merge", "parts": [], "dest": None}, lambda *_: None)
+
+
+class SilentDispatcher:
+    """Records what the worker reports, and answers every heartbeat with yes."""
+
+    def __init__(self) -> None:
+        self.failed: list[str] = []
+        self.completed: list[dict] = []
+
+    def heartbeat(self, _job_id, _worker_id, _progress, _message) -> bool:
+        return True
+
+    def fail(self, _job_id, _worker_id, message) -> None:
+        self.failed.append(message)
+
+    def complete(self, _job_id, _worker_id, result, elapsed_s=0.0) -> None:  # noqa: ANN001
+        self.completed.append(result)
+
+
+def _claimed() -> dict:
+    return {"job_id": 3, "kind": "proxy", "spec": {"kind": "proxy"}}
+
+
+def _lease() -> dict:
+    return {"renew_s": 0.05, "lease_s": 1.0}
+
+
+def test_a_job_killed_by_a_clean_stop_is_not_reported_as_failed(monkeypatch):
+    """`docker compose restart worker` used to leave a FAILED render behind.
+
+    The dispatcher already gives back what a worker holds when it says goodbye, and
+    without spending an attempt. The bug was the order: the worker reported the failure
+    of the ffmpeg it had just killed itself, and that report got there first, so
+    `release` found nothing RUNNING to hand back.
+    """
+    stop = threading.Event()
+    stop.set()
+
+    def boom(_spec, _report):  # noqa: ANN001, ANN202
+        raise procs.ProcessError("ffmpeg exited with code -15", -15, "")
+
+    monkeypatch.setattr(worker_mod, "execute", boom)
+    client = SilentDispatcher()
+
+    worker_mod.run_job(client, 7, _claimed(), _lease(), stopping=stop)
+
+    assert client.failed == []
+    assert client.completed == []
+
+
+def test_a_job_that_breaks_on_its_own_is_still_reported(monkeypatch):
+    """The other half: without a shutdown, a broken job must say so, or it would sit
+    RUNNING until its lease lapsed and be retried for nothing."""
+    def boom(_spec, _report):  # noqa: ANN001, ANN202
+        raise procs.ProcessError("ffmpeg exited with code 1", 1, "")
+
+    monkeypatch.setattr(worker_mod, "execute", boom)
+    client = SilentDispatcher()
+
+    worker_mod.run_job(client, 7, _claimed(), _lease(), stopping=threading.Event())
+
+    assert client.failed and "code 1" in client.failed[0]

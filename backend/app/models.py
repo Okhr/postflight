@@ -105,10 +105,6 @@ class Sequence(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     key: str = Field(index=True, unique=True)          # derived from the first part name
     label: str = ""
-    # Dead since 2026-08-20: only folders carry a colour now. The column stays
-    # because it is NOT NULL with no DDL default, so dropping it from the model
-    # would break every insert on an existing database.
-    color: str = ""
     state: SequenceState = Field(default=SequenceState.NEW, index=True)
     # Marked by hand when there is nothing left to do on this rush. Never deduced
     # from the cuts: a rush worth nothing is derushed the moment it has been looked

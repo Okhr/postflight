@@ -37,6 +37,7 @@ import {
   Trash2,
   TriangleAlert,
   Wand2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -725,6 +726,13 @@ function Editor({
     onError: (error: Error) => toast.error(error.message),
   });
 
+  /** Out of the queue, or out of the encode in flight. The look is untouched. */
+  const stop = useMutation({
+    mutationFn: () => api.cancelGrade(gradeId),
+    onSuccess: invalidate,
+    onError: (error: Error) => toast.error(error.message),
+  });
+
   /** The file, not the grade: the look stays, ready to be encoded again. */
   const dropFile = useMutation({
     mutationFn: () => api.deleteGradedFile(gradeId),
@@ -989,12 +997,29 @@ function Editor({
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 {grade.state === "running" && (
-                  <>
-                    <Progress value={grade.progress * 100} className="h-1.5" />
-                    <p className="tnum text-muted-foreground">
-                      {Math.round(grade.progress * 100)} %
-                    </p>
-                  </>
+                  <Progress value={grade.progress * 100} className="h-1.5" />
+                )}
+                {(grade.state === "running" || grade.state === "queued") && (
+                  <div className="flex items-baseline gap-2">
+                    {grade.state === "running" && (
+                      <p className="tnum text-muted-foreground">
+                        {Math.round(grade.progress * 100)} %
+                      </p>
+                    )}
+                    {/* Stopping is reachable while queued too: waiting for a worker is
+                        a state one wants out of. Nothing of the look is lost, so no
+                        dialog, unlike the bar at the top where a click is a stray one. */}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="ml-auto"
+                      disabled={stop.isPending}
+                      onClick={() => stop.mutate()}
+                    >
+                      <X className="h-4 w-4" />
+                      Stop
+                    </Button>
+                  </div>
                 )}
                 {grade.error && <p className="text-red-400">{grade.error}</p>}
                 {grade.state === "done" && (
