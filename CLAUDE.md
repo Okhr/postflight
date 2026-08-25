@@ -487,8 +487,34 @@ règle ses instruments une fois puis on travaille :
 
 **Pas d'onglets**, choix de conception : lire l'histogramme *et* la waveform en même
 temps est la raison d'avoir les deux, et en cacher un derrière l'autre transforme un
-coup d'œil en aller-retour. Les scopes allumés se partagent la largeur d'une bande sous
-l'image.
+coup d'œil en aller-retour. Les scopes allumés s'empilent, chacun sur toute la largeur
+de sa colonne.
+
+#### Ils vivent dans la colonne des réglages, épinglés
+
+Ils étaient dans une bande sous l'image, et florian les a trouvés illisibles le
+2026-08-25. Mesuré avant de bouger quoi que ce soit, en 1600x900 : la page a **quatre
+colonnes** (barre latérale 320, clips 320, image 560, réglages 304), donc chaque scope
+héritait de **267x80 px**, et la main était sur un curseur à x=1424 quand l'œil devait
+lire un scope à x=835.
+
+Quatre placements ont été chiffrés avant de choisir : colonne de droite (2x l'aire),
+bande pleine largeur sous tout (4x, mais sous la ligne de flottaison), surimpression sur
+l'image (aire libre, un coin caché), replier la liste des clips (2,4x). **Choix de
+florian : la colonne de droite**, et c'est la seule qui règle aussi la diagonale du
+regard.
+
+La colonne passe donc de 19 à 24 rem, chaque scope à **366x80** (l'image paie 80 px), et
+la carte est **épinglée** (`xl:sticky`) parce que la colonne est plus haute que la
+fenêtre : sans ça les derniers curseurs se tirent avec les scopes sortis par le haut.
+Mesuré après 342 px de défilement : histogramme à y=65, waveform à y=153, curseur
+Highlights à y=709, les trois visibles ensemble.
+
+Deux conséquences. Le bouton **Compare passe en icône seule** (son libellé faisait
+passer la barre du lecteur sur deux lignes dans une colonne rétrécie ; le `title` disait
+déjà « Hold to see it ungraded »). Et l'échantillon voyage par une **poignée impérative**
+(`ScopeSink`), pas par un prop : une image atterrit par présentation, et la page ne doit
+pas se re-rendre autour.
 
 Deux détails techniques qui comptent :
 

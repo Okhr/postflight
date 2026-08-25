@@ -14,7 +14,7 @@
  * lib/grade-shader): an approximation of the encode, 39 dB from it, and the file that
  * gets written always comes from ffmpeg.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -34,7 +34,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { GradedVideo, type Scopes } from "@/components/GradedVideo";
+import { GradedVideo } from "@/components/GradedVideo";
+import { ScopePanel, type ScopeSink, type Scopes } from "@/components/Scopes";
 import { LooksCard } from "@/components/LooksCard";
 import { StateBadge } from "@/components/StateBadge";
 import { Badge } from "@/components/ui/badge";
@@ -501,6 +502,7 @@ function Editor({
   const [params, setParams] = useState<GradeParams>(NEUTRAL_GRADE);
   const [showBefore, setShowBefore] = useState(false);
   const [copying, setCopying] = useState(false);
+  const sink = useRef<ScopeSink | null>(null);
   const [scopes, setScopes] = usePersistentState<Scopes>("color.scopes", {
     zebras: false,
     histogram: true,
@@ -585,7 +587,7 @@ function Editor({
         </Button>
       </div>
 
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_19rem]">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
         <Card className="overflow-hidden">
           <CardContent className="p-3">
             <GradedVideo
@@ -602,13 +604,14 @@ function Editor({
               }}
               marks={marks}
               scopes={scopes}
+              sink={sink}
               actions={
                 /* The reason a button is dead goes in a tooltip, not in a line of
                    prose under it. A disabled button takes no pointer events, so the
                    title has to sit on something around it. */
                 <span title={neutral ? "Nothing to compare: the look is neutral" : "Hold to see it ungraded"}>
                   <Button
-                    size="sm"
+                    size="icon"
                     variant={showBefore ? "default" : "outline"}
                     disabled={neutral}
                     onMouseDown={() => setShowBefore(true)}
@@ -618,30 +621,42 @@ function Editor({
                     onTouchEnd={() => setShowBefore(false)}
                   >
                     <Eye className="h-4 w-4" />
-                    {showBefore ? "Before" : "Compare"}
                   </Button>
                 </span>
               }
-              instruments={INSTRUMENTS.map((instrument) => (
-                <Button
-                  key={instrument.key}
-                  size="icon"
-                  variant={scopes[instrument.key] ? "secondary" : "ghost"}
-                  title={instrument.title}
-                  className="h-8 w-8 text-muted-foreground data-[on=true]:text-foreground"
-                  data-on={scopes[instrument.key]}
-                  onClick={() =>
-                    setScopes({ ...scopes, [instrument.key]: !scopes[instrument.key] })
-                  }
-                >
-                  <instrument.icon className="h-4 w-4" />
-                </Button>
-              ))}
             />
           </CardContent>
         </Card>
 
         <div className="space-y-4">
+          {/* The instruments, at the top of the column they are read from: the hand is
+              on a slider here, and reading a scope under the picture was a diagonal
+              across the screen. Pinned, because the column is taller than the window:
+              the last sliders would otherwise be dragged with the scopes scrolled off. */}
+          <Card className="xl:sticky xl:top-4 xl:z-10">
+            <CardContent className="p-2">
+              <ScopePanel
+                ref={sink}
+                scopes={scopes}
+                instruments={INSTRUMENTS.map((instrument) => (
+                  <Button
+                    key={instrument.key}
+                    size="icon"
+                    variant={scopes[instrument.key] ? "secondary" : "ghost"}
+                    title={instrument.title}
+                    className="h-8 w-8 text-muted-foreground data-[on=true]:text-foreground"
+                    data-on={scopes[instrument.key]}
+                    onClick={() =>
+                      setScopes({ ...scopes, [instrument.key]: !scopes[instrument.key] })
+                    }
+                  >
+                    <instrument.icon className="h-4 w-4" />
+                  </Button>
+                ))}
+              />
+            </CardContent>
+          </Card>
+
           <Card>
             {/* No card title: the two points at the top are not part of the look, they
                 are this clip's own range, so "Look" belongs below the separator with

@@ -7,108 +7,22 @@
  * follows the sliders and the playback. The file that gets written still comes from
  * ffmpeg, so the approximation only ever costs a preview.
  *
- * The histogram reads the pixels the shader produced, so it always describes what is on
- * screen rather than what the parameters ought to give.
+ * The instruments are drawn elsewhere (components/Scopes, in the settings column): what
+ * happens here is the readback, from the very pixels the shader wrote, so a scope always
+ * describes what is on screen rather than what the parameters ought to give.
  */
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play } from "lucide-react";
 
+import { BINS, SAMPLE_H, SAMPLE_W, type ScopeSink, type Scopes } from "@/components/Scopes";
 import { Button } from "@/components/ui/button";
 import { createRenderer, type GradePlan, type Renderer } from "@/lib/grade-shader";
 import { cn } from "@/lib/utils";
 
-/** The sample the scopes are computed from: 256 columns so the waveform has one per
- *  drawn pixel, 144 rows because that is enough of the picture to describe it. */
-const SAMPLE_W = 256;
-const SAMPLE_H = 144;
-const BINS = 128;
-
-/** What the frame measures, for the line of numbers under the scopes. */
-export interface FrameStats {
-  clippedHigh: number;
-  clippedLow: number;
-  min: number;
-  avg: number;
-  max: number;
-}
-
-/** Which instruments are on. They are remembered by the page, not by this component. */
-export interface Scopes {
-  zebras: boolean;
-  histogram: boolean;
-  waveform: boolean;
-  numbers: boolean;
-}
-
 export interface Mark {
   label: string;
   ms: number;
-}
-
-/**
- * Three channels on one plot, with the ends marked.
- *
- * The scale is absolute against the tallest bin of the frame, but the marks are what
- * make it readable: a line at each end says where clipping is, which the old version
- * had no way of showing. Additive drawing, so where the three agree it goes white,
- * which is what a neutral frame looks like.
- */
-function drawHistogram(target: HTMLCanvasElement | null, channels: Float32Array[]) {
-  const ctx = target?.getContext("2d");
-  if (!target || !ctx) return;
-  const { width, height } = target;
-  ctx.clearRect(0, 0, width, height);
-  let top = 1;
-  for (const channel of channels) for (const value of channel) if (value > top) top = value;
-
-  ctx.globalCompositeOperation = "lighter";
-  const colours = ["rgba(255,80,80,0.75)", "rgba(80,220,120,0.75)", "rgba(90,140,255,0.75)"];
-  const step = width / BINS;
-  channels.forEach((channel, index) => {
-    ctx.fillStyle = colours[index];
-    for (let i = 0; i < BINS; i += 1) {
-      const h = (channel[i] / top) * height;
-      if (h > 0) ctx.fillRect(i * step, height - h, Math.max(1, step), h);
-    }
-  });
-  ctx.globalCompositeOperation = "source-over";
-  ctx.fillStyle = "rgba(250,250,250,0.25)";
-  ctx.fillRect(0, 0, 1, height);
-  ctx.fillRect(width - 1, 0, 1, height);
-}
-
-/**
- * Luma against horizontal position: where in the frame the darks and brights are.
- *
- * The half a histogram cannot say. On this footage it separates sky from ground at a
- * glance, which is exactly the decision the highlights slider is for. Counts are
- * mapped to alpha with a square root, since one flat area otherwise saturates
- * everything else out of view.
- */
-function drawWaveform(target: HTMLCanvasElement | null, wave: Float32Array) {
-  const ctx = target?.getContext("2d");
-  if (!target || !ctx) return;
-  const { width, height } = target;
-  const image = ctx.createImageData(SAMPLE_W, BINS);
-  let top = 1;
-  for (const value of wave) if (value > top) top = value;
-  for (let i = 0; i < wave.length; i += 1) {
-    const alpha = Math.sqrt(wave[i] / top);
-    image.data[i * 4] = 210;
-    image.data[i * 4 + 1] = 240;
-    image.data[i * 4 + 2] = 210;
-    image.data[i * 4 + 3] = Math.min(255, alpha * 320);
-  }
-  ctx.clearRect(0, 0, width, height);
-  // Through a bitmap of its own, because putImageData ignores any scaling.
-  const buffer = new OffscreenCanvas(SAMPLE_W, BINS);
-  buffer.getContext("2d")?.putImageData(image, 0, 0);
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(buffer, 0, 0, width, height);
-  ctx.fillStyle = "rgba(250,250,250,0.25)";
-  ctx.fillRect(0, 0, width, 1);
-  ctx.fillRect(0, height - 1, width, 1);
 }
 
 export function GradedVideo({
@@ -116,8 +30,8 @@ export function GradedVideo({
   plan,
   marks = [],
   scopes,
+  sink,
   actions,
-  instruments,
   className,
 }: {
   src: string;
@@ -125,17 +39,16 @@ export function GradedVideo({
   marks?: Mark[];
   /** Which instruments are on. Nothing is computed for one that is off. */
   scopes: Scopes;
+  /** Where each painted frame goes to be drawn. Its own handle, not a prop callback:
+   *  one frame lands per presentation, and the page must not re-render around it. */
+  sink?: React.RefObject<ScopeSink | null>;
   /** Dropped in the control row. What compares before and after belongs next to the
    *  play button, not on a line of its own under the picture. */
   actions?: React.ReactNode;
-  /** The instruments' own toggles, on the right of the same row. */
-  instruments?: React.ReactNode;
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const histRef = useRef<HTMLCanvasElement>(null);
-  const waveRef = useRef<HTMLCanvasElement>(null);
   const scratch = useRef<HTMLCanvasElement | null>(null);
   const renderer = useRef<Renderer | null>(null);
   const planRef = useRef(plan);
@@ -144,11 +57,12 @@ export function GradedVideo({
   const [length, setLength] = useState(0);
   const [broken, setBroken] = useState<string | null>(null);
   const [undecodable, setUndecodable] = useState(false);
-  const [stats, setStats] = useState<FrameStats | null>(null);
   const scopesRef = useRef(scopes);
+  const sinkRef = useRef(sink);
 
   planRef.current = plan;
   scopesRef.current = scopes;
+  sinkRef.current = sink;
 
   /**
    * One frame: the shader, then every instrument off the very pixels it wrote.
@@ -212,16 +126,17 @@ export function GradedVideo({
       wave[(BINS - 1 - bin) * SAMPLE_W + (p % SAMPLE_W)] += 1;
     }
     const pixels = data.length / 4;
-    setStats({
-      clippedHigh: high / pixels,
-      clippedLow: low / pixels,
-      min: Math.round(min),
-      avg: Math.round(sum / pixels),
-      max: Math.round(max),
+    sinkRef.current?.current?.push({
+      channels: [red, green, blue],
+      wave,
+      stats: {
+        clippedHigh: high / pixels,
+        clippedLow: low / pixels,
+        min: Math.round(min),
+        avg: Math.round(sum / pixels),
+        max: Math.round(max),
+      },
     });
-
-    drawHistogram(histRef.current, [red, green, blue]);
-    drawWaveform(waveRef.current, wave);
   }, []);
 
   // The pipeline lives as long as the canvas does.
@@ -275,7 +190,9 @@ export function GradedVideo({
     };
   }, [paint, broken, src]);
 
-  // A slider moved: repaint the frame that is already there.
+  // A slider moved: repaint the frame that is already there. An instrument switched on
+  // lands here too, since the page rebuilds `plan` on every render (measured: 7963 lit
+  // pixels in the histogram either way, so a `scopes` dependency would be noise).
   useEffect(() => {
     paint();
   }, [plan, paint]);
@@ -359,51 +276,8 @@ export function GradedVideo({
           </Button>
         ))}
         {actions && <span className="ml-auto flex items-center gap-2">{actions}</span>}
-        {instruments && (
-          <span className={cn("flex items-center gap-0.5", !actions && "ml-auto")}>
-            {instruments}
-          </span>
-        )}
       </div>
 
-      {/* Whichever instruments are on share the width. No tabs: reading the histogram
-          and the waveform at once is the whole point of having both, and hiding one
-          behind the other turns a glance into a round trip. */}
-      {(scopes.histogram || scopes.waveform) && (
-        <div className="flex gap-2">
-          {scopes.histogram && (
-            <canvas
-              ref={histRef}
-              width={512}
-              height={80}
-              title="Red, green and blue against level. The ends are marked: anything against them is clipped."
-              className="h-20 min-w-0 flex-1 rounded bg-muted/30"
-            />
-          )}
-          {scopes.waveform && (
-            <canvas
-              ref={waveRef}
-              width={512}
-              height={80}
-              title="Luma against horizontal position: where in the frame the darks and the brights are."
-              className="h-20 min-w-0 flex-1 rounded bg-muted/30"
-            />
-          )}
-        </div>
-      )}
-      {scopes.numbers && stats && (
-        <p className="tnum flex flex-wrap gap-x-4 text-xs text-muted-foreground">
-          <span className={cn(stats.clippedHigh > 0.02 && "text-amber-400")}>
-            clipped {(stats.clippedHigh * 100).toFixed(1)} % high
-          </span>
-          <span className={cn(stats.clippedLow > 0.02 && "text-amber-400")}>
-            {(stats.clippedLow * 100).toFixed(1)} % low
-          </span>
-          <span>min {stats.min}</span>
-          <span>avg {stats.avg}</span>
-          <span>max {stats.max}</span>
-        </p>
-      )}
       {broken && (
         <p className="text-sm text-red-400">
           No GPU preview here ({broken}), showing the clip ungraded.
