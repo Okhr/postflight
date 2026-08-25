@@ -12,11 +12,17 @@ under test, and mocking it would test nothing.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 import pytest
 
 from app.services import grading
+
+needs_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None,
+    reason="runs a real ffmpeg: what is under test is what ffmpeg does",
+)
 
 
 def _clip(path, pix_fmt: str, profile: str) -> None:
@@ -42,6 +48,7 @@ def pair(tmp_path):
     return eight, ten
 
 
+@needs_ffmpeg
 def test_the_same_picture_measures_the_same_at_either_depth(pair):
     eight, ten = pair
     a, b = grading.analyse(eight).to_dict(), grading.analyse(ten).to_dict()
@@ -52,6 +59,7 @@ def test_the_same_picture_measures_the_same_at_either_depth(pair):
     assert abs(a["y_high"] - b["y_high"]) < 20
 
 
+@needs_ffmpeg
 def test_an_8_bit_clip_reads_on_the_10_bit_scale(pair):
     """The bug in one assertion: an 8-bit clip cannot report a white point that only
     a very dark 10-bit clip could have."""

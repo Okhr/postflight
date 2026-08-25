@@ -39,6 +39,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 
+      # A handful of tests run a real ffmpeg, because what they check is what ffmpeg
+      # does: that a levels stretch keeps legal black and white where they belong, and
+      # that the analysis reads the same at 8 and 10 bits. Both were written after a
+      # bug that only a real filter run would have caught, so they skip themselves
+      # without ffmpeg rather than being mocked into meaninglessness.
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
       - name: pytest
         run: pytest -q
         working-directory: backend

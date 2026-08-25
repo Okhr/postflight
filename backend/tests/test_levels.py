@@ -11,7 +11,16 @@ any business reading an analysis.
 
 from __future__ import annotations
 
+import shutil
+
+import pytest
+
 from app.services import grading
+
+needs_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None,
+    reason="runs a real ffmpeg: what is under test is what ffmpeg does",
+)
 
 
 def _levels(**points):
@@ -103,6 +112,7 @@ def _through(chain: str) -> list[int]:
     return list(out[:256])
 
 
+@needs_ffmpeg
 def test_a_stretch_keeps_legal_black_and_white_where_they_are():
     """`lutyuv` normalises by legal white, not full scale: measured, its luma minval
     and maxval are 16 and 235 in 8 bits. The expression used to divide by maxval and
