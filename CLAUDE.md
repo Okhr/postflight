@@ -320,6 +320,13 @@ Le partage du code suit cette frontière :
 une plage inutilisée ici est de l'image sur le plan d'à côté. C'est ce qui justifie le
 séparateur, et la seule raison pour laquelle la carte a deux groupes.
 
+**Un reset par groupe, pas un pour tout** (florian, le 2026-08-25). Les deux groupes
+sont deux décisions : la petite flèche à côté de « Auto range » rend la pleine plage,
+« Reset » sous le titre Look rend un look neutre, et ni l'un ni l'autre ne touche au
+groupe voisin. Chacun est mort quand son groupe est déjà chez lui. Contre-épreuve :
+point noir à 20 % et 7100 K, reset des points, la température ne bouge pas ; reset du
+look, les points ne bougent pas.
+
 **Chaque curseur porte son échelle et sa sortie de secours.** Sous la piste, une ligne
 de trois nombres : les deux bornes aux extrémités, et le défaut **sous sa propre
 position**. Il disparaît quand il coïncide avec une borne, ce qui est le cas des deux

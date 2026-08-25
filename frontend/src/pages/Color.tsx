@@ -114,6 +114,11 @@ function isNeutral(params: GradeParams): boolean {
   return [...CONTROLS, ...POINTS].every((control) => params[control.key] === control.neutral);
 }
 
+/** Where a group of controls sits when nobody has touched it. */
+function home(group: readonly { key: keyof GradeParams; neutral: number }[]) {
+  return Object.fromEntries(group.map((control) => [control.key, control.neutral]));
+}
+
 /** The six that travel. Copying a look must not carry one clip's measurement. */
 function travelling(look: GradeParams, keep: GradeParams): GradeParams {
   return { ...look, black_point: keep.black_point, white_point: keep.white_point };
@@ -551,6 +556,8 @@ function Editor({
 
   const analysis = grade?.analysis ?? {};
   const neutral = useMemo(() => isNeutral(params), [params]);
+  const pointsHome = POINTS.every((point) => params[point.key] === point.neutral);
+  const lookHome = CONTROLS.every((control) => params[control.key] === control.neutral);
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Analysing the clip…</p>;
 
@@ -651,25 +658,39 @@ function Editor({
                   scale={(value) => String(Math.round(value * 100))}
                 />
               ))}
-              <span
-                className="block"
-                title={
-                  grade?.suggested
-                    ? "Puts the points on the unused range measured in this clip. A side that already clips is left where it is."
-                    : "Nothing to reclaim: this clip already uses its range"
-                }
-              >
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full"
-                  disabled={!grade?.suggested}
-                  onClick={() => grade?.suggested && commit({ ...params, ...grade.suggested })}
+              {/* One reset per group, because the two groups are two decisions: the
+                  points belong to this clip, the look travels. */}
+              <div className="flex items-center gap-1">
+                <span
+                  className="min-w-0 flex-1"
+                  title={
+                    grade?.suggested
+                      ? "Puts the points on the unused range measured in this clip. A side that already clips is left where it is."
+                      : "Nothing to reclaim: this clip already uses its range"
+                  }
                 >
-                  <Wand2 className="h-4 w-4" />
-                  Auto range
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full"
+                    disabled={!grade?.suggested}
+                    onClick={() => grade?.suggested && commit({ ...params, ...grade.suggested })}
+                  >
+                    <Wand2 className="h-4 w-4" />
+                    Auto range
+                  </Button>
+                </span>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  title="Back to the full range"
+                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                  disabled={pointsHome}
+                  onClick={() => commit({ ...params, ...home(POINTS) })}
+                >
+                  <RotateCcw className="h-4 w-4" />
                 </Button>
-              </span>
+              </div>
 
               <Separator />
 
@@ -691,8 +712,9 @@ function Editor({
                 <Button
                   size="sm"
                   variant="ghost"
-                  disabled={neutral}
-                  onClick={() => commit(NEUTRAL_GRADE)}
+                  title="Back to a neutral look. The points above are left alone."
+                  disabled={lookHome}
+                  onClick={() => commit({ ...params, ...home(CONTROLS) })}
                 >
                   <RotateCcw className="h-4 w-4" />
                   Reset

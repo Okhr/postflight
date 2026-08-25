@@ -12,7 +12,7 @@
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Brush, Pencil, Plus, Save, Trash2 } from "lucide-react";
+import { Pencil, Plus, Save, Stamp, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { DeleteDialog } from "@/components/DeleteDialog";
@@ -121,7 +121,9 @@ export function LooksCard({
                           className="h-7 w-7 text-muted-foreground hover:text-foreground"
                           onClick={() => onApply(look)}
                         >
-                          <Brush className="h-3.5 w-3.5" />
+                          {/* A stamp, not a brush: a brush and the pencil next to it
+                              are the same fourteen pixels of scribble. */}
+                          <Stamp className="h-3.5 w-3.5" />
                         </Button>
                       </span>
                       <span title={current ? "Store this clip's look under this name" : "Open a clip first"}>
