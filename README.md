@@ -18,6 +18,7 @@ Docker images, and it spreads the heavy jobs over as many machines as you point 
 [![images](https://img.shields.io/badge/ghcr.io-postflight-2496ed?logo=docker&logoColor=white)](https://github.com/Okhr?tab=packages&repo_name=postflight)
 [![gyroflow](https://img.shields.io/badge/Gyroflow-1.6.3-8f4c8f)](https://gyroflow.xyz)
 [![cameras](https://img.shields.io/badge/DJI-O3%20%C2%B7%20O4%20%C2%B7%20O4%20Pro-0a7ea4)](#which-cameras)
+[![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 <img src="docs/screenshots/color.png" alt="The colour page: a graded clip, its scopes and the look library" width="900">
 
@@ -293,6 +294,11 @@ without one.
 
 The interface is React, Vite, Tailwind and base shadcn/ui components. The backend is
 FastAPI, SQLModel and SQLite. Code, comments and interface text are in English.
+
+## License
+
+[Apache License 2.0](LICENSE). Use it, fork it, ship it; the patent grant and the
+attribution requirement come with it.
 
 ## Credits
 
