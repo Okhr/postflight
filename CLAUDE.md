@@ -525,6 +525,17 @@ Deux détails techniques qui comptent :
   pleine résolution. Vu sur une vraie image : le relevé annonçait un maximum de 234
   alors que l'overlay trouvait encore des pixels au plafond, la réduction ayant moyenné
   un pixel brûlé isolé. L'overlay est l'instrument exact, les chiffres un échantillon.
+- **et c'est justement pour ça qu'il fallait le dessiner deux fois.** Bug rapporté par
+  florian le 2026-08-25 : l'overlay est peint par le shader **dans le buffer que le relevé
+  lit ensuite**, donc les trois instruments comptaient son rouge et son bleu au lieu de
+  l'image. Mesuré avec la contre-épreuve (ancien code, overlay allumé sur un plan à 79 %
+  d'écrêtage) : la moyenne du plan tombait de **235 à 100**, le min de 64 à 53, le max de
+  255 à 250, parce qu'un pixel peint en rouge a une luma de 84. Les chiffres étaient les
+  plus faux : un pixel noir écrêté peint en bleu porte `b=255`, donc il comptait comme
+  écrêté **en haut** et jamais en bas. Corrigé en dessinant la frame sans overlay, en
+  relevant, puis en la redessinant avec : les deux dessins sont dans la même tâche, donc
+  rien ne compose entre les deux et rien ne clignote. Après correctif, les quatre lectures
+  (éteint, éteint, allumé, éteint) sont identiques au caractère près.
 
 Le bouton des points s'appelle **« Auto range »** (florian, même jour), et le titre
 « Look » est passé **sous** les deux points : ce qui est au-dessus du séparateur

@@ -85,10 +85,18 @@ export function GradedVideo({
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
     }
-    renderer.current.draw(video, planRef.current);
-
+    const plan = planRef.current;
     const want = scopesRef.current;
-    if (!want.histogram && !want.waveform && !want.numbers) return;
+    const sampling = want.histogram || want.waveform || want.numbers;
+
+    // The clipping overlay is painted into the same buffer the sample is read from, so
+    // with it on the scopes were counting its red and blue instead of the picture
+    // (reported by florian). The numbers were worse off than the graphs: a black-clipped
+    // pixel painted blue reads b=255, so it counted as clipped high and never as low.
+    // Sample the frame without it, then put it back. Both draws are in the same task, so
+    // nothing composites in between and nothing flickers.
+    renderer.current.draw(video, sampling && plan.zebras ? { ...plan, zebras: false } : plan);
+    if (!sampling) return;
     if (!scratch.current) {
       scratch.current = document.createElement("canvas");
       scratch.current.width = SAMPLE_W;
@@ -98,6 +106,7 @@ export function GradedVideo({
     if (!small) return;
     small.drawImage(canvas, 0, 0, SAMPLE_W, SAMPLE_H);
     const { data } = small.getImageData(0, 0, SAMPLE_W, SAMPLE_H);
+    if (plan.zebras) renderer.current.draw(video, plan);
 
     const red = new Float32Array(BINS);
     const green = new Float32Array(BINS);
