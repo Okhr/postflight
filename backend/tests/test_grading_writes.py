@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from sqlmodel import Session, select
 
+from app import dispatch
 from app.api import routes, schemas
+from app.config import settings
 from app.models import Grade, GradeState, Job, JobKind, JobState, Render, RenderState, Sequence
+from app.paths import to_relative
 
 
 def _clip(session: Session, seq: Sequence) -> Render:
@@ -87,3 +90,66 @@ def test_a_look_that_moves_after_a_file_exists_goes_back_to_draft(
     _encoding(session, render, GradeState.DONE)
 
     assert _save(session, render, exposure=0.1).state == "draft"
+
+
+def test_a_new_graded_file_replaces_the_one_it_supersedes(
+    session: Session, sequence: Sequence, tmp_path
+):
+    """A graded file is named after its look, so going back to a look already made is
+    free. The price was a hundred megabytes per look ever tried, unreachable from
+    anywhere once the row pointed elsewhere: measured at 181 MB on the real volume.
+    """
+    render = _clip(session, sequence)
+    _save(session, render, exposure=0.5)
+    grade = session.exec(select(Grade).where(Grade.render_id == render.id)).one()
+    old = settings.graded_dir / "clip__oldlook.mp4"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_bytes(b"the look before")
+    grade.out_path = to_relative(old)
+    grade.state = GradeState.RUNNING
+    session.add(grade)
+    session.commit()
+
+    new = settings.graded_dir / "clip__newlook.mp4"
+    new.write_bytes(b"the look now")
+    job = Job(
+        kind=JobKind.GRADE,
+        state=JobState.RUNNING,
+        sequence_id=render.sequence_id,
+        render_id=render.id,
+        grade_id=grade.id,
+        payload={"grade_id": grade.id},
+    )
+    session.add(job)
+    session.commit()
+
+    dispatch._apply_grade(session, job, {"out_path": to_relative(new)})
+
+    assert not old.exists()
+    assert new.exists()
+    session.refresh(grade)
+    assert grade.out_path == to_relative(new)
+
+
+def test_re_rendering_the_same_look_keeps_its_file(session: Session, sequence: Sequence):
+    """The worker reuses the file when the hash matches, so the applier is handed the
+    path it already holds. Deleting it there would delete the answer."""
+    render = _clip(session, sequence)
+    _save(session, render, exposure=0.5)
+    grade = session.exec(select(Grade).where(Grade.render_id == render.id)).one()
+    same = settings.graded_dir / "clip__samelook.mp4"
+    same.parent.mkdir(parents=True, exist_ok=True)
+    same.write_bytes(b"unchanged")
+    grade.out_path = to_relative(same)
+    session.add(grade)
+    session.commit()
+    job = Job(
+        kind=JobKind.GRADE, state=JobState.RUNNING, sequence_id=render.sequence_id,
+        render_id=render.id, grade_id=grade.id, payload={"grade_id": grade.id},
+    )
+    session.add(job)
+    session.commit()
+
+    dispatch._apply_grade(session, job, {"out_path": to_relative(same), "reused": True})
+
+    assert same.exists()

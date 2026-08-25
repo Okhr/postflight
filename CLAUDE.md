@@ -398,6 +398,28 @@ plus loin :
   d'événement de pointeur (`disabled:pointer-events-none`), donc le `title` va sur un
   `span` autour.
 
+### Étalonner, changer un réglage, réétalonner
+
+Question de florian le 2026-08-25, et les trois cas ne se comportent pas pareil. Vérifié
+en le faisant, pas en lisant le code :
+
+| geste | ce qui se passe |
+|---|---|
+| réétalonner **sans rien changer** | rien n'est réencodé. Le nom du fichier porte le hash du look, le worker le trouve, répond `reused` et le job se termine en une seconde |
+| **changer un réglage** | le grade retombe en `draft`, un encodage en vol est annulé, et le fichier précédent **reste** : il ne correspond plus au look, donc l'interface ne le montre plus |
+| **réétalonner ensuite** | un nouvel encodage, et le fichier remplacé est maintenant supprimé |
+
+Cette dernière ligne est neuve. Le nom porte le hash du look pour que **revenir à un look
+déjà produit soit gratuit**, et le prix en était cent mégaoctets par look jamais essayé,
+inatteignables depuis n'importe où dès que la ligne pointe ailleurs. Mesuré sur le vrai
+volume avant correctif : **181 Mo sur 393**, après deux changements de réglage dans
+l'après-midi. `_apply_grade` supprime donc le fichier qu'il remplace, et seulement s'il
+diffère (sinon il supprimerait la réponse que le worker vient de réutiliser).
+
+Ce qui reste assumé : un look changé et jamais réétalonné garde son fichier, invisible
+mais réutilisable si on revient exactement dessus. Le supprimer au changement de réglage
+serait pire, la page écrivant à chaque relâchement de curseur.
+
 ### Changer le look annule l'encodage en vol
 
 Trouvé en testant la page, pas par raisonnement : j'ai réglé un contraste, lancé le

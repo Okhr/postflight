@@ -677,6 +677,15 @@ def _apply_grade(session: Session, job: Job, result: dict[str, Any]) -> None:
     grade = session.get(Grade, job.payload.get("grade_id") or job.grade_id)
     if grade is None:
         raise PrepareError(f"grade {job.grade_id} vanished mid-job")
+    # The look moved and was rendered again, so the file it replaces is superseded.
+    # A graded file is named after its look, which was meant to make going back to a
+    # previous one free; the price was a hundred megabytes per look ever tried, none of
+    # it reachable from anywhere in the interface once the row points elsewhere.
+    # Measured on the real volume before this: 181 MB of it after two look changes.
+    previous = to_absolute(grade.out_path)
+    if previous and previous.exists() and to_relative(previous) != result["out_path"]:
+        previous.unlink(missing_ok=True)
+        log.info("Superseded graded file removed: %s", previous.name)
     grade.out_path = result["out_path"]
     grade.state = GradeState.DONE
     grade.progress = 1.0
