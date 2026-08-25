@@ -45,7 +45,6 @@ class Settings(BaseSettings):
     # Frames sampled per second when analysing a clip. 2/s is enough to find the
     # dark, median and bright moments without decoding everything.
     grade_analysis_fps: float = 2.0
-    grade_preview_width: int = 960
 
     # --- Tools ---------------------------------------------------------------
     ffmpeg_bin: str = "ffmpeg"

@@ -1,13 +1,17 @@
 /**
- * Colour grading of the stabilized clips, one look per clip, into a new file.
+ * Colour grading of the stabilized clips, into new files.
  *
- * The page is shaped like Stabilize, because it answers the same kind of question one
- * step later: the clips are grouped the way the sidebar groups them, named the way the
- * rest of the interface names things (rush, sequence, profile, never a filename), and
- * what is tuned but not yet written can be rendered in one go.
+ * A grade is a level of the hierarchy, not a property of a clip: rush, sequence,
+ * profile, grade (florian, 2026-08-25). So a clip carries as many looks as one wants,
+ * side by side, each named, each with its own file and its own state, and two can be
+ * encoding at once. Before this, `grade.render_id` was unique and a clip had exactly
+ * one look, overwritten in place.
  *
- * Two gestures stay separate, which is how florian works: a look is tuned on one clip
- * by eye, then copied to the others, and rendering is a decision of its own.
+ * The tree is drawn from the same primitives as the one on Stabilize (see
+ * components/tree): same indent, same rows, same folder dots. What differs below the
+ * sequence is each page's job, and only that: Stabilize stops there and summarises the
+ * profiles as badges, because it is a queue of what is missing; here one navigates down
+ * to a grade, because it is an editor of what exists.
  *
  * There is no save button. Every slider writes when it is released, like the derush,
  * so what is on screen is what is stored. The preview is a shader (see
@@ -16,18 +20,19 @@
  */
 import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   BarChart3,
-  ChevronRight,
   Copy,
   Download,
   Droplet,
   Eye,
   Hash,
   Loader2,
+  Pencil,
+  Plus,
   RotateCcw,
   Trash2,
   TriangleAlert,
@@ -35,11 +40,14 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { DeleteDialog } from "@/components/DeleteDialog";
 import { GradedVideo } from "@/components/GradedVideo";
-import { ScopePanel, type ScopeSink, type Scopes } from "@/components/Scopes";
 import { LooksCard } from "@/components/LooksCard";
+import { RenameDialog } from "@/components/RenameDialog";
+import { ScopePanel, type ScopeSink, type Scopes } from "@/components/Scopes";
 import { StateBadge } from "@/components/StateBadge";
-import { Badge } from "@/components/ui/badge";
+import { Dot, Indent, Meta, Twisty, rowClass } from "@/components/tree";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -63,7 +71,6 @@ import {
   type Look,
   type Render,
 } from "@/lib/api";
-import { folderColor } from "@/lib/colors";
 import { usePersistentState } from "@/lib/persist";
 import { levelsOf } from "@/lib/grade-shader";
 import { formatBytes, formatDuration } from "@/lib/format";
@@ -82,13 +89,8 @@ const CONTROLS = [
   { key: "highlights", label: "Highlights", min: -1, max: 1, step: 0.02, unit: "", neutral: 0 },
 ] as const;
 
-/**
- * Black and white points, kept apart from the six above.
- *
- * They are parameters like the others, with one difference that shapes the page: they
- * belong to a clip. What is unused range on this shot is picture on the next, so they
- * sit above a separator and the copy dialog leaves them where they are.
- */
+/** The clip's own range, measured on its own picture, which is why these two sit above
+ *  the separator and never travel: unused range here is picture on the next shot. */
 const POINTS = [
   { key: "black_point", label: "Black point", min: 0, max: 0.9, step: 0.005, neutral: 0 },
   { key: "white_point", label: "White point", min: 0.1, max: 1, step: 0.005, neutral: 1 },
@@ -130,21 +132,24 @@ function travelling(look: GradeParams, keep: GradeParams): GradeParams {
 // The clips, grouped
 // --------------------------------------------------------------------------- //
 
+/** A sequence, and the stabilized files made from it. */
+interface CutNode {
+  key: number;
+  label: string;
+  duration_ms: number;
+  clips: Render[];
+}
+
 interface Rush {
   id: number;
   label: string;
-  clips: Render[];
+  cuts: CutNode[];
 }
 
 interface Node {
   folder: Folder | null;
   children: Node[];
   rushes: Rush[];
-}
-
-/** What a clip is called: its sequence and the profile it was rendered with. */
-function clipName(clip: Render, profile: (id: string) => string): string {
-  return [clip.cut_label, profile(clip.template)].filter(Boolean).join(" · ");
 }
 
 function rushesIn(clips: Render[], folderId: number | null): Rush[] {
@@ -154,17 +159,34 @@ function rushesIn(clips: Render[], folderId: number | null): Rush[] {
   for (const clip of mine) {
     let rush = byRush.get(clip.sequence_id);
     if (!rush) {
-      rush = { id: clip.sequence_id, label: clip.sequence_label || clip.sequence_key, clips: [] };
+      rush = { id: clip.sequence_id, label: clip.sequence_label || clip.sequence_key, cuts: [] };
       byRush.set(clip.sequence_id, rush);
       order.push(clip.sequence_id);
     }
-    rush.clips.push(clip);
+    // Renders with no cut exist in the database, from before the derush was the only way
+    // in, and they are whole rushes. They get a node of their own rather than being
+    // hidden or folded into a sequence they are not part of.
+    const key = clip.cut_id ?? 0;
+    let cut = rush.cuts.find((entry) => entry.key === key);
+    if (!cut) {
+      cut = {
+        key,
+        label: clip.cut_label || "whole rush",
+        duration_ms: clip.duration_ms,
+        clips: [],
+      };
+      rush.cuts.push(cut);
+    }
+    cut.clips.push(clip);
   }
   return order.map((id) => byRush.get(id) as Rush);
 }
 
 function clipsOf(node: Node): Render[] {
-  return [...node.rushes.flatMap((rush) => rush.clips), ...node.children.flatMap(clipsOf)];
+  return [
+    ...node.rushes.flatMap((rush) => rush.cuts.flatMap((cut) => cut.clips)),
+    ...node.children.flatMap(clipsOf),
+  ];
 }
 
 /** Only what has a clip in it: this is the list of what can be graded, not the library. */
@@ -185,9 +207,12 @@ function build(folders: Folder[], clips: Render[]): Node[] {
 
 export function Color() {
   const queryClient = useQueryClient();
-  const { id } = useParams();
-  const renderId = Number(id);
-  const selected = Number.isFinite(renderId) ? renderId : undefined;
+  const navigate = useNavigate();
+  const { id, gradeId } = useParams();
+  const renderId = Number(id) || undefined;
+  const openId = Number(gradeId) || undefined;
+  const [shut, setShut] = useState<Set<string>>(new Set());
+  const [doomed, setDoomed] = useState<Grade | null>(null);
 
   const { data: renders } = useQuery({
     queryKey: ["renders"],
@@ -203,63 +228,126 @@ export function Color() {
   const { data: templates } = useQuery({ queryKey: ["templates"], queryFn: api.templates });
 
   const clips = (renders ?? []).filter((render) => render.state === "done");
-  const gradeOf = new Map((grades ?? []).map((grade) => [grade.render_id, grade]));
-  const open = selected ? gradeOf.get(selected) : undefined;
+  const gradesOf = useMemo(() => {
+    const out = new Map<number, Grade[]>();
+    for (const grade of grades ?? []) {
+      out.set(grade.render_id, [...(out.get(grade.render_id) ?? []), grade]);
+    }
+    for (const list of out.values()) list.sort((a, b) => a.id - b.id);
+    return out;
+  }, [grades]);
+  const open = (grades ?? []).find((grade) => grade.id === openId);
+  const openRender = clips.find((clip) => clip.id === (open?.render_id ?? renderId));
+
+  /** A new grade on a clip, opened straight away: the "+" on a profile row. */
+  const add = useMutation({
+    mutationFn: (target: number) => api.putGrade(target, {}),
+    onSuccess: (grade) => {
+      queryClient.invalidateQueries({ queryKey: ["grades"] });
+      navigate(`/color/${grade.render_id}/${grade.id}`);
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const remove = useMutation({
+    mutationFn: (grade: Grade) => api.deleteGrade(grade.id),
+    onSuccess: (_result, grade) => {
+      queryClient.invalidateQueries({ queryKey: ["grades"] });
+      queryClient.invalidateQueries({ queryKey: ["stabilize-queue"] });
+      queryClient.invalidateQueries({ queryKey: ["sequences"] });
+      if (grade.id === openId) navigate(`/color/${grade.render_id}`);
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  /**
+   * A clip addressed without a grade opens one: its first, or a new one.
+   *
+   * Which is what the droplet on Stabilize links to, and what the URL of a clip means
+   * on its own. Creating on sight is what opening a clip already did when a clip had
+   * exactly one grade; the difference is that the row now shows up in the tree.
+   */
+  const asked = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!renderId || openId || !grades) return;
+    const mine = gradesOf.get(renderId);
+    if (mine?.length) {
+      navigate(`/color/${renderId}/${mine[0].id}`, { replace: true });
+      return;
+    }
+    // Once per clip, remembered in a ref: the effect runs on every render, and a
+    // creation that failed would otherwise be retried for as long as the page is open.
+    if (asked.current.has(renderId)) return;
+    asked.current.add(renderId);
+    add.mutate(renderId);
+  }, [renderId, openId, grades, gradesOf, navigate, add]);
 
   /**
    * Applying a look is a write, not a piece of shared state.
    *
-   * The card sits above the editor and needs nothing from inside it: what a clip
-   * currently wears is in the grades already loaded here, and the editor picks the new
+   * The card sits above the editor and needs nothing from inside it: what the open
+   * grade wears is in the grades already loaded here, and the editor picks the new
    * value up because its own query is invalidated. The clip's own black and white
    * points are kept, as they are everywhere else.
    */
-  const apply = useMutation({
+  const paint = useMutation({
     mutationFn: (look: Look) => {
-      if (!selected) throw new Error("no clip open");
-      const keep = open?.params ?? NEUTRAL_GRADE;
-      return api.saveGrade(selected, {
-        ...NEUTRAL_GRADE,
-        ...look.params,
-        black_point: keep.black_point,
-        white_point: keep.white_point,
+      if (!open) throw new Error("no grade open");
+      return api.saveGrade(open.id, {
+        params: travelling({ ...NEUTRAL_GRADE, ...look.params }, open.params),
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["grade", selected] });
+      queryClient.invalidateQueries({ queryKey: ["grade", openId] });
       queryClient.invalidateQueries({ queryKey: ["grades"] });
     },
     onError: (error: Error) => toast.error(error.message),
   });
+
   const profile = (template: string) =>
     templates?.find((option) => option.id === template)?.label ?? template;
 
   /* The picker sits under the picture, not in a column of its own (florian, 2026-08-25).
      It costs a scroll when changing clip, which happens once per clip, and it gives the
-     picture the width a whole column used to hold: measured 462 px wide before, 888
+     picture the width a whole column used to hold: measured 462 px wide before, 838
      after, on a 1600 window. */
   const picker = (
     <Clips
       tree={build(folders ?? [], clips)}
       grades={grades ?? []}
-      gradeOf={gradeOf}
+      gradesOf={gradesOf}
       profile={profile}
-      selected={selected}
+      selected={openId}
+      shut={shut}
+      toggle={(key) =>
+        setShut((previous) => {
+          const next = new Set(previous);
+          if (next.has(key)) next.delete(key);
+          else next.add(key);
+          return next;
+        })
+      }
+      onAdd={(target) => add.mutate(target)}
+      onDelete={setDoomed}
     />
   );
 
   return (
     <div className="space-y-4">
-      <LooksCard current={open?.params ?? null} onApply={(look) => apply.mutate(look)} />
-      {selected ? (
+      <LooksCard
+        current={open?.params ?? null}
+        currentLabel={open?.label}
+        onApply={(look) => paint.mutate(look)}
+      />
+      {open && openRender ? (
         <Editor
-          key={selected}
-          renderId={selected}
-          render={clips.find((clip) => clip.id === selected)}
+          key={open.id}
+          gradeId={open.id}
+          render={openRender}
           profile={profile}
-          others={clips.filter((clip) => clip.id !== selected)}
+          others={clips.filter((clip) => clip.id !== openRender.id)}
           folders={folders ?? []}
-          gradeOf={gradeOf}
+          gradesOf={gradesOf}
           picker={picker}
         />
       ) : (
@@ -268,31 +356,52 @@ export function Color() {
           {picker}
         </>
       )}
+
+      <DeleteDialog
+        open={doomed !== null}
+        title={`Delete the grade "${doomed?.label ?? ""}"?`}
+        note={
+          doomed?.out_name
+            ? "Its graded file goes with it. The stabilized clip and the other grades on it stay."
+            : "The stabilized clip and the other grades on it stay."
+        }
+        onClose={() => setDoomed(null)}
+        onConfirm={() => doomed && remove.mutate(doomed)}
+      />
     </div>
   );
 }
 
-/** The picker, and the one thing that can be done to all of them at once. */
-function Clips({
-  tree,
-  grades,
-  gradeOf,
-  profile,
-  selected,
-}: {
-  tree: Node[];
-  grades: Grade[];
-  gradeOf: Map<number, Grade>;
+// --------------------------------------------------------------------------- //
+// The tree
+// --------------------------------------------------------------------------- //
+
+interface RowProps {
+  gradesOf: Map<number, Grade[]>;
   profile: (id: string) => string;
+  /** The grade being edited. */
   selected?: number;
-}) {
+  shut: Set<string>;
+  toggle: (key: string) => void;
+  onAdd: (renderId: number) => void;
+  onDelete: (grade: Grade) => void;
+  /** Present in the copy dialog, absent in the picker: a clip is then a checkbox and
+   *  the tree stops at the profile, since a clip is what a copy targets. */
+  picked?: Set<number>;
+  flip?: (ids: number[], on: boolean) => void;
+}
+
+/** The picker, and the one thing that can be done to all of them at once. */
+function Clips({ tree, grades, ...rest }: { tree: Node[]; grades: Grade[] } & RowProps) {
   const queryClient = useQueryClient();
-  const waiting = grades.filter((grade) => grade.state === "draft" && !isNeutral(grade.params));
+  const waiting = grades.filter(
+    (grade) => grade.state === "draft" && !isNeutral(grade.params),
+  );
 
   const renderAll = useMutation({
     mutationFn: async () => {
       const results = await Promise.allSettled(
-        waiting.map((grade) => api.applyGrade(grade.render_id)),
+        waiting.map((grade) => api.applyGrade(grade.id)),
       );
       return results.filter((result) => result.status === "rejected").length;
     },
@@ -306,11 +415,11 @@ function Clips({
   const count = tree.flatMap(clipsOf).length;
   return (
     <aside>
-      {/* The batch button rides in the header row: full width, under the picture, it was
-          a 900 px primary button. Same shape as the launch button on Stabilize. */}
+      {/* The batch button rides in the header row: full width, under the picture, it
+          was a 900 px primary button. Same shape as the launch button on Stabilize. */}
       <div className="mb-2 flex items-center gap-2 px-1">
         <h2 className="text-sm font-medium">Stabilized clips</h2>
-        <span className="tnum text-sm text-muted-foreground">{count}</span>
+        <Meta>{count}</Meta>
         {waiting.length > 0 && (
           <Button
             size="sm"
@@ -332,63 +441,37 @@ function Clips({
           .
         </p>
       ) : (
-        <div className="space-y-2">
-          <div className="space-y-0.5">
-            {tree.map((node) => (
-              <FolderRow
-                key={node.folder?.id ?? "global"}
-                node={node}
-                depth={0}
-                selected={selected}
-                gradeOf={gradeOf}
-                profile={profile}
-              />
-            ))}
-          </div>
+        <div className="space-y-0.5">
+          {tree.map((node) => (
+            <FolderRow key={node.folder?.id ?? "global"} node={node} depth={0} {...rest} />
+          ))}
         </div>
       )}
     </aside>
   );
 }
 
-interface RowProps {
-  selected?: number;
-  gradeOf: Map<number, Grade>;
-  profile: (id: string) => string;
-  /** Present in the copy dialog, absent in the picker: a row is then a checkbox. */
-  picked?: Set<number>;
-  flip?: (ids: number[], on: boolean) => void;
-}
-
 function FolderRow({ node, depth, ...rest }: { node: Node; depth: number } & RowProps) {
-  const [open, setOpen] = useState(true);
+  const key = `folder-${node.folder?.id ?? "global"}`;
+  const open = !rest.shut.has(key);
+  const mine = clipsOf(node);
   return (
     <div>
-      <div className="flex items-center gap-1.5 py-1 text-sm">
-        <span style={{ width: depth * 12 }} />
-        {rest.picked && rest.flip && (
-          <Tick ids={clipsOf(node).map((clip) => clip.id)} {...rest} />
-        )}
+      <div className={rowClass}>
+        <Indent depth={depth} />
+        {rest.picked && rest.flip && <Tick ids={mine.map((clip) => clip.id)} {...rest} />}
         <button
           type="button"
-          onClick={() => setOpen(!open)}
+          onClick={() => rest.toggle(key)}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
         >
-          <ChevronRight
-            className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-90")}
-          />
-          <span
-            className={cn(
-              "h-2 w-2 shrink-0 rounded-full",
-              node.folder
-                ? (folderColor(node.folder.color)?.dot ?? "bg-muted")
-                : "bg-muted-foreground/50",
-            )}
-          />
+          <Twisty open={open} />
+          <Dot color={node.folder?.color} />
           <span className="truncate font-medium" title={node.folder?.name ?? "Global"}>
             {node.folder?.name ?? "Global"}
           </span>
         </button>
+        <Meta>{formatDuration(mine.reduce((sum, clip) => sum + clip.duration_ms, 0))}</Meta>
       </div>
       {open && (
         <div>
@@ -405,23 +488,154 @@ function FolderRow({ node, depth, ...rest }: { node: Node; depth: number } & Row
 }
 
 function RushRow({ rush, depth, ...rest }: { rush: Rush; depth: number } & RowProps) {
+  const key = `rush-${rush.id}`;
+  const open = !rest.shut.has(key);
+  const clips = rush.cuts.flatMap((cut) => cut.clips);
   return (
     <div>
-      <div className="flex items-center gap-1.5 py-1 text-sm text-muted-foreground">
-        <span style={{ width: depth * 12 }} />
-        {rest.picked && rest.flip && <Tick ids={rush.clips.map((clip) => clip.id)} {...rest} />}
-        <span className="truncate" title={rush.label}>
+      <div className={rowClass}>
+        <Indent depth={depth} />
+        {rest.picked && rest.flip && <Tick ids={clips.map((clip) => clip.id)} {...rest} />}
+        <Twisty open={open} onClick={() => rest.toggle(key)} />
+        <Link
+          to={`/derush/${rush.id}`}
+          className="min-w-0 flex-1 truncate hover:underline"
+          title={rush.label}
+        >
           {rush.label}
-        </span>
+        </Link>
+        <Meta>{formatDuration(clips.reduce((sum, clip) => sum + clip.duration_ms, 0))}</Meta>
       </div>
-      {rush.clips.map((clip) => (
-        <ClipRow key={clip.id} clip={clip} depth={depth + 1} {...rest} />
-      ))}
+      {open &&
+        rush.cuts.map((cut) => <CutRow key={cut.key} cut={cut} depth={depth + 1} {...rest} />)}
     </div>
   );
 }
 
-/** A checkbox that can also be neither on nor off, which a rush often is. */
+function CutRow({ cut, depth, ...rest }: { cut: CutNode; depth: number } & RowProps) {
+  const key = `cut-${cut.key}`;
+  const open = !rest.shut.has(key);
+  return (
+    <div>
+      <div className={rowClass}>
+        <Indent depth={depth} />
+        {rest.picked && rest.flip && <Tick ids={cut.clips.map((clip) => clip.id)} {...rest} />}
+        <Twisty open={open} onClick={() => rest.toggle(key)} />
+        <span className="min-w-0 flex-1 truncate" title={cut.label}>
+          {cut.label}
+        </span>
+        <Meta>{formatDuration(cut.duration_ms)}</Meta>
+      </div>
+      {open &&
+        cut.clips.map((clip) => (
+          <ProfileRow key={clip.id} clip={clip} depth={depth + 1} {...rest} />
+        ))}
+    </div>
+  );
+}
+
+/**
+ * A stabilized file, named by its profile, with its grades under it.
+ *
+ * The badge is the one Stabilize draws on a sequence row: a profile looks the same
+ * wherever it is seen. Clicking a profile that has no grade yet makes its first one,
+ * which is what opening a clip did when a clip had exactly one.
+ */
+function ProfileRow({ clip, depth, ...rest }: { clip: Render; depth: number } & RowProps) {
+  const key = `profile-${clip.id}`;
+  const mine = rest.gradesOf.get(clip.id) ?? [];
+  const open = !rest.shut.has(key);
+  const label = rest.profile(clip.template);
+  const badge = cn(badgeVariants({ variant: "secondary" }), "font-normal");
+
+  if (rest.picked && rest.flip) {
+    const on = rest.picked.has(clip.id);
+    return (
+      <label className={cn(rowClass, "cursor-pointer pr-1")}>
+        <Indent depth={depth} />
+        <Checkbox checked={on} onCheckedChange={() => rest.flip?.([clip.id], !on)} />
+        <span className={badge}>{label}</span>
+      </label>
+    );
+  }
+
+  return (
+    <div>
+      <div className={rowClass}>
+        <Indent depth={depth} />
+        <Twisty open={open} onClick={mine.length ? () => rest.toggle(key) : undefined} />
+        <button
+          type="button"
+          onClick={() => (mine.length ? rest.toggle(key) : rest.onAdd(clip.id))}
+          className="min-w-0 flex-1 text-left"
+        >
+          <span className={badge}>{label}</span>
+        </button>
+        <Button
+          size="icon"
+          variant="ghost"
+          title="Add a grade"
+          className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+          onClick={() => rest.onAdd(clip.id)}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      {open &&
+        mine.map((grade) => (
+          <GradeRow key={grade.id} grade={grade} depth={depth + 1} {...rest} />
+        ))}
+    </div>
+  );
+}
+
+function GradeRow({ grade, depth, ...rest }: { grade: Grade; depth: number } & RowProps) {
+  const busy = grade.state === "queued" || grade.state === "running";
+  // On the state, not on `out_name`: a look changed after an encode leaves the old file
+  // on disk, reusable if the sliders come back to it exactly, and it is not this look.
+  const made = grade.state === "done";
+  return (
+    <div className={cn(rowClass, grade.id === rest.selected && "bg-accent hover:bg-accent")}>
+      <Indent depth={depth} />
+      <Link
+        to={`/color/${grade.render_id}/${grade.id}`}
+        className="min-w-0 flex-1 truncate"
+        title={grade.label}
+      >
+        {grade.label}
+      </Link>
+      {busy && <Loader2 className="h-3 w-3 shrink-0 animate-spin" />}
+      {grade.state === "failed" && <Meta className="text-red-400">failed</Meta>}
+      <span title={made ? "A graded file exists" : "Nothing encoded yet"}>
+        <Droplet
+          className={cn("h-3 w-3 shrink-0", made ? "fill-current" : "text-muted-foreground/30")}
+        />
+      </span>
+      {made && (
+        <a
+          href={mediaUrl.gradedDownload(grade.id)}
+          title="Download the graded file"
+          className="shrink-0 text-muted-foreground hover:text-foreground"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </a>
+      )}
+      {/* Always drawn, like every other row of this tree: an icon that appears on
+          hover is an icon nobody knows is there. */}
+      <Button
+        size="icon"
+        variant="ghost"
+        title="Delete this grade"
+        className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+        onClick={() => rest.onDelete(grade)}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  );
+}
+
+/** A checkbox that can also be neither on nor off, which a folder often is. */
 function Tick({ ids, picked, flip }: { ids: number[] } & RowProps) {
   const taken = ids.filter((id) => picked?.has(id)).length;
   return (
@@ -432,84 +646,25 @@ function Tick({ ids, picked, flip }: { ids: number[] } & RowProps) {
   );
 }
 
-function ClipRow({
-  clip,
-  depth,
-  selected,
-  gradeOf,
-  profile,
-  picked,
-  flip,
-}: { clip: Render; depth: number } & RowProps) {
-  const grade = gradeOf.get(clip.id);
-  const name = clipName(clip, profile);
-  const body = (
-    <>
-      <span className="truncate" title={name}>
-        {name}
-      </span>
-      <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
-        {(grade?.state === "queued" || grade?.state === "running") && (
-          <Loader2 className="h-3 w-3 animate-spin" />
-        )}
-        <span title={grade?.state === "done" ? "Graded" : "Not graded"}>
-          <Droplet
-            className={cn(
-              "h-3 w-3",
-              grade?.state === "done" ? "fill-current" : "text-muted-foreground/30",
-            )}
-          />
-        </span>
-        <span className="tnum text-xs text-muted-foreground">
-          {formatDuration(clip.duration_ms)}
-        </span>
-      </span>
-    </>
-  );
-
-  if (picked && flip) {
-    return (
-      <label className="flex cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1 text-sm hover:bg-accent/40">
-        <span style={{ width: depth * 12 }} />
-        <Checkbox checked={picked.has(clip.id)} onCheckedChange={() => flip([clip.id], !picked.has(clip.id))} />
-        {body}
-      </label>
-    );
-  }
-
-  return (
-    <Link
-      to={`/color/${clip.id}`}
-      className={cn(
-        "flex items-center gap-1.5 rounded-md py-1 pr-1 text-sm transition-colors",
-        clip.id === selected ? "bg-accent" : "hover:bg-accent/50",
-      )}
-    >
-      <span style={{ width: depth * 12 }} />
-      {body}
-    </Link>
-  );
-}
-
 // --------------------------------------------------------------------------- //
 // The editor
 // --------------------------------------------------------------------------- //
 
 function Editor({
-  renderId,
+  gradeId,
   render,
   profile,
   others,
   folders,
-  gradeOf,
+  gradesOf,
   picker,
 }: {
-  renderId: number;
-  render?: Render;
+  gradeId: number;
+  render: Render;
   profile: (id: string) => string;
   others: Render[];
   folders: Folder[];
-  gradeOf: Map<number, Grade>;
+  gradesOf: Map<number, Grade[]>;
   /** The clip list, dropped under the picture. */
   picker: React.ReactNode;
 }) {
@@ -517,6 +672,8 @@ function Editor({
   const [params, setParams] = useState<GradeParams>(NEUTRAL_GRADE);
   const [showBefore, setShowBefore] = useState(false);
   const [copying, setCopying] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [droppingFile, setDroppingFile] = useState(false);
   const sink = useRef<ScopeSink | null>(null);
   const [scopes, setScopes] = usePersistentState<Scopes>("color.scopes", {
     zebras: false,
@@ -526,8 +683,8 @@ function Editor({
   });
 
   const { data: grade, isLoading } = useQuery({
-    queryKey: ["grade", renderId],
-    queryFn: () => api.grade(renderId),
+    queryKey: ["grade", gradeId],
+    queryFn: () => api.grade(gradeId),
     refetchInterval: (query) =>
       ["queued", "running"].includes(query.state.data?.state ?? "") ? 2_000 : false,
   });
@@ -536,31 +693,37 @@ function Editor({
     if (grade) setParams(grade.params);
   }, [grade?.id, grade?.params]);
 
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["grade", gradeId] });
+    queryClient.invalidateQueries({ queryKey: ["grades"] });
+  };
+
   /** No save button: a gesture that changes the look writes it. */
   const save = useMutation({
-    mutationFn: (next: GradeParams) => api.saveGrade(renderId, next),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["grade", renderId] });
-      queryClient.invalidateQueries({ queryKey: ["grades"] });
-    },
+    mutationFn: (next: GradeParams) => api.saveGrade(gradeId, { params: next }),
+    onSuccess: invalidate,
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const rename = useMutation({
+    mutationFn: (label: string) => api.saveGrade(gradeId, { label }),
+    onSuccess: invalidate,
     onError: (error: Error) => toast.error(error.message),
   });
 
   const apply = useMutation({
-    mutationFn: () => api.applyGrade(renderId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["grade", renderId] });
-      queryClient.invalidateQueries({ queryKey: ["grades"] });
-    },
+    mutationFn: () => api.applyGrade(gradeId),
+    onSuccess: invalidate,
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const remove = useMutation({
-    mutationFn: (gradeId: number) => api.deleteGrade(gradeId),
+  /** The file, not the grade: the look stays, ready to be encoded again. */
+  const dropFile = useMutation({
+    mutationFn: () => api.deleteGradedFile(gradeId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["grade", renderId] });
-      queryClient.invalidateQueries({ queryKey: ["grades"] });
+      invalidate();
       queryClient.invalidateQueries({ queryKey: ["stabilize-queue"] });
+      queryClient.invalidateQueries({ queryKey: ["sequences"] });
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -588,17 +751,30 @@ function Editor({
     <div className="min-w-0 space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="truncate text-sm font-semibold">
-          {render?.sequence_label || `render ${renderId}`}
-          {render?.cut_label && ` · ${render.cut_label}`}
+          {render.sequence_label || `render ${render.id}`}
+          {render.cut_label && ` · ${render.cut_label}`}
         </h1>
-        {render && <Badge variant="secondary" className="font-normal">{profile(render.template)}</Badge>}
+        <Badge variant="secondary" className="font-normal">
+          {profile(render.template)}
+        </Badge>
+        <span className="flex items-center gap-1 text-sm">
+          {grade?.label}
+          <button
+            type="button"
+            title="Rename this grade"
+            className="text-muted-foreground hover:text-foreground"
+            onClick={() => setRenaming(grade?.label ?? "")}
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
+        </span>
         {grade && grade.state !== "draft" && <StateBadge state={grade.state} />}
         <span className="text-sm text-muted-foreground">
-          {render && formatDuration(render.duration_ms)}
+          {formatDuration(render.duration_ms)}
           {analysis.frames ? ` · analysed on ${analysis.frames} frames` : ""}
         </span>
         <Button asChild size="sm" variant="ghost" className="ml-auto">
-          <Link to={`/stabilisation/${render?.sequence_id ?? ""}`}>Back to stabilize</Link>
+          <Link to={`/stabilisation/${render.sequence_id}`}>Back to stabilize</Link>
         </Button>
       </div>
 
@@ -607,7 +783,7 @@ function Editor({
           <Card className="overflow-hidden">
             <CardContent className="p-3">
               <GradedVideo
-                src={mediaUrl.render(renderId)}
+                src={mediaUrl.render(render.id)}
                 plan={{
                   levels: showBefore ? null : levelsOf(params.black_point, params.white_point),
                   exposure: showBefore ? 0 : params.exposure,
@@ -625,7 +801,13 @@ function Editor({
                   /* The reason a button is dead goes in a tooltip, not in a line of
                      prose under it. A disabled button takes no pointer events, so the
                      title has to sit on something around it. */
-                  <span title={neutral ? "Nothing to compare: the look is neutral" : "Hold to see it ungraded"}>
+                  <span
+                    title={
+                      neutral
+                        ? "Nothing to compare: the look is neutral"
+                        : "Hold to see it ungraded"
+                    }
+                  >
                     <Button
                       size="icon"
                       variant={showBefore ? "default" : "outline"}
@@ -801,7 +983,7 @@ function Editor({
                         </a>
                       </Button>
                       <Button asChild size="sm" variant="ghost">
-                        <a href={mediaUrl.download(renderId)}>
+                        <a href={mediaUrl.download(render.id)}>
                           <Download className="h-4 w-4" />
                           Stabilized
                         </a>
@@ -810,7 +992,7 @@ function Editor({
                         size="icon"
                         variant="ghost"
                         title="Delete the graded file"
-                        onClick={() => remove.mutate(grade.id)}
+                        onClick={() => setDroppingFile(true)}
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -823,20 +1005,33 @@ function Editor({
         </div>
       </div>
 
+      <RenameDialog
+        title="Rename this grade"
+        value={renaming}
+        onClose={() => setRenaming(null)}
+        onRename={(label) => rename.mutate(label)}
+      />
+      <DeleteDialog
+        open={droppingFile}
+        title="Delete the graded file?"
+        note="The look stays as it is, so the file can be encoded again from it."
+        onClose={() => setDroppingFile(false)}
+        onConfirm={() => dropFile.mutate()}
+      />
       <CopyDialog
         open={copying}
         onClose={() => setCopying(false)}
+        label={grade?.label ?? ""}
         params={params}
         clips={others}
         folders={folders}
         profile={profile}
-        gradeOf={gradeOf}
+        gradesOf={gradesOf}
       />
     </div>
   );
 }
 
-/** One slider and its readout. Written on release, never on every pointer move. */
 /**
  * One slider: its reading above, and its scale below.
  *
@@ -922,46 +1117,58 @@ function Range({
 }
 
 /**
- * Give this look to other clips.
+ * Give this look to other clips, as a grade of the same name.
  *
- * It writes the parameters and stops there. Rendering them is the button in the left
- * column, because deciding what a clip looks like and deciding to spend minutes of
- * encoding on it are two different decisions.
+ * Addressed by name, so pressing it twice is harmless: each target ends up with one
+ * grade called this, whatever else it already carries. What a target has tuned under
+ * another name is untouched, which is the point of grades being a level of their own.
+ *
+ * It writes and stops there. Rendering is the button in the settings column, because
+ * deciding what a clip looks like and deciding to spend minutes of encoding on it are
+ * two different decisions.
  */
 function CopyDialog({
   open,
   onClose,
+  label,
   params,
   clips,
   folders,
   profile,
-  gradeOf,
+  gradesOf,
 }: {
   open: boolean;
   onClose: () => void;
+  label: string;
   params: GradeParams;
   clips: Render[];
   folders: Folder[];
   profile: (id: string) => string;
-  gradeOf: Map<number, Grade>;
+  gradesOf: Map<number, Grade[]>;
 }) {
   const queryClient = useQueryClient();
   const [picked, setPicked] = useState<Set<number>>(new Set());
 
   const copy = useMutation({
     mutationFn: async () => {
-      // Each target keeps its own black and white points: they were measured on its
-      // own picture, and this look was measured on another.
+      // Each target keeps its own black and white points: they were measured on its own
+      // picture, and this look was measured on another. A target that already carries a
+      // grade of this name keeps that grade's points.
       const results = await Promise.allSettled(
-        [...picked].map((id) =>
-          api.saveGrade(id, travelling(params, gradeOf.get(id)?.params ?? NEUTRAL_GRADE)),
-        ),
+        [...picked].map((id) => {
+          const mine = (gradesOf.get(id) ?? []).find((grade) => grade.label === label);
+          return api.putGrade(id, {
+            label,
+            params: travelling(params, mine?.params ?? NEUTRAL_GRADE),
+          });
+        }),
       );
       return results.filter((result) => result.status === "rejected").length;
     },
     onSuccess: (failed) => {
       if (failed) toast.error(`${failed} refused`);
-      else toast.success(`Look copied to ${picked.size} clip${picked.size > 1 ? "s" : ""}`);
+      else
+        toast.success(`"${label}" copied to ${picked.size} clip${picked.size > 1 ? "s" : ""}`);
       queryClient.invalidateQueries({ queryKey: ["grades"] });
       onClose();
     },
@@ -982,7 +1189,7 @@ function CopyDialog({
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Copy this look to</DialogTitle>
+          <DialogTitle>Copy "{label}" to</DialogTitle>
         </DialogHeader>
         <div className="max-h-80 overflow-y-auto pr-1">
           {build(folders, clips).map((node) => (
@@ -990,8 +1197,12 @@ function CopyDialog({
               key={node.folder?.id ?? "global"}
               node={node}
               depth={0}
-              gradeOf={new Map()}
+              gradesOf={gradesOf}
               profile={profile}
+              shut={new Set()}
+              toggle={() => {}}
+              onAdd={() => {}}
+              onDelete={() => {}}
               picked={picked}
               flip={flip}
             />

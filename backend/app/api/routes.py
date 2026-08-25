@@ -197,17 +197,20 @@ def _grade_out(session: Session, grade: Grade) -> schemas.GradeOut:
     seq = session.get(Sequence, render.sequence_id) if render else None
     render_path = to_absolute(render.out_path) if render else None
     out_path = to_absolute(grade.out_path)
+    analysis = (render.analysis if render else None) or {}
     return schemas.GradeOut(
         id=grade.id or 0,
         render_id=grade.render_id,
+        label=grade.label,
         sequence_id=render.sequence_id if render else 0,
         sequence_key=seq.key if seq else "",
         render_name=render_path.name if render_path else None,
         state=grade.state.value,
         progress=grade.progress,
-        params=(params := grading_service.merge_params(grade.params)),
-        analysis=grade.analysis or {},
-        suggested=grading_service.suggest_levels(grade.analysis),
+        params=grading_service.merge_params(grade.params),
+        analysis=analysis,
+        # Off the clip, not off this grade: where the two points would go if measured.
+        suggested=grading_service.suggest_levels(analysis),
         out_name=out_path.name if out_path else None,
         size_bytes=out_path.stat().st_size if out_path and out_path.exists() else None,
         error=grade.error,
@@ -220,10 +223,10 @@ def _grade_out(session: Session, grade: Grade) -> schemas.GradeOut:
 def _purge_render(session: Session, render: Render) -> list[str]:
     """Delete a render and everything hanging off it, files included.
 
-    Deleting a parent deletes its children: a render is the parent of its grade, so
-    the graded file goes with it. It used to stay, which left a `grade` row pointing
-    at a render that no longer existed (`render_id` is unique but not a foreign key,
-    so nothing complained) and a file in `graded/` nothing could name.
+    Deleting a parent deletes its children: a render is the parent of its grades, so
+    their files go with it. They used to stay, which left `grade` rows pointing at a
+    render that no longer existed (`render_id` is not a foreign key, so nothing
+    complained) and files in `graded/` nothing could name.
 
     Does not commit: the callers delete more than one thing at a time.
     """
@@ -253,32 +256,70 @@ def _get_render(session: Session, render_id: int) -> Render:
     return render
 
 
-def _grade_for(session: Session, render: Render, analyse: bool = True) -> Grade:
-    """The grade row of a clip, created with a neutral look on first sight.
+def _analyse_render(session: Session, render: Render) -> dict:
+    """What signalstats measured on the stabilized clip, measured once.
 
-    The analysis runs once, here: it is a decode-only pass, but on a 30 s clip it
-    still costs a few seconds, and nothing about it changes afterwards.
+    It lives on the render because it describes the clip and not the look: the grades
+    of one clip all read the same numbers, and this is a decode pass of a few seconds
+    that must not run once per grade.
     """
-    grade = session.exec(select(Grade).where(Grade.render_id == render.id)).first()
-    if grade is None:
-        grade = Grade(
-            render_id=render.id,  # type: ignore[arg-type]
-            params=dict(grading_service.DEFAULTS),
-            state=GradeState.DRAFT,
-        )
-        session.add(grade)
-        session.commit()
-        session.refresh(grade)
+    if render.analysis:
+        return render.analysis
+    source = to_absolute(render.out_path)
+    if source is None or not source.exists():
+        return {}
+    try:
+        render.analysis = grading_service.analyse(source).to_dict()
+    except (grading_service.GradeError, OSError) as exc:
+        log.warning("Analysis failed for render %s: %s", render.id, exc)
+        return {}
+    session.add(render)
+    session.commit()
+    return render.analysis
 
-    if analyse and not grade.analysis:
-        source = to_absolute(render.out_path)
-        if source is not None and source.exists():
-            try:
-                grade.analysis = grading_service.analyse(source).to_dict()
-                session.add(grade)
-                session.commit()
-            except (grading_service.GradeError, OSError) as exc:
-                log.warning("Analysis failed for render %s: %s", render.id, exc)
+
+def _get_grade(session: Session, grade_id: int) -> Grade:
+    grade = session.get(Grade, grade_id)
+    if grade is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown grade")
+    return grade
+
+
+def _free_grade_label(session: Session, render: Render) -> str:
+    """The first "Grade N" this clip does not already carry."""
+    taken = {
+        g.label
+        for g in session.exec(select(Grade).where(Grade.render_id == render.id)).all()
+    }
+    number = 1
+    while f"Grade {number}" in taken:
+        number += 1
+    return f"Grade {number}"
+
+
+def _write_params(session: Session, grade: Grade, params: dict) -> Grade:
+    """Put a look on a grade, and drop whatever the old one had produced.
+
+    A look that moved makes whatever exists, or is being written, the wrong file. An
+    encode in flight is cancelled the way a render of a deleted cut is: its job goes
+    and the worker holding it stops on its next heartbeat. Guarded on the look having
+    actually moved, because the page writes on every slider release and a write that
+    changes nothing must not kill an encode.
+    """
+    params = grading_service.merge_params(params)
+    digest = grading_service.params_hash(params)
+    changed = digest != grade.params_hash
+    grade.params = params
+    grade.params_hash = digest
+    if changed and grade.state is not GradeState.DRAFT:
+        for job in session.exec(select(Job).where(Job.grade_id == grade.id)).all():
+            session.delete(job)
+        grade.state = GradeState.DRAFT
+        grade.progress = 0.0
+        grade.error = None
+    session.add(grade)
+    session.commit()
+    session.refresh(grade)
     return grade
 
 
@@ -760,10 +801,11 @@ def stabilize_queue(session: Session = Depends(get_session)) -> list[schemas.Que
         select(Cut).where(Cut.sequence_id.in_(ids)).order_by(Cut.order_index)  # type: ignore[union-attr]
     ).all()
     renders = session.exec(select(Render).where(Render.sequence_id.in_(ids))).all()  # type: ignore[union-attr]
-    # The graded file of each render that has one, so the row can hand over either
-    # version of the clip without a second request.
+    # Which renders have a graded file, so the row says so without a second request.
+    # A clip holds several grades, so this is a set: any one of them having produced
+    # something is what the droplet reports.
     graded = {
-        grade.render_id: grade.id or 0
+        grade.render_id
         for grade in session.exec(
             select(Grade).where(
                 Grade.render_id.in_([r.id for r in renders]),  # type: ignore[attr-defined]
@@ -780,7 +822,7 @@ def stabilize_queue(session: Session = Depends(get_session)) -> list[schemas.Que
         entry = schemas.QueueRender(
             id=render.id or 0,
             template=render.template,
-            grade_id=graded.get(render.id or 0),
+            graded=(render.id or 0) in graded,
         )
         if render.state == RenderState.DONE:
             done.setdefault(render.cut_id, []).append(entry)
@@ -1174,93 +1216,100 @@ def list_grades(session: Session = Depends(get_session)) -> list[schemas.GradeOu
     return [_grade_out(session, g) for g in grades]
 
 
-@router.get("/renders/{render_id}/grade", response_model=schemas.GradeOut)
-async def get_grade(render_id: int, session: Session = Depends(get_session)) -> schemas.GradeOut:
-    render = _get_render(session, render_id)
-    grade = await run_in_threadpool(_grade_for, session, render)
-    return _grade_out(session, grade)
+@router.get("/renders/{render_id}/grades", response_model=list[schemas.GradeOut])
+async def list_render_grades(
+    render_id: int, session: Session = Depends(get_session)
+) -> list[schemas.GradeOut]:
+    """Every grade on one clip, oldest first, and nothing created.
 
-
-@router.put("/renders/{render_id}/grade", response_model=schemas.GradeOut)
-def save_grade(
-    render_id: int,
-    payload: schemas.GradeParamsIn,
-    session: Session = Depends(get_session),
-) -> schemas.GradeOut:
-    render = _get_render(session, render_id)
-    grade = _grade_for(session, render, analyse=False)
-    params = grading_service.merge_params(payload.params)
-    changed = grading_service.params_hash(params) != grade.params_hash
-    grade.params = params
-    grade.params_hash = grading_service.params_hash(params)
-    # A look that moved makes whatever exists, or is being written, the wrong file. An
-    # encode in flight is cancelled the way a render of a deleted cut is: its job goes
-    # and the worker holding it stops on its next heartbeat. Guarded on the look having
-    # actually moved, because the page writes on every slider release and a write that
-    # changes nothing must not kill an encode.
-    if changed and grade.state is not GradeState.DRAFT:
-        for job in session.exec(select(Job).where(Job.grade_id == grade.id)).all():
-            session.delete(job)
-        grade.state = GradeState.DRAFT
-        grade.progress = 0.0
-        grade.error = None
-    session.add(grade)
-    session.commit()
-    return _grade_out(session, grade)
-
-
-@router.get("/renders/{render_id}/grade/preview")
-async def grade_preview(
-    render_id: int,
-    request: Request,
-    at_ms: float = Query(0.0, ge=0),
-    exposure: float = Query(0.0),
-    contrast: float = Query(1.0),
-    saturation: float = Query(1.0),
-    temperature: int = Query(6500),
-    shadows: float = Query(0.0),
-    highlights: float = Query(0.0),
-    black_point: float = Query(0.0, ge=0, le=1),
-    white_point: float = Query(1.0, ge=0, le=1),
-    session: Session = Depends(get_session),
-) -> Response:
-    """One graded frame, straight from the clip.
-
-    Parameters travel in the query string rather than being read from the saved
-    row: the point is to see a look *before* committing to it. Measured at 0.32 s,
-    which is what makes a slider usable.
+    A grade exists because someone made it. The clip's own measurement is taken here,
+    on the way in, since this is what opening a clip asks for.
     """
     render = _get_render(session, render_id)
-    source = to_absolute(render.out_path)
-    if source is None or not source.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "stabilized clip not found")
-    grade = _grade_for(session, render, analyse=False)
-
-    params = {
-        "exposure": exposure, "contrast": contrast, "saturation": saturation,
-        "temperature": temperature, "shadows": shadows, "highlights": highlights,
-        "black_point": black_point, "white_point": white_point,
-    }
-    dest = settings.tmp_dir / f"preview_{render_id}_{grading_service.params_hash(params)}_{int(at_ms)}.jpg"
-    if not dest.exists():
-        try:
-            await run_in_threadpool(
-                grading_service.preview_frame, source, dest, at_ms, params
-            )
-        except (grading_service.GradeError, OSError) as exc:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    return media.serve_file(dest, request)
+    await run_in_threadpool(_analyse_render, session, render)
+    grades = session.exec(
+        select(Grade).where(Grade.render_id == render.id).order_by(Grade.id)  # type: ignore[arg-type]
+    ).all()
+    return [_grade_out(session, g) for g in grades]
 
 
-@router.post("/renders/{render_id}/grade/apply", response_model=schemas.GradeOut)
-def apply_grade(
+@router.post("/renders/{render_id}/grades", response_model=schemas.GradeOut)
+def put_grade(
     render_id: int,
+    payload: schemas.GradeIn,
     session: Session = Depends(get_session),
 ) -> schemas.GradeOut:
+    """Make sure this clip carries a grade of that name, holding those numbers.
+
+    Addressed by name rather than by id, which is what makes copying a look onto
+    twenty clips idempotent: each target ends up with one grade of that name, whatever
+    else it already holds. Without a name it is a new "Grade N", which is the "+" on
+    the profile row.
+
+    No analysis here: copying a look creates grades on clips nobody has opened, and
+    what needs the measurement is opening one, which asks for the list.
+    """
     render = _get_render(session, render_id)
+    label = payload.label.strip() or _free_grade_label(session, render)
+    params = grading_service.merge_params(payload.params or {})
+
+    grade = session.exec(
+        select(Grade).where(Grade.render_id == render.id, Grade.label == label)
+    ).first()
+    if grade is None:
+        grade = Grade(
+            render_id=render.id,  # type: ignore[arg-type]
+            label=label,
+            params=params,
+            params_hash=grading_service.params_hash(params),
+            state=GradeState.DRAFT,
+        )
+        session.add(grade)
+        session.commit()
+        session.refresh(grade)
+    else:
+        grade = _write_params(session, grade, params)
+    return _grade_out(session, grade)
+
+
+@router.get("/grades/{grade_id}", response_model=schemas.GradeOut)
+def get_grade(grade_id: int, session: Session = Depends(get_session)) -> schemas.GradeOut:
+    return _grade_out(session, _get_grade(session, grade_id))
+
+
+@router.put("/grades/{grade_id}", response_model=schemas.GradeOut)
+def save_grade(
+    grade_id: int,
+    payload: schemas.GradeIn,
+    session: Session = Depends(get_session),
+) -> schemas.GradeOut:
+    """The look, the name, or both. What is not sent is not touched."""
+    grade = _get_grade(session, grade_id)
+    label = payload.label.strip()
+    if label and label != grade.label:
+        clash = session.exec(
+            select(Grade).where(Grade.render_id == grade.render_id, Grade.label == label)
+        ).first()
+        if clash is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "this clip already has a grade with that name"
+            )
+        grade.label = label
+        session.add(grade)
+        session.commit()
+    if payload.params is not None:
+        grade = _write_params(session, grade, payload.params)
+    return _grade_out(session, grade)
+
+
+@router.post("/grades/{grade_id}/apply", response_model=schemas.GradeOut)
+def apply_grade(grade_id: int, session: Session = Depends(get_session)) -> schemas.GradeOut:
+    grade = _get_grade(session, grade_id)
+    render = session.get(Render, grade.render_id)
+    if render is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown render")
     if render.state != RenderState.DONE:
         raise HTTPException(status.HTTP_409_CONFLICT, "the clip is not stabilized yet")
-    grade = _grade_for(session, render, analyse=False)
     if grading_service.is_neutral(grade.params):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -1351,11 +1400,15 @@ def delete_look(look_id: int, session: Session = Depends(get_session)) -> dict:
     return {"deleted": look_id}
 
 
-@router.delete("/grades/{grade_id}")
-def delete_grade(grade_id: int, session: Session = Depends(get_session)) -> dict:
-    grade = session.get(Grade, grade_id)
-    if grade is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown grade")
+@router.delete("/grades/{grade_id}/file")
+def delete_graded_file(grade_id: int, session: Session = Depends(get_session)) -> dict:
+    """Throw away what a grade produced, and keep the grade.
+
+    Two different gestures now that a grade is a named node: this one frees a hundred
+    megabytes and leaves the look ready to be encoded again, while deleting the grade
+    itself takes the look with it.
+    """
+    grade = _get_grade(session, grade_id)
     graded = to_absolute(grade.out_path)
     if graded and graded.exists():
         graded.unlink(missing_ok=True)
@@ -1365,6 +1418,20 @@ def delete_grade(grade_id: int, session: Session = Depends(get_session)) -> dict
     session.add(grade)
     for job in session.exec(select(Job).where(Job.grade_id == grade.id)).all():
         session.delete(job)
+    session.commit()
+    return {"deleted": grade_id}
+
+
+@router.delete("/grades/{grade_id}")
+def delete_grade(grade_id: int, session: Session = Depends(get_session)) -> dict:
+    """The grade, its file and its job. A level of the tree deletes like every other."""
+    grade = _get_grade(session, grade_id)
+    graded = to_absolute(grade.out_path)
+    if graded and graded.exists():
+        graded.unlink(missing_ok=True)
+    for job in session.exec(select(Job).where(Job.grade_id == grade.id)).all():
+        session.delete(job)
+    session.delete(grade)
     session.commit()
     return {"deleted": grade_id}
 

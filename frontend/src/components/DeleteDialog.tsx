@@ -1,10 +1,13 @@
 /**
  * The one shape a destructive confirmation takes here.
  *
- * Prose belongs in exactly this place: a delete dialog is where two outcomes differ
+ * Prose belongs in exactly this place: a dialog like this is where two outcomes differ
  * in a way the buttons cannot carry. Everywhere else the interface says it without
  * words. So this component holds the layout and lets each gesture bring its sentence,
  * or bring none when there is nothing to warn about.
+ *
+ * Not only deletions: overwriting settings that took a while to find is destructive in
+ * the same way, which is why the button's word is a parameter.
  */
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +24,7 @@ export function DeleteDialog({
   note,
   onConfirm,
   onClose,
+  action = "Delete",
 }: {
   open: boolean;
   title: string;
@@ -28,6 +32,8 @@ export function DeleteDialog({
   note?: string;
   onConfirm: () => void;
   onClose: () => void;
+  /** The button's word, since what is destroyed is not always a file. */
+  action?: string;
 }) {
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
@@ -48,7 +54,7 @@ export function DeleteDialog({
               onClose();
             }}
           >
-            Delete
+            {action}
           </Button>
         </DialogFooter>
       </DialogContent>

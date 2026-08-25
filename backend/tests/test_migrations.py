@@ -11,7 +11,7 @@ from __future__ import annotations
 from sqlalchemy import Column, Integer, MetaData, String, Table, inspect, text
 from sqlmodel import SQLModel, create_engine
 
-from app.db import _add_missing_columns
+from app.db import _add_missing_columns, _relax_grade_render_index
 
 
 def _engine(tmp_path):  # type: ignore[no-untyped-def]
@@ -122,3 +122,45 @@ def test_a_nullable_column_is_added_and_left_null(tmp_path, monkeypatch):
     with engine.begin() as connection:
         assert connection.execute(text("SELECT note FROM thing")).scalar() is None
     assert "note" in {c["name"] for c in inspect(engine).get_columns("thing")}
+
+
+def test_the_unique_index_on_a_grade_s_clip_is_relaxed(tmp_path):
+    """A clip held exactly one grade until 2026-08-25, and the unique index said so.
+
+    SQLite cannot alter an index in place and `create_all` never touches one that
+    exists, so the migration has to drop it and put a plain one back. The rows must
+    survive: this runs on a database with grades already in it.
+    """
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE grade (id INTEGER PRIMARY KEY, render_id INTEGER)"))
+        connection.execute(text("CREATE UNIQUE INDEX ix_grade_render_id ON grade (render_id)"))
+        connection.execute(text("INSERT INTO grade (id, render_id) VALUES (1, 7)"))
+
+    _relax_grade_render_index(engine)
+
+    with engine.begin() as connection:
+        sql = connection.execute(
+            text("SELECT sql FROM sqlite_master WHERE name='ix_grade_render_id'")
+        ).scalar()
+        assert sql is not None and "UNIQUE" not in sql.upper()
+        # Two grades on one clip, which is the whole point.
+        connection.execute(text("INSERT INTO grade (id, render_id) VALUES (2, 7)"))
+        assert connection.execute(text("SELECT count(*) FROM grade")).scalar() == 2
+
+
+def test_relaxing_the_index_twice_is_harmless(tmp_path):
+    """It runs on every start, so the second time has to be a no-op."""
+    engine = _engine(tmp_path)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE grade (id INTEGER PRIMARY KEY, render_id INTEGER)"))
+        connection.execute(text("CREATE INDEX ix_grade_render_id ON grade (render_id)"))
+
+    _relax_grade_render_index(engine)
+    _relax_grade_render_index(engine)
+
+    with engine.begin() as connection:
+        indexes = connection.execute(
+            text("SELECT count(*) FROM sqlite_master WHERE name='ix_grade_render_id'")
+        ).scalar()
+    assert indexes == 1

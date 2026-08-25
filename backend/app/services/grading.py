@@ -314,33 +314,12 @@ def filter_string(params: dict, extra: list[str] | None = None) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Preview and render
+# Render
+#
+# The still-frame preview that used to live here (0.32 s a frame, one round trip per
+# slider move) went out on 2026-08-24: the browser previews with a shader now, and the
+# only thing ffmpeg is asked for is the file that gets written.
 # --------------------------------------------------------------------------- #
-
-def preview_frame(
-    source: Path,
-    dest: Path,
-    at_ms: float,
-    params: dict,
-    width: int | None = None,
-) -> Path:
-    """One graded frame as JPEG. Measured at 0.32 s, hence usable live."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    scale = f"scale={width or settings.grade_preview_width}:-2"
-    cmd = [
-        settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostats", "-y",
-        "-ss", f"{max(at_ms, 0) / 1000:.3f}",
-        "-i", str(source),
-        "-frames:v", "1",
-        "-vf", filter_string(params, extra=[scale]),
-        "-q:v", "4",
-        str(dest),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if proc.returncode != 0 or not dest.exists():
-        raise GradeError(f"preview failed: {proc.stderr.strip()[:300]}")
-    return dest
-
 
 def render(
     source: Path,

@@ -348,7 +348,11 @@ def _prepare_grade(session: Session, job: Job) -> dict[str, Any]:
     stem = to_absolute(render.out_path).stem  # type: ignore[union-attr]
     return {
         "source": render.out_path,
-        "dest": to_relative(settings.graded_dir / f"{stem}__{grade.params_hash}.mp4"),
+        # The grade id as well as the hash: the hash is what makes going back to a look
+        # already produced free, and the id is what keeps two grades of the same clip
+        # that happen to be set the same from sharing one file, which deleting either
+        # would take away from the other.
+        "dest": to_relative(settings.graded_dir / f"{stem}__g{grade.id}__{grade.params_hash}.mp4"),
         # The analysis used to travel with the job, because the filter chain needed it
         # to resolve auto-levels. The two points carry that now, so the spec is the
         # look and nothing else.

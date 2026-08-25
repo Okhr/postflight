@@ -14,12 +14,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Download, Droplet, Loader2, Trash2, X } from "lucide-react";
+import { Download, Droplet, Loader2, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { DeleteCutDialog, type Doomed } from "@/components/DeleteCutDialog";
 import { DeleteDialog } from "@/components/DeleteDialog";
 import { TemplatesCard } from "@/components/TemplatesCard";
+import { Dot, Indent, Meta, Twisty, rowClass } from "@/components/tree";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,7 +42,6 @@ import {
   type Render,
   type Template,
 } from "@/lib/api";
-import { folderColor } from "@/lib/colors";
 import { etaLabel, formatDuration } from "@/lib/format";
 import { usePersistentState } from "@/lib/persist";
 import { cn } from "@/lib/utils";
@@ -357,8 +357,8 @@ function FolderRow({ node, depth, ...rest }: { node: Node; depth: number } & Row
 
   return (
     <div>
-      <div className="flex items-center gap-2 rounded-md py-1 hover:bg-accent/40">
-        <span style={{ width: depth * 16 }} />
+      <div className={rowClass}>
+        <Indent depth={depth} />
         <Box
           state={mark(ids, rest.selection)}
           onChange={(on) => rest.flip(ids, on)}
@@ -368,24 +368,15 @@ function FolderRow({ node, depth, ...rest }: { node: Node; depth: number } & Row
         <button
           type="button"
           onClick={() => rest.toggle(key)}
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
         >
-          <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-90")} />
-          <span
-            className={cn(
-              "h-2 w-2 shrink-0 rounded-full",
-              node.folder
-                ? (folderColor(node.folder.color)?.dot ?? "bg-muted")
-                : "bg-muted-foreground/50",
-            )}
-          />
+          <Twisty open={open} />
+          <Dot color={node.folder?.color} />
           <span className="truncate font-medium" title={node.folder?.name ?? "Global"}>
             {node.folder?.name ?? "Global"}
           </span>
         </button>
-        <span className="tnum shrink-0 text-xs text-muted-foreground">
-          {formatDuration(lengthOf(node))}
-        </span>
+        <Meta>{formatDuration(lengthOf(node))}</Meta>
         <span className="w-6 shrink-0" />
       </div>
       {open && (
@@ -410,36 +401,23 @@ function RushRow({ rush, depth, ...rest }: { rush: QueueRush; depth: number } & 
 
   return (
     <div>
-      <div
-        className={cn(
-          "flex items-center gap-2 rounded-md py-1 hover:bg-accent/40",
-          rush.id === rest.highlight && "bg-accent/40",
-        )}
-      >
-        <span style={{ width: depth * 16 }} />
+      <div className={cn(rowClass, rush.id === rest.highlight && "bg-accent/40")}>
+        <Indent depth={depth} />
         <Box
           state={mark(ids, rest.selection)}
           onChange={(on) => rest.flip(ids, on)}
           disabled={ids.length === 0}
           title={ids.length === 0 ? "Every sequence here is already rendered" : undefined}
         />
-        <button
-          type="button"
-          onClick={() => rest.toggle(key)}
-          className="shrink-0 text-muted-foreground hover:text-foreground"
-        >
-          <ChevronRight className={cn("h-3 w-3 transition-transform", open && "rotate-90")} />
-        </button>
+        <Twisty open={open} onClick={() => rest.toggle(key)} />
         <Link
           to={`/derush/${rush.id}`}
-          className="min-w-0 flex-1 truncate text-sm hover:underline"
+          className="min-w-0 flex-1 truncate hover:underline"
           title={rush.label}
         >
           {rush.label}
         </Link>
-        <span className="tnum shrink-0 text-xs text-muted-foreground">
-          {formatDuration(length)}
-        </span>
+        <Meta>{formatDuration(length)}</Meta>
         <span className="w-6 shrink-0" />
       </div>
       {open &&
@@ -461,20 +439,20 @@ function CutRow({
 }: { cut: QueueRush["cuts"][number]; depth: number } & RowProps) {
   const done = locked.has(cut.id);
   return (
-    <div className="flex items-center gap-2 rounded-md py-1 hover:bg-accent/40">
-      <span style={{ width: depth * 16 }} />
+    <div className={rowClass}>
+      <Indent depth={depth} />
       <Box
         state={selection.has(cut.id) ? "on" : "off"}
         onChange={(on) => flip([cut.id], on)}
         disabled={done}
         title={done ? "Already rendered with this profile" : undefined}
       />
-      <span className="min-w-0 flex-1 truncate text-sm" title={cut.label}>
+      <span className="min-w-0 flex-1 truncate" title={cut.label}>
         {cut.label}
       </span>
-      <span className="tnum hidden shrink-0 text-xs text-muted-foreground sm:inline">
+      <Meta className="hidden sm:inline">
         {cut.start_tc} → {cut.end_tc}
-      </span>
+      </Meta>
       <span className="flex shrink-0 items-center gap-1">
         {cut.busy.map((file) => (
           <Badge key={file.id} variant="outline" className="gap-1 font-normal">
@@ -486,9 +464,7 @@ function CutRow({
           <Made key={file.id} file={file} label={name(file.template)} />
         ))}
       </span>
-      <span className="tnum w-12 shrink-0 text-right text-xs text-muted-foreground">
-        {formatDuration(cut.duration_ms)}
-      </span>
+      <Meta className="w-12 text-right">{formatDuration(cut.duration_ms)}</Meta>
       {/* Always drawn, like the derush table: an icon that appears on hover is an
           icon nobody knows is there. */}
       <Button
@@ -500,7 +476,7 @@ function CutRow({
           doom({
             id: cut.id,
             label: cut.label,
-            files: cut.done.length + cut.done.filter((file) => file.grade_id).length,
+            files: cut.done.length + cut.done.filter((file) => file.graded).length,
           })
         }
       >
@@ -541,7 +517,7 @@ function Made({ file, label }: { file: QueueRender; label: string }) {
     <span className={cn(badgeVariants({ variant: "secondary" }), "gap-1 pl-2 pr-1 font-normal")}>
       {label}
       <Link to={`/color/${id}`} title="Grade" className={action}>
-        <Droplet className={cn("h-3 w-3", file.grade_id && "fill-current")} />
+        <Droplet className={cn("h-3 w-3", file.graded && "fill-current")} />
       </Link>
       <a href={mediaUrl.download(id)} title="Download" className={action}>
         <Download className="h-3 w-3" />
@@ -553,8 +529,8 @@ function Made({ file, label }: { file: QueueRender; label: string }) {
         open={asking}
         title={`Delete the ${label} file?`}
         note={
-          file.grade_id
-            ? "Its graded version is deleted with it. The sequence stays, so it can be rendered again."
+          file.graded
+            ? "Its graded versions are deleted with it. The sequence stays, so it can be rendered again."
             : "The sequence stays, so it can be rendered again."
         }
         onClose={() => setAsking(false)}

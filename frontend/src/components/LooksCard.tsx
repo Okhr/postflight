@@ -27,7 +27,22 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { api, type GradeParams, type Look } from "@/lib/api";
+import { NEUTRAL_GRADE, api, type GradeParams, type Look } from "@/lib/api";
+
+/** The six a look holds. The two points are the clip's own and never travel. */
+const TRAVELLING = [
+  "exposure",
+  "contrast",
+  "saturation",
+  "temperature",
+  "shadows",
+  "highlights",
+] as const;
+
+/** Whether two sets of settings hold the same look, ignoring the two points. */
+function same(look: Look["params"], clip: GradeParams | null): boolean {
+  return clip !== null && TRAVELLING.every((key) => look[key] === clip[key]);
+}
 
 /** What the row shows of a look: only what it actually changes. */
 function summary(params: Look["params"]): string {
@@ -43,16 +58,25 @@ function summary(params: Look["params"]): string {
 
 export function LooksCard({
   current,
+  currentLabel,
   onApply,
 }: {
-  /** The look being tuned on the open clip, or null when no clip is open. */
+  /** The look being tuned on the open grade, or null when none is open. */
   current: GradeParams | null;
+  /** That grade's name, for the sentence in the overwrite dialog. */
+  currentLabel?: string;
   onApply: (look: Look) => void;
 }) {
   const queryClient = useQueryClient();
   const [naming, setNaming] = useState(false);
   const [renaming, setRenaming] = useState<Look | null>(null);
   const [deleting, setDeleting] = useState<Look | null>(null);
+  // The two gestures that write over settings somebody found by eye, so both ask first
+  // (florian, 2026-08-25). Only when there is something to lose: applying a look over a
+  // neutral grade, or storing a look that already holds these numbers, asks nothing.
+  const [painting, setPainting] = useState<Look | null>(null);
+  const [storing, setStoring] = useState<Look | null>(null);
+  const tuned = current !== null && !same(NEUTRAL_GRADE, current);
 
   const { data: looks } = useQuery({ queryKey: ["looks"], queryFn: api.looks });
   const done = () => queryClient.invalidateQueries({ queryKey: ["looks"] });
@@ -113,26 +137,42 @@ export function LooksCard({
                   </TableCell>
                   <TableCell className="pr-3">
                     <div className="flex justify-end gap-0.5">
-                      <span title={current ? "Apply to this clip" : "Open a clip first"}>
+                      <span
+                        title={
+                          !current
+                            ? "Open a clip first"
+                            : same(look.params, current)
+                              ? "This grade already holds it"
+                              : "Apply to this grade"
+                        }
+                      >
                         <Button
                           size="icon"
                           variant="ghost"
-                          disabled={!current}
+                          disabled={!current || same(look.params, current)}
                           className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                          onClick={() => onApply(look)}
+                          onClick={() => (tuned ? setPainting(look) : onApply(look))}
                         >
                           {/* A stamp, not a brush: a brush and the pencil next to it
                               are the same fourteen pixels of scribble. */}
                           <Stamp className="h-3.5 w-3.5" />
                         </Button>
                       </span>
-                      <span title={current ? "Store this clip's look under this name" : "Open a clip first"}>
+                      <span
+                        title={
+                          !current
+                            ? "Open a clip first"
+                            : same(look.params, current)
+                              ? "It already holds these settings"
+                              : "Store this grade's look under this name"
+                        }
+                      >
                         <Button
                           size="icon"
                           variant="ghost"
-                          disabled={!current}
+                          disabled={!current || same(look.params, current)}
                           className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                          onClick={() => overwrite.mutate(look.id)}
+                          onClick={() => setStoring(look)}
                         >
                           <Save className="h-3.5 w-3.5" />
                         </Button>
@@ -176,6 +216,34 @@ export function LooksCard({
         value={renaming?.label ?? null}
         onClose={() => setRenaming(null)}
         onRename={(label) => renaming && rename.mutate({ id: renaming.id, label })}
+      />
+      <DeleteDialog
+        open={painting !== null}
+        action="Apply"
+        title={`Apply "${painting?.label}" to ${currentLabel ? `"${currentLabel}"` : "this grade"}?`}
+        note={
+          current
+            ? `It holds ${summary(current)}, which is replaced by ${summary(
+                painting?.params ?? current,
+              )}. Its black and white points stay.`
+            : undefined
+        }
+        onClose={() => setPainting(null)}
+        onConfirm={() => painting && onApply(painting)}
+      />
+      <DeleteDialog
+        open={storing !== null}
+        action="Replace"
+        title={`Replace the look "${storing?.label}"?`}
+        note={
+          current && storing
+            ? `It holds ${summary(storing.params)} and would hold ${summary(
+                current,
+              )}. Clips already wearing it keep their settings.`
+            : undefined
+        }
+        onClose={() => setStoring(null)}
+        onConfirm={() => storing && overwrite.mutate(storing.id)}
       />
       <DeleteDialog
         open={deleting !== null}

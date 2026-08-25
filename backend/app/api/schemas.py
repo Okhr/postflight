@@ -64,9 +64,9 @@ class QueueRender(BaseSchema):
 
     id: int
     template: str
-    # The graded file made from it, when there is one. A stabilized clip and its
-    # graded version are two files, and the row hands over either.
-    grade_id: int | None = None
+    # Whether any of its grades produced a file. A count would say more and mean less:
+    # what the droplet answers is "is there something graded to fetch here".
+    graded: bool = False
 
 
 class QueueCut(BaseSchema):
@@ -224,6 +224,8 @@ class FolderPatch(BaseSchema):
 class GradeOut(BaseSchema):
     id: int
     render_id: int
+    # Named, since a clip holds several: this is what the tree shows on the row.
+    label: str = ""
     sequence_id: int = 0
     sequence_key: str = ""
     render_name: str | None = None
@@ -263,6 +265,19 @@ class LookPatch(BaseSchema):
 
 class GradeParamsIn(BaseSchema):
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+class GradeIn(BaseSchema):
+    """A grade to put on a clip, by name.
+
+    Writing by name rather than by id is what makes copying a look to twenty clips
+    idempotent: each target ends up with one grade of that name, whatever it already
+    held under another one.
+    """
+
+    label: str = ""
+    # Absent means neutral, which is what a grade created from the "+" starts as.
+    params: dict[str, Any] | None = None
 
 
 class JobOut(BaseSchema):

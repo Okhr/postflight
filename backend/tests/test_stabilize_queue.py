@@ -86,11 +86,11 @@ def test_a_finished_render_is_named_and_addressable(session: Session, sequence: 
     assert rush.cuts[0].busy == []
 
 
-def test_a_finished_render_hands_over_its_graded_version_too(
+def test_a_finished_render_says_it_has_a_graded_version(
     session: Session, sequence: Sequence
 ):
-    """A stabilized clip and its graded one are two files, and the row is where either
-    gets downloaded. Without the grade id there would be nothing to address."""
+    """A clip holds several grades, so the row answers whether any produced a file.
+    That is all the droplet on the badge says, and all it should say."""
     seq = _ready(session, sequence)
     cut = _cut(session, seq, "one", 100, 200)
     render = _render(session, seq, cut, "h_1080", RenderState.DONE)
@@ -104,7 +104,7 @@ def test_a_finished_render_hands_over_its_graded_version_too(
 
     [rush] = routes.stabilize_queue(session=session)
 
-    assert rush.cuts[0].done[0].grade_id == grade.id
+    assert grade.id and rush.cuts[0].done[0].graded is True
 
 
 def test_a_look_still_being_tuned_is_not_a_file(session: Session, sequence: Sequence):
@@ -117,7 +117,7 @@ def test_a_look_still_being_tuned_is_not_a_file(session: Session, sequence: Sequ
 
     [rush] = routes.stabilize_queue(session=session)
 
-    assert rush.cuts[0].done[0].grade_id is None
+    assert rush.cuts[0].done[0].graded is False
 
 
 def test_a_render_in_flight_is_busy_not_done(session: Session, sequence: Sequence):

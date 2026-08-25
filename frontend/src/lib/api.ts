@@ -21,8 +21,8 @@ export interface Clip {
 export interface QueueRender {
   id: number;
   template: string;
-  /** Its graded version, when one exists. Two files, so two ways to download. */
-  grade_id: number | null;
+  /** Whether any of its grades produced a file: what the droplet on the badge says. */
+  graded: boolean;
 }
 
 /** A sequence as the stabilize queue lists it, with what has been made from it. */
@@ -173,6 +173,8 @@ export interface GradeAnalysis {
 export interface Grade {
   id: number;
   render_id: number;
+  /** Its name, since a clip holds several: this is what the tree shows. */
+  label: string;
   sequence_id: number;
   sequence_key: string;
   render_name: string | null;
@@ -534,35 +536,29 @@ export const api = {
     request<{ deleted: number }>(`/looks/${id}`, { method: "DELETE" }),
 
   grades: () => request<Grade[]>("/grades"),
-  grade: (renderId: number) => request<Grade>(`/renders/${renderId}/grade`),
-  saveGrade: (renderId: number, params: GradeParams) =>
-    request<Grade>(`/renders/${renderId}/grade`, {
-      method: "PUT",
-      body: JSON.stringify({ params }),
+  clipGrades: (renderId: number) => request<Grade[]>(`/renders/${renderId}/grades`),
+  grade: (gradeId: number) => request<Grade>(`/grades/${gradeId}`),
+  /** Put a grade on a clip, by name: created if the name is new, written if it is not.
+   *  That is what makes copying a look onto twenty clips safe to press twice. */
+  putGrade: (renderId: number, body: { label?: string; params?: GradeParams }) =>
+    request<Grade>(`/renders/${renderId}/grades`, {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
-  applyGrade: (renderId: number) =>
-    request<Grade>(`/renders/${renderId}/grade/apply`, { method: "POST" }),
+  saveGrade: (gradeId: number, body: { label?: string; params?: GradeParams }) =>
+    request<Grade>(`/grades/${gradeId}`, { method: "PUT", body: JSON.stringify(body) }),
+  applyGrade: (gradeId: number) =>
+    request<Grade>(`/grades/${gradeId}/apply`, { method: "POST" }),
+  /** The look and its file. Its sibling grades are untouched. */
   deleteGrade: (gradeId: number) =>
     request<{ deleted: number }>(`/grades/${gradeId}`, { method: "DELETE" }),
+  /** Only what it produced, keeping the look ready to encode again. */
+  deleteGradedFile: (gradeId: number) =>
+    request<{ deleted: number }>(`/grades/${gradeId}/file`, { method: "DELETE" }),
 
   jobs: (limit = 50) => request<Job[]>(`/jobs?limit=${limit}`),
   retryJob: (id: number) => request<Job>(`/jobs/${id}/retry`, { method: "POST" }),
 };
-
-/** Query string of a look, shared by the preview and nothing else. */
-export function gradeQuery(params: GradeParams, atMs: number): string {
-  return new URLSearchParams({
-    at_ms: String(Math.round(atMs)),
-    exposure: params.exposure.toFixed(3),
-    contrast: params.contrast.toFixed(3),
-    saturation: params.saturation.toFixed(3),
-    temperature: String(Math.round(params.temperature)),
-    shadows: params.shadows.toFixed(3),
-    highlights: params.highlights.toFixed(3),
-    black_point: params.black_point.toFixed(4),
-    white_point: params.white_point.toFixed(4),
-  }).toString();
-}
 
 export const mediaUrl = {
   proxy: (sequenceId: number) => `/api/media/proxy/${sequenceId}`,
@@ -572,6 +568,4 @@ export const mediaUrl = {
   download: (renderId: number) => `/api/media/render/${renderId}/download`,
   graded: (gradeId: number) => `/api/media/graded/${gradeId}`,
   gradedDownload: (gradeId: number) => `/api/media/graded/${gradeId}/download`,
-  gradePreview: (renderId: number, params: GradeParams, atMs: number) =>
-    `/api/renders/${renderId}/grade/preview?${gradeQuery(params, atMs)}`,
 };

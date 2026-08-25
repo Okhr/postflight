@@ -222,6 +222,12 @@ class Render(SQLModel, table=True):
     project_path: Optional[str] = None
     overrides: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
+    # What signalstats measured on the stabilized file: percentiles, clipping, and the
+    # timestamps worth previewing. It lives here and not on the grade because it
+    # measures the clip, not the look: several grades of one clip share it, and it is a
+    # decode pass of a few seconds that must not run once per look.
+    analysis: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
     # What Gyroflow actually used for warping ("OpenCL", "CPU"…), read from its
     # logs. A dedicated field rather than parsed out of `log_tail`, which we truncate.
     processing_device: Optional[str] = None
@@ -233,23 +239,28 @@ class Render(SQLModel, table=True):
 
 
 class Grade(SQLModel, table=True):
-    """Colour grading of one stabilized clip, into a separate file.
+    """One look on one stabilized clip, into a file of its own.
 
-    One row per render, holding the current parameters. The output is named after
-    the hash of those parameters, so going back to a look already produced costs
-    nothing, and two looks can sit side by side.
+    A level of the hierarchy rather than a property of a clip: rush, sequence,
+    profile, grade. So a clip holds as many as one wants, side by side, each with its
+    name, its own file and its own state. `render_id` was unique until 2026-08-25 and
+    is not any more (see `db._relax_grade_render_index`).
+
+    The output is named after the grade and the hash of its parameters: the hash makes
+    going back to a look already produced free, and the id keeps two grades that
+    happen to be set the same from sharing one file, which deleting either would take
+    away from the other.
     """
 
     __tablename__ = "grade"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    render_id: int = Field(index=True, unique=True)
+    render_id: int = Field(index=True)
+    # Named, because it is a node one picks in a tree. The default doubles as the
+    # backfill for the single unnamed grade every clip had before they became a level.
+    label: str = "Grade 1"
 
     params: dict = Field(default_factory=dict, sa_column=Column(JSON))
-    # What signalstats measured on the clip: percentiles, clipping, and the
-    # timestamps worth previewing. Grading on a single lucky frame is the surest
-    # way to get it wrong.
-    analysis: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
     params_hash: str = ""
     out_path: Optional[str] = None

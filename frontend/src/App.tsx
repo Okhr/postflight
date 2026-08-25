@@ -17,6 +17,9 @@ export default function App() {
         <Route path="/stabilisation/:id" element={<Stabilize />} />
         <Route path="/color" element={<Color />} />
         <Route path="/color/:id" element={<Color />} />
+        {/* A clip and the grade of it being edited: the clip on its own opens its
+            first grade, which is what the droplet on Stabilize links to. */}
+        <Route path="/color/:id/:gradeId" element={<Color />} />
         {/* Old URLs, kept until bookmarks catch up. */}
         <Route path="/sequences" element={<Navigate to="/" replace />} />
         <Route path="/sequences/:id" element={<LegacySequence />} />

@@ -122,12 +122,34 @@ def _add_missing_columns(engine: Engine) -> None:
                         )
 
 
+def _relax_grade_render_index(engine: Engine) -> None:
+    """`grade.render_id` was unique while a clip had exactly one grade.
+
+    A clip now holds several, side by side. SQLite cannot alter an index in place, and
+    `create_all` never touches one that already exists, so the old unique index has to
+    be dropped here and recreated plain. Named rather than general on purpose: this is
+    one schema change that happened once, not a rule about indexes.
+    """
+    from sqlalchemy import text
+
+    with engine.begin() as connection:
+        found = connection.execute(
+            text("SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_grade_render_id'")
+        ).scalar()
+        if not found or "UNIQUE" not in found.upper():
+            return
+        connection.execute(text("DROP INDEX ix_grade_render_id"))
+        connection.execute(text("CREATE INDEX ix_grade_render_id ON grade (render_id)"))
+    log.info("Index relaxed: grade.render_id is no longer unique")
+
+
 def init_db() -> None:
     from . import models  # noqa: F401  (registers the tables)
 
     engine = get_engine()
     SQLModel.metadata.create_all(engine)
     _add_missing_columns(engine)
+    _relax_grade_render_index(engine)
 
 
 @contextmanager

@@ -385,7 +385,8 @@ Elle a maintenant la forme de Stabilize, parce qu'elle répond à la même quest
 plus loin :
 
 - **L'arbre groupé** (dossier, rush, clip) à la place de la liste plate, chaque clip
-  nommé « sequence · profil », le profil en badge dans l'entête. Deux champs de plus sur
+  nommé « sequence · profil », le profil en badge dans l'entête. Depuis le 2026-08-25 il
+  descend deux crans plus bas (profil, puis grade) et le nom concaténé a disparu avec ça. Deux champs de plus sur
   `RenderOut` suffisent : `folder_id` pour grouper, et `duration_ms`, que la page
   calculait **à 60 fps en dur** sur un rush en 60000/1001.
 - **Aucun bouton Save.** Chaque curseur écrit **au relâchement** (`onValueCommit` de
@@ -404,6 +405,90 @@ plus loin :
   bouton mort est devenu son `title`. Attention : un bouton désactivé ne reçoit pas
   d'événement de pointeur (`disabled:pointer-events-none`), donc le `title` va sur un
   `span` autour.
+
+### Un grade est un niveau, pas un attribut du clip
+
+Demandé par florian le 2026-08-25 : « j'aimerais que le fait de grader d'une certaine
+manière ça soit juste un niveau de plus dans la hiérarchie rush/sequence/profile/grade,
+ce qui fait qu'on pourrait avoir plusieurs grading en parallèle ». Avant ça
+`grade.render_id` était **unique** : un clip portait un look, écrasé sur place.
+
+Six conséquences, dont trois qui n'avaient rien d'évident :
+
+- **Un grade porte un nom**, sans quoi deux feuilles de l'arbre seraient
+  indistinguables. Par défaut le premier « Grade N » libre (pas un compte : un grade
+  supprimé au milieu rend son numéro), renommable, et le nom est **la clé d'écriture**
+  (voir « Copy to » plus bas). Le défaut du modèle est `"Grade 1"`, ce qui sert aussi de
+  remplissage à l'unique grade sans nom que chaque clip avait avant.
+- **L'analyse a remonté d'un niveau, sur `render`.** Elle mesure le **clip**, pas le
+  look : `signalstats` sur un plan de 30 s coûte quelques secondes, et la garder sur le
+  grade l'aurait fait tourner une fois par look. `GradeOut.analysis` et `suggested` sont
+  donc les mêmes pour tous les grades d'un clip. La colonne `grade.analysis` reste en
+  base, vestigiale, l'auto-migration n'enlevant jamais rien ; les valeurs sont
+  recalculées à la première ouverture de chaque clip.
+- **Le nom du fichier porte l'id du grade** (`..._c00__g4__d53ea42efc.mp4`). Le hash rend
+  gratuit le retour à un look déjà produit ; l'id empêche **deux grades réglés
+  exactement pareil de partager un fichier**, ce que supprimer l'un aurait retiré à
+  l'autre. Vérifié en rendant le même look sur deux clips : deux fichiers, même hash,
+  ids différents.
+- **`DELETE /grades/{id}` supprime le grade, `DELETE /grades/{id}/file` seulement sa
+  sortie.** Deux gestes, parce qu'un grade est maintenant quelque chose qu'on a nommé :
+  jeter cent mégaoctets ne doit pas jeter le look qui les a produits. Le premier vit sur
+  la ligne de l'arbre, le second dans la carte « Graded file ».
+- **« Copy to » écrit par nom.** Chaque cible reçoit un grade portant le nom de la
+  source, créé s'il n'existe pas, écrasé s'il existe : appuyer deux fois ne fait pas de
+  doublon, et ce que la cible a réglé sous un autre nom n'est pas touché. C'est
+  exactement `POST /renders/{id}/grades`, la même route que le « + » de l'arbre (sans
+  nom, il invente le prochain « Grade N »).
+- **L'index unique se démonte à la main.** SQLite ne modifie pas un index en place et
+  `create_all` ne touche jamais un index existant : `db._relax_grade_render_index`
+  supprime `ix_grade_render_id` et le recrée simple. Nommé et non générique, parce que
+  c'est un changement de schéma qui a eu lieu une fois. Vu au démarrage : `Column added:
+  grade.label`, `Column added: render.analysis`, `Index relaxed`.
+
+**La goutte suit l'état, pas le nom de fichier.** Un grade retombé en `draft` après un
+changement de réglage garde son fichier sur le disque (réutilisable si les curseurs
+reviennent exactement dessus), et ce fichier n'est **pas** ce look : la ligne ne l'affiche
+donc que sur `done`. Défaut vu sur une capture avant correctif, pas déduit du code.
+
+**Deux encodages du même clip tiennent en parallèle**, mesuré de bout en bout : deux
+grades lancés, l'un `running` l'autre `queued`, deux fichiers de 103 et 107 Mo, puis les
+deux supprimés avec leurs grades sans toucher aux voisins.
+
+#### Écraser un réglage demande confirmation
+
+Le tampon (poser un look sur le grade ouvert) et la disquette (écrire le réglage courant
+dans un look) détruisent des réglages trouvés à l'œil : les deux passent par un dialogue
+(florian, même jour). Seulement quand il y a quelque chose à perdre, et le dialogue **dit
+les deux états** :
+
+> Apply "Golden hour" to "Sunset" ? It holds 7100 K, which is replaced by contrast 1.08 ·
+> sat 1.34 · 5800 K · shadows -0.10. Its black and white points stay.
+
+Un geste qui ne changerait rien n'ouvre rien : le bouton est **désactivé** et le dit au
+survol (« This grade already holds it »). `DeleteDialog` a gagné un mot de bouton
+paramétrable pour ça, parce qu'écraser n'est pas supprimer.
+
+#### Les deux arbres ont la même anatomie
+
+« On va en profiter pour harmoniser un peu à quoi ressemblent les arbres dans stab et
+color » (florian). Ils avaient divergé sur tout ce qui se voit, mesuré avant correctif :
+indentation de **16 px contre 12**, `gap-2` contre `gap-1.5`, survol sur toutes les lignes
+contre survol des feuilles seulement, ligne de rush cliquable avec chevron contre texte
+muet sans chevron, pliage partagé contre `useState` local par dossier.
+
+`components/tree.tsx` livre donc les **primitives** (`INDENT`, `rowClass`, `Indent`,
+`Twisty`, `Dot`, `Meta`), pas un arbre configurable : les deux pages ont deux métiers, et
+ce qui diffère est **quel niveau est la feuille**. Stabilize s'arrête à la sequence et
+résume les profils en badges sur sa ligne (c'est une file de ce qui manque) ; Color
+descend en lignes profil puis grade (c'est un éditeur de ce qui existe). Le badge de
+profil est le même composant des deux côtés, donc un profil se reconnaît où qu'il soit.
+Mesuré après : `gap: 8px`, `padding: 4px`, `font: 14px`, indentation par pas de 16 px,
+identiques sur les deux pages.
+
+Un arbre unique et configurable a été écarté : il faudrait lui passer quel niveau est
+sélectionnable, quelles cases, quelles actions à droite, ce qui est un sac de réglages
+pour prétendre que deux interactions sont une seule.
 
 ### Étalonner, changer un réglage, réétalonner
 

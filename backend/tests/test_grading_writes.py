@@ -30,9 +30,14 @@ def _clip(session: Session, seq: Sequence) -> Render:
 
 
 def _save(session: Session, render: Render, **params) -> schemas.GradeOut:
-    return routes.save_grade(
+    """Write a look on this clip's grade, creating it on first call.
+
+    Addressed by name, which is the route the page uses to put a grade on a clip: one
+    name, one grade, however many times it is called.
+    """
+    return routes.put_grade(
         render.id,
-        schemas.GradeParamsIn(params={"exposure": 0.0, "contrast": 1.0, **params}),
+        schemas.GradeIn(label="Look", params={"exposure": 0.0, "contrast": 1.0, **params}),
         session=session,
     )
 
