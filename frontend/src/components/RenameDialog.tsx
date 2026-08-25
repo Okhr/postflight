@@ -22,11 +22,14 @@ export function RenameDialog({
   value,
   onClose,
   onRename,
+  action = "Rename",
 }: {
   title: string;
   value: string | null;
   onClose: () => void;
   onRename: (name: string) => void;
+  /** The button's word, since the same dialog also names a thing into existence. */
+  action?: string;
 }) {
   return (
     <Dialog open={value !== null} onOpenChange={(open) => !open && onClose()}>
@@ -34,7 +37,9 @@ export function RenameDialog({
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
-        {value !== null && <Field initial={value} onClose={onClose} onRename={onRename} />}
+        {value !== null && (
+          <Field initial={value} onClose={onClose} onRename={onRename} action={action} />
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -44,10 +49,12 @@ function Field({
   initial,
   onClose,
   onRename,
+  action,
 }: {
   initial: string;
   onClose: () => void;
   onRename: (name: string) => void;
+  action: string;
 }) {
   const [draft, setDraft] = useState(initial);
 
@@ -64,7 +71,7 @@ function Field({
       <Input autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} />
       <DialogFooter>
         <Button type="submit" size="sm" disabled={!draft.trim()}>
-          Rename
+          {action}
         </Button>
       </DialogFooter>
     </form>

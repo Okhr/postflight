@@ -244,6 +244,23 @@ class GradeOut(BaseSchema):
     finished_at: datetime | None = None
 
 
+class LookOut(BaseSchema):
+    id: int
+    label: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class LookIn(BaseSchema):
+    label: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class LookPatch(BaseSchema):
+    label: str | None = None
+    params: dict[str, Any] | None = None
+
+
 class GradeParamsIn(BaseSchema):
     params: dict[str, Any] = Field(default_factory=dict)
 

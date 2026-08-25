@@ -263,6 +263,25 @@ class Grade(SQLModel, table=True):
     finished_at: Optional[datetime] = None
 
 
+class Look(SQLModel, table=True):
+    """A named colour look, to be applied to any clip.
+
+    Six numbers and a name. Deliberately not the black and white points: those are
+    measured on one clip's own range, so a look that carried them would take one
+    shot's shadows to another.
+
+    A table rather than files under `data/`, unlike the Gyroflow profiles: those are
+    real project fragments that Gyroflow itself reads, this is a row.
+    """
+
+    __tablename__ = "look"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    label: str
+    params: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class Worker(SQLModel, table=True):
     """A machine that executes jobs.
 

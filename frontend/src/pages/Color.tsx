@@ -35,6 +35,7 @@ import {
 import { toast } from "sonner";
 
 import { GradedVideo, type Scopes } from "@/components/GradedVideo";
+import { LooksCard } from "@/components/LooksCard";
 import { StateBadge } from "@/components/StateBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -57,6 +58,7 @@ import {
   type Folder,
   type Grade,
   type GradeParams,
+  type Look,
   type Render,
 } from "@/lib/api";
 import { folderColor } from "@/lib/colors";
@@ -175,6 +177,7 @@ function build(folders: Folder[], clips: Render[]): Node[] {
 }
 
 export function Color() {
+  const queryClient = useQueryClient();
   const { id } = useParams();
   const renderId = Number(id);
   const selected = Number.isFinite(renderId) ? renderId : undefined;
@@ -194,11 +197,40 @@ export function Color() {
 
   const clips = (renders ?? []).filter((render) => render.state === "done");
   const gradeOf = new Map((grades ?? []).map((grade) => [grade.render_id, grade]));
+  const open = selected ? gradeOf.get(selected) : undefined;
+
+  /**
+   * Applying a look is a write, not a piece of shared state.
+   *
+   * The card sits above the editor and needs nothing from inside it: what a clip
+   * currently wears is in the grades already loaded here, and the editor picks the new
+   * value up because its own query is invalidated. The clip's own black and white
+   * points are kept, as they are everywhere else.
+   */
+  const apply = useMutation({
+    mutationFn: (look: Look) => {
+      if (!selected) throw new Error("no clip open");
+      const keep = open?.params ?? NEUTRAL_GRADE;
+      return api.saveGrade(selected, {
+        ...NEUTRAL_GRADE,
+        ...look.params,
+        black_point: keep.black_point,
+        white_point: keep.white_point,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["grade", selected] });
+      queryClient.invalidateQueries({ queryKey: ["grades"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
   const profile = (template: string) =>
     templates?.find((option) => option.id === template)?.label ?? template;
 
   return (
-    <div className="grid items-start gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
+    <div className="space-y-4">
+      <LooksCard current={open?.params ?? null} onApply={(look) => apply.mutate(look)} />
+      <div className="grid items-start gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
       <Clips
         tree={build(folders ?? [], clips)}
         grades={grades ?? []}
@@ -219,6 +251,7 @@ export function Color() {
       ) : (
         <p className="pt-2 text-sm text-muted-foreground">Pick a clip.</p>
       )}
+      </div>
     </div>
   );
 }

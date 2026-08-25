@@ -120,6 +120,16 @@ def is_neutral(params: dict) -> bool:
     return merge_params(params) == DEFAULTS
 
 
+# The two that belong to one clip and never travel with a look.
+PER_CLIP = ("black_point", "white_point")
+
+
+def travelling(params: dict | None) -> dict:
+    """The look alone: everything but this clip's own black and white points."""
+    merged = merge_params(params)
+    return {key: value for key, value in merged.items() if key not in PER_CLIP}
+
+
 # --------------------------------------------------------------------------- #
 # Analysis
 # --------------------------------------------------------------------------- #

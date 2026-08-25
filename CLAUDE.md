@@ -433,6 +433,33 @@ hashes**, et un `PUT` qui ne change rien ne touche à rien. Sans ça, une page q
 chaque relâchement de curseur tuerait un encodage au premier curseur relâché sur sa
 propre valeur.
 
+### Les looks : une bibliothèque, et une porte d'entrée rapide
+
+Demandé le 2026-08-25, « une gestion des looks comme on a une gestion des profils dans
+stab », et florian a tranché pour **un mélange** : la carte pour créer et voir, un geste
+rapide pour en créer un depuis le clip qu'on vient de régler.
+
+**Une table, pas des fichiers JSON**, contrairement aux profils Gyroflow : ceux-là sont
+de vrais fragments de projet que Gyroflow lui-même relit, un look n'est que six nombres
+et un nom. La carte est en haut de la page, comme les templates sur Stabilize, avec
+quatre actions par ligne : peindre sur le clip ouvert, écrire le réglage courant dans
+cette ligne, renommer, supprimer.
+
+**Un look ne porte jamais les points noir et blanc.** Le serveur les jette à l'entrée
+(`grading.travelling`), donc ni la carte ni le dialogue n'ont à se souvenir de la règle,
+et un look posé sur dix clips ne peut pas y transporter la plage d'un seul. Contre-épreuve
+dans le navigateur : point noir à 20 % sur le clip cible, look à 7100 K appliqué, la
+température voyage et le point noir ne bouge pas.
+
+**Appliquer est une écriture, pas un état partagé.** La carte est au-dessus de l'éditeur
+et ne lui demande rien : ce qu'un clip porte est déjà dans les grades chargés par la
+page, et l'éditeur voit la nouvelle valeur parce que sa propre requête est invalidée.
+C'est ce qui évite de remonter l'état transitoire des curseurs d'un cran.
+
+**Supprimer un look ne touche aucun clip**, et le dialogue le dit : appliquer copie des
+nombres, donc rien ne pend du look. C'est la seule suppression de ce dépôt qui ne
+cascade pas, et pour une bonne raison.
+
 ### Les instruments : quatre, tous débrayables
 
 Brainstorm du 2026-08-25, parti d'un constat de florian : « l'hist est pas très parlant

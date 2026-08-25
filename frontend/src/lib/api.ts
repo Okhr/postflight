@@ -191,6 +191,14 @@ export interface Grade {
   finished_at: string | null;
 }
 
+/** A named look: the settings that travel, without any clip's own black and white. */
+export interface Look {
+  id: number;
+  label: string;
+  params: Omit<GradeParams, "black_point" | "white_point">;
+  created_at: string;
+}
+
 export const NEUTRAL_GRADE: GradeParams = {
   exposure: 0,
   contrast: 1,
@@ -515,6 +523,15 @@ export const api = {
     }),
   renders: (state?: string) => request<Render[]>(`/renders${state ? `?state=${state}` : ""}`),
   deleteRender: (id: number) => request<{ deleted: number }>(`/renders/${id}`, { method: "DELETE" }),
+
+  looks: () => request<Look[]>("/looks"),
+  createLook: (label: string, params: GradeParams) =>
+    request<Look>("/looks", { method: "POST", body: JSON.stringify({ label, params }) }),
+  /** Rename, or point the same name at a different look. */
+  updateLook: (id: number, changes: { label?: string; params?: GradeParams }) =>
+    request<Look>(`/looks/${id}`, { method: "PATCH", body: JSON.stringify(changes) }),
+  deleteLook: (id: number) =>
+    request<{ deleted: number }>(`/looks/${id}`, { method: "DELETE" }),
 
   grades: () => request<Grade[]>("/grades"),
   grade: (renderId: number) => request<Grade>(`/renders/${renderId}/grade`),

@@ -29,6 +29,7 @@ from ..models import (
     Job,
     JobKind,
     JobState,
+    Look,
     Render,
     RenderState,
     Sequence,
@@ -1284,6 +1285,70 @@ def apply_grade(
     session.add(job)
     session.commit()
     return _grade_out(session, grade)
+
+
+# --------------------------------------------------------------------------- #
+# Looks
+# --------------------------------------------------------------------------- #
+
+def _look_out(look: Look) -> schemas.LookOut:
+    return schemas.LookOut(
+        id=look.id or 0,
+        label=look.label,
+        params=grading_service.travelling(look.params),
+        created_at=look.created_at,
+    )
+
+
+@router.get("/looks", response_model=list[schemas.LookOut])
+def list_looks(session: Session = Depends(get_session)) -> list[schemas.LookOut]:
+    looks = session.exec(select(Look).order_by(Look.label)).all()  # type: ignore[arg-type]
+    return [_look_out(look) for look in looks]
+
+
+@router.post("/looks", response_model=schemas.LookOut, status_code=status.HTTP_201_CREATED)
+def create_look(payload: schemas.LookIn, session: Session = Depends(get_session)) -> schemas.LookOut:
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "a look needs a name")
+    # Only the settings that travel are stored, whatever the caller sent: a look is
+    # applied to clips whose own range it knows nothing about.
+    look = Look(label=label, params=grading_service.travelling(payload.params))
+    session.add(look)
+    session.commit()
+    session.refresh(look)
+    return _look_out(look)
+
+
+@router.patch("/looks/{look_id}", response_model=schemas.LookOut)
+def update_look(
+    look_id: int, payload: schemas.LookPatch, session: Session = Depends(get_session)
+) -> schemas.LookOut:
+    look = session.get(Look, look_id)
+    if look is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown look")
+    if payload.label is not None:
+        if not payload.label.strip():
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "a look needs a name")
+        look.label = payload.label.strip()
+    if payload.params is not None:
+        look.params = grading_service.travelling(payload.params)
+    session.add(look)
+    session.commit()
+    session.refresh(look)
+    return _look_out(look)
+
+
+@router.delete("/looks/{look_id}")
+def delete_look(look_id: int, session: Session = Depends(get_session)) -> dict:
+    look = session.get(Look, look_id)
+    if look is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown look")
+    # Nothing hangs off a look: applying one copies its numbers into a grade, so the
+    # clips that wear it keep wearing it.
+    session.delete(look)
+    session.commit()
+    return {"deleted": look_id}
 
 
 @router.delete("/grades/{grade_id}")
