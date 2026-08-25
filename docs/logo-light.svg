@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- For light backgrounds. Same glyph as the favicon and the in-app mark. -->
+  <rect width="32" height="32" rx="7" fill="#09090b"/>
+  <path d="M4.5 16 q3 -9 6 0 t6 0 h11" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/>
+</svg>

@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowUp, FolderInput } from "lucide-react";
 
 import { JobsBar } from "@/components/JobsBar";
+import { Logo } from "@/components/Logo";
 import { RushTree } from "@/components/RushTree";
 import { WorkersDialog } from "@/components/WorkersDialog";
 import { Progress } from "@/components/ui/progress";
@@ -99,7 +100,10 @@ export function Layout() {
               onPointerUp={() => setDragging(false)}
               onPointerCancel={() => setDragging(false)}
             />
-            <span className="px-2 text-sm font-semibold tracking-tight">video-stab</span>
+            <div className="flex items-center gap-2 px-2">
+              <Logo />
+              <span className="text-sm font-semibold tracking-tight">PostFlight</span>
+            </div>
 
             <WorkersDialog workers={status?.workers ?? []} />
 

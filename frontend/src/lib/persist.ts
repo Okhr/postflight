@@ -10,7 +10,7 @@ import { useCallback, useState } from "react";
  * Failures are swallowed on purpose. localStorage throws in private windows and
  * when the quota is full, and losing a preference must never take the page down.
  */
-const PREFIX = "video-stab:";
+const PREFIX = "postflight:";
 
 function read<T>(key: string, fallback: T): T {
   try {

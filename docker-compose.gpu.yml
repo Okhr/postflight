@@ -10,12 +10,12 @@
 #
 # `group_add` must hold the GID of the host's `render` group (`getent group
 # render`). It varies between distributions (991 on Ubuntu 25.04, 44 or 104
-# elsewhere). Put VS_RENDER_GID in the .env.
+# elsewhere). Put PF_RENDER_GID in the .env.
 #
 # Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 #
 # Note: mapping /dev/dri also enables VAAPI decoding, which has been seen to wedge
-# the amdgpu driver on 3840x2880 HEVC 10-bit. Keep VS_HWACCEL=cpu on that hardware.
+# the amdgpu driver on 3840x2880 HEVC 10-bit. Keep PF_HWACCEL=cpu on that hardware.
 # OpenCL, the reason to map the GPU in the first place, is unaffected.
 
 # Only the worker: the API image has no Mesa driver to use the render node with.
@@ -24,4 +24,4 @@ services:
     devices:
       - /dev/dri:/dev/dri
     group_add:
-      - "${VS_RENDER_GID:-991}"
+      - "${PF_RENDER_GID:-991}"

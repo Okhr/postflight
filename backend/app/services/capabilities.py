@@ -47,7 +47,7 @@ _OPENCL_ICD_DIR = Path("/etc/OpenCL/vendors")
 _DRI_DIR = Path("/dev/dri")
 _NVIDIA_DEV = Path("/dev/nvidia0")
 
-# Decode backends, in the order they are tried when `VS_HWACCEL=auto`.
+# Decode backends, in the order they are tried when `PF_HWACCEL=auto`.
 DECODE_BACKENDS = ("cuda", "vaapi")
 
 # The probe sample: HEVC 10-bit, because that is what the rushes are and because
@@ -410,7 +410,7 @@ def _probe_backend(name: str, sample: Path, caps: Capabilities) -> tuple[bool, s
 
 
 def backends_to_probe(mode: str) -> tuple[list[str], str]:
-    """Turn a `VS_HWACCEL` value into the candidates worth probing, plus a note.
+    """Turn a `PF_HWACCEL` value into the candidates worth probing, plus a note.
 
     Split out from the probing itself so the policy is testable without a GPU, an
     ffmpeg, or any particular machine: everything below this function needs
@@ -423,7 +423,7 @@ def backends_to_probe(mode: str) -> tuple[list[str], str]:
         return list(DECODE_BACKENDS), ""
     if mode in DECODE_BACKENDS:
         return [mode], ""
-    return [], f"unknown VS_HWACCEL value ({mode}) → CPU decoding"
+    return [], f"unknown PF_HWACCEL value ({mode}) → CPU decoding"
 
 
 def _detect_decode(caps: Capabilities) -> None:

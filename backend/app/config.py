@@ -132,7 +132,7 @@ class Settings(BaseSettings):
 
     @property
     def db_path(self) -> Path:
-        return self.data_dir / "db" / "video-stab.sqlite3"
+        return self.data_dir / "db" / "postflight.sqlite3"
 
     @property
     def extensions(self) -> tuple[str, ...]:

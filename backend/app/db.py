@@ -17,11 +17,20 @@ _engine: Engine | None = None
 
 
 def get_engine() -> Engine:
-    """SQLite engine in WAL mode: the API and the worker are two processes
-    writing to the same database, and WAL + busy_timeout is enough at this scale."""
+    """SQLite engine in WAL mode.
+
+    One process ever writes here: the dispatcher owns the database and a worker
+    never opens it, so the concurrency a server database buys is concurrency
+    nobody needs. WAL and a busy_timeout cover the API's own threads.
+
+    WAL is also why the `db/` directory has to be on a local disk. It needs a
+    shared-memory `-shm` file, which is exactly what a network filesystem does
+    not provide; the rest of the volume is happy on NFS.
+    """
     global _engine
     if _engine is None:
         settings.ensure_dirs()
+        _adopt_legacy_db()
         _engine = create_engine(
             f"sqlite:///{settings.db_path}",
             connect_args={"timeout": 30.0, "check_same_thread": False},
@@ -38,6 +47,24 @@ def get_engine() -> Engine:
             cur.close()
 
     return _engine
+
+
+def _adopt_legacy_db() -> None:
+    """Take over the database this project wrote under its former name.
+
+    The three files move together or not at all: the WAL holds committed
+    transactions the main file does not have yet, so carrying it over alone
+    would silently roll the database back. Nothing has opened it at this point,
+    which is the only moment a rename is safe.
+    """
+    legacy = settings.db_path.with_name("video-stab.sqlite3")
+    if settings.db_path.exists() or not legacy.exists():
+        return
+    for suffix in ("", "-wal", "-shm"):
+        source = legacy.with_name(legacy.name + suffix)
+        if source.exists():
+            source.rename(settings.db_path.with_name(settings.db_path.name + suffix))
+    log.info("Database adopted from %s", legacy.name)
 
 
 def _scalar_default(column) -> Any | None:  # noqa: ANN001

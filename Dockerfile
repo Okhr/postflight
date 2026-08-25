@@ -62,7 +62,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 ENV XDG_RUNTIME_DIR=/tmp/runtime \
     HOME=/tmp \
     PYTHONUNBUFFERED=1 \
-    VS_DATA_DIR=/data
+    PF_DATA_DIR=/data
 
 VOLUME ["/data"]
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
@@ -77,7 +77,7 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 FROM base AS api
 
 COPY --from=frontend /build/dist /app/static
-ENV VS_STATIC_DIR=/app/static
+ENV PF_STATIC_DIR=/app/static
 EXPOSE 8000
 CMD ["api"]
 

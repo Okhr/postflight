@@ -1,13 +1,23 @@
-# video-stab
+# postflight
+
+**Renommé le 2026-08-26**, de `video-stab` à **postflight** (`PostFlight` à l'écran).
+Ce qui a bougé avec : le préfixe d'environnement `VS_` → `PF_`, les images
+(`postflight-api` / `postflight-worker`, `ghcr.io/okhr/postflight-*`), le dépôt GitHub
+(`Okhr/postflight`, l'ancienne URL redirige), le préfixe `localStorage` et le nom du
+fichier SQLite. `db._adopt_legacy_db` reprend une base restée sous l'ancien nom, **et
+déplace les trois fichiers ensemble** : le `-wal` porte des transactions commitées que
+le fichier principal n'a pas encore, donc l'emmener seul revient à perdre les dernières
+écritures en silence.
 
 Chaîne de traitement des rushes FPV : surveillance d'un dossier réseau → fusion
 des enregistrements découpés → derush dans une interface web → stabilisation
 Gyroflow. Deux images issues d'un seul Dockerfile (`--target api`, `--target
 worker`), déployables sur Portainer.
 
-**Langues** : le code, les commentaires, les docstrings, les messages de log et
-tout le texte de l'interface sont **en anglais**. Ce fichier, le README et les
-réponses en conversation restent **en français**.
+**Langues** : le code, les commentaires, les docstrings, les messages de log,
+tout le texte de l'interface et **le README** sont **en anglais** (le README depuis le
+2026-08-26 : c'est la vitrine publique du dépôt). Ce fichier et les réponses en
+conversation restent **en français**.
 
 **Interface** : elle doit être claire au point de ne pas avoir besoin de texte. Une
 carte porte un titre et des données, pas un paragraphe qui explique l'implémentation.
@@ -196,7 +206,7 @@ D'où le modèle de `services/capabilities.py` : **on sonde en exécutant**.
 - **décodage** : NVDEC puis VAAPI, chacun essayé en décodant réellement un
   échantillon HEVC 10 bits : le codec des rushes, et précisément là où le support
   matériel se dégrade (une puce qui décode le HEVC 8 bits peut refuser le Main10).
-  Le premier qui sort en 0 gagne ; `VS_HWACCEL` peut en épingler un. Un timeout
+  Le premier qui sort en 0 gagne ; `PF_HWACCEL` peut en épingler un. Un timeout
   compte comme un échec : un décodage qui pend est pire qu'un décodage lent.
 - **OpenCL** : `clinfo --json`, en cherchant un device de **type GPU**. Compter les
   fichiers ICD était le test d'avant, et il mentait : l'image en livre cinq, et sur
@@ -1025,7 +1035,7 @@ travail, donc il passait hors ligne au bout de `ONLINE_S` et l'interface afficha
 « no worker » au-dessus d'un proxy à 52 %. Un battement venant d'un worker qui a perdu
 le bail ne compte pas : c'est justement celui à qui on dit d'arrêter.
 
-Le nom d'un worker est son identité (`VS_WORKER_NAME`) et doit être **stable** :
+Le nom d'un worker est son identité (`PF_WORKER_NAME`) et doit être **stable** :
 le hostname d'un conteneur a l'air stable et ne l'est pas, il change à chaque
 recréation et laisse une ligne `worker` orpheline derrière lui.
 
@@ -1045,7 +1055,7 @@ racontés :
 
 **Le parallélisme est entre machines, pas dans une machine.** La boucle du worker est
 `claim()` puis `run_job()`, qui bloque jusqu'à la fin : un processus ne tient qu'un job.
-`VS_WORKER_CONCURRENCY` (défaut 1) est ce que le worker **déclare** au dispatcher, et
+`PF_WORKER_CONCURRENCY` (défaut 1) est ce que le worker **déclare** au dispatcher, et
 `available()` s'en sert pour savoir s'il a de la place ; la boucle, elle, ne sait pas
 s'en servir. Deux jobs en même temps veut donc dire deux workers, ou deux conteneurs
 worker sur la même machine.
@@ -1493,7 +1503,7 @@ un par un, et deux sont innocents.
 | lien ethernet de proxima | 1000 Mb/s |
 | débit déduit de deux vrais uploads (3,5 Go en 383 s) | **~9 Mo/s** |
 
-**`/mnt/Stockage` n'est pas dans la boucle.** `VS_DATA_PATH=./data`, donc l'inbox est
+**`/mnt/Stockage` n'est pas dans la boucle.** `PF_DATA_PATH=./data`, donc l'inbox est
 sur le NVMe racine (`/dev/nvme0n1p2`), pas sur le disque à plateaux. Le HDD ne peut pas
 être le coupable de quelque chose qu'il ne touche pas.
 
@@ -1996,14 +2006,14 @@ antérieures, et c'est assumé.
 ```bash
 # backend
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
-cd backend && VS_DATA_DIR=../data ../.venv/bin/uvicorn app.main:app --port 8000
-VS_DATA_DIR=../data ../.venv/bin/python -m app.worker
+cd backend && PF_DATA_DIR=../data ../.venv/bin/uvicorn app.main:app --port 8000
+PF_DATA_DIR=../data ../.venv/bin/python -m app.worker
 
 # front (proxy /api vers le port 8000)
 cd frontend && npm install && npm run dev
 ```
 
-Pour tester en local il faut `mp4_merge` dans le PATH (ou `VS_MP4_MERGE_BIN`) :
+Pour tester en local il faut `mp4_merge` dans le PATH (ou `PF_MP4_MERGE_BIN`) :
 binaire prêt sur les releases de `gyroflow/mp4-merge`.
 
 `docker/Dockerfile.spike` est l'image jetable qui a servi à valider Gyroflow

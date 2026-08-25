@@ -187,7 +187,7 @@ export function WorkersDialog({ workers }: { workers: WorkerInfo[] }) {
         <div className="max-h-[70vh] space-y-2 overflow-y-auto">
           {workers.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              None has registered. Check VS_API_URL on the worker.
+              None has registered. Check PF_API_URL on the worker.
             </p>
           ) : (
             workers.map((worker) => (

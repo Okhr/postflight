@@ -195,3 +195,38 @@ def test_a_column_that_is_not_there_is_not_an_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(db_module, "DEAD_COLUMNS", (("sequence", "color"), ("nope", "gone")))
     db_module._drop_dead_columns(engine)
+
+
+def test_the_database_of_the_former_name_is_adopted_with_its_wal(tmp_path, monkeypatch):
+    """A rename that leaves the WAL behind silently rolls the database back.
+
+    The main file holds what was checkpointed; everything committed since lives in
+    the -wal. Carrying one over without the other is not a partial migration, it is
+    a database missing its most recent writes.
+    """
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    (db_dir / "video-stab.sqlite3").write_bytes(b"main")
+    (db_dir / "video-stab.sqlite3-wal").write_bytes(b"committed but not checkpointed")
+    (db_dir / "video-stab.sqlite3-shm").write_bytes(b"shm")
+    monkeypatch.setattr(db_module.settings, "data_dir", tmp_path)
+
+    db_module._adopt_legacy_db()
+
+    assert (db_dir / "postflight.sqlite3").read_bytes() == b"main"
+    assert (db_dir / "postflight.sqlite3-wal").read_bytes() == b"committed but not checkpointed"
+    assert not (db_dir / "video-stab.sqlite3").exists()
+
+
+def test_a_database_under_the_new_name_is_never_overwritten(tmp_path, monkeypatch):
+    """Both names present means the adoption already happened, and the old file is
+    a leftover. Taking it again would throw away everything written since."""
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    (db_dir / "video-stab.sqlite3").write_bytes(b"stale")
+    (db_dir / "postflight.sqlite3").write_bytes(b"current")
+    monkeypatch.setattr(db_module.settings, "data_dir", tmp_path)
+
+    db_module._adopt_legacy_db()
+
+    assert (db_dir / "postflight.sqlite3").read_bytes() == b"current"

@@ -125,7 +125,7 @@ def test_scratch_files_never_travel(volume):
     before = workspace.pull([], _noop)
 
     (volume / "tmp" / "partial.mp4").write_bytes(b"scratch")
-    (volume / "db" / "video-stab.sqlite3").write_bytes(b"not yours")
+    (volume / "db" / "postflight.sqlite3").write_bytes(b"not yours")
 
     assert workspace.publish(before, _noop) == []
 
@@ -199,7 +199,7 @@ def test_a_path_climbing_out_of_the_volume_is_refused(volume):
 def test_the_database_is_not_a_blob(volume):
     """The queue travels over the worker endpoints; the SQLite file never travels."""
     with pytest.raises(HTTPException) as raised:
-        blobs._resolve("db/video-stab.sqlite3", for_write=False)
+        blobs._resolve("db/postflight.sqlite3", for_write=False)
     assert raised.value.status_code == 403
 
 

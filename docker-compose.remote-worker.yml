@@ -2,16 +2,16 @@
 #
 # Standalone: this file is the whole deployment for a machine that lends its CPU and
 # GPU to a dispatcher running elsewhere. There is nothing to open here and nothing to
-# discover. The worker dials out to `VS_API_URL`, announces itself, and asks for work;
+# discover. The worker dials out to `PF_API_URL`, announces itself, and asks for work;
 # the dispatcher never calls back.
 #
-#   VS_API_URL=http://192.168.1.104:8080 VS_WORKER_NAME=desktop \
+#   PF_API_URL=http://192.168.1.104:8080 PF_WORKER_NAME=desktop \
 #     docker compose -f docker-compose.remote-worker.yml up -d
 #
 # The volume here is a **work volume**, not the dispatcher's. It holds only what this
 # machine needed for the jobs it ran: inputs fetched over HTTP, outputs on their way
 # back, and a cache of both so a second cut of the same sequence does not fetch the
-# master again. Size it to a handful of masters and set VS_WORKER_CACHE_BYTES a little
+# master again. Size it to a handful of masters and set PF_WORKER_CACHE_BYTES a little
 # under that; the worker deletes its oldest footage to stay inside it.
 #
 # For a GPU, add the same override the main stack uses:
@@ -20,7 +20,7 @@
 
 services:
   worker:
-    image: ${VS_IMAGE_WORKER:-ghcr.io/okhr/video-stab-worker:latest}
+    image: ${PF_IMAGE_WORKER:-ghcr.io/okhr/postflight-worker:latest}
     command: ["worker"]
     restart: unless-stopped
     # Docker's default is 10s, then SIGKILL. A render runs for minutes, and an ffmpeg
@@ -28,24 +28,24 @@ services:
     # VAAPI fence, machine reboot only. The worker forwards SIGTERM to its child and
     # waits; this gives it the room to.
     stop_grace_period: 60s
-    user: "${VS_UID:-1000}:${VS_GID:-1000}"
+    user: "${PF_UID:-1000}:${PF_GID:-1000}"
     volumes:
-      - ${VS_WORK_PATH:-./work}:/data
+      - ${PF_WORK_PATH:-./work}:/data
     environment:
-      VS_DATA_DIR: /data
+      PF_DATA_DIR: /data
       # Required: where the dispatcher is. No default, because a wrong one would show
       # up as a worker that silently never registers.
-      VS_API_URL: ${VS_API_URL:?set VS_API_URL to the dispatcher, e.g. http://192.168.1.104:8080}
+      PF_API_URL: ${PF_API_URL:?set PF_API_URL to the dispatcher, e.g. http://192.168.1.104:8080}
       # Required too, and it has to be stable: a name is what ties a worker's history
       # to its machine, including everything real jobs have measured about its speed.
-      VS_WORKER_NAME: ${VS_WORKER_NAME:?set VS_WORKER_NAME to something stable for this machine}
+      PF_WORKER_NAME: ${PF_WORKER_NAME:?set PF_WORKER_NAME to something stable for this machine}
       # Set this, on both sides, as soon as the dispatcher is reachable by anything
       # other than a private network. It guards the file endpoints too, which serve any
       # footage on the volume and accept writes into the directories the pipeline
       # produces. Empty leaves them open, which is fine on a LAN and only there.
-      VS_WORKER_TOKEN: ${VS_WORKER_TOKEN:-}
+      PF_WORKER_TOKEN: ${PF_WORKER_TOKEN:-}
       # How much footage this machine may keep. It evicts its oldest to stay under.
-      VS_WORKER_CACHE_BYTES: ${VS_WORKER_CACHE_BYTES:-20000000000}
-      VS_HWACCEL: ${VS_HWACCEL:-auto}
-      VS_PROXY_HEIGHT: ${VS_PROXY_HEIGHT:-960}
-      VS_PROXY_CRF: ${VS_PROXY_CRF:-26}
+      PF_WORKER_CACHE_BYTES: ${PF_WORKER_CACHE_BYTES:-20000000000}
+      PF_HWACCEL: ${PF_HWACCEL:-auto}
+      PF_PROXY_HEIGHT: ${PF_PROXY_HEIGHT:-960}
+      PF_PROXY_CRF: ${PF_PROXY_CRF:-26}

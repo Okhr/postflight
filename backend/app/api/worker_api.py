@@ -34,7 +34,7 @@ def require_worker_token(x_worker_token: str | None = Header(default=None)) -> N
     """Shared secret, checked only when one is configured.
 
     Left empty, these endpoints are open, which is what a worker sitting next to the
-    dispatcher on a private volume needs. Set `VS_WORKER_TOKEN` on both sides before
+    dispatcher on a private volume needs. Set `PF_WORKER_TOKEN` on both sides before
     the API is reachable by anything else, and note that this matters more since the
     blob endpoints exist: they guard reading any footage on the volume and writing into
     the directories the pipeline produces, not just asking for a job.

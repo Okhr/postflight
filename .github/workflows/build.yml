@@ -14,9 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Lowercase and hardcoded on purpose: `github.repository` is `Okhr/video-stab`,
+  # Lowercase and hardcoded on purpose: `github.repository` is `Okhr/postflight`,
   # and GHCR rejects an uppercase letter in an image name.
-  IMAGE: ghcr.io/okhr/video-stab
+  IMAGE: ghcr.io/okhr/postflight
 
 jobs:
   tests:
@@ -130,19 +130,19 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "### Images poussées"
+            echo "### Images pushed"
             echo
             echo '```'
             echo "${{ steps.meta_api.outputs.tags }}"
             echo "${{ steps.meta_worker.outputs.tags }}"
             echo '```'
             echo
-            echo "Déploiement, dans le \`.env\` :"
+            echo "To deploy, in the \`.env\`:"
             echo
             echo '```'
-            echo "VS_IMAGE_API=${{ env.IMAGE }}-api:latest"
-            echo "VS_IMAGE_WORKER=${{ env.IMAGE }}-worker:latest"
+            echo "PF_IMAGE_API=${{ env.IMAGE }}-api:latest"
+            echo "PF_IMAGE_WORKER=${{ env.IMAGE }}-worker:latest"
             echo '```'
             echo
-            echo "puis \`docker compose pull && docker compose up -d\`."
+            echo "then \`docker compose pull && docker compose up -d\`."
           } >> "$GITHUB_STEP_SUMMARY"

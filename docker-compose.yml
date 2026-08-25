@@ -1,18 +1,23 @@
-# video-stab stack. Two services, two images out of one Dockerfile: the API, which is
+# postflight stack. Two services, two images out of one Dockerfile: the API, which is
 # also the dispatcher and serves the frontend, and a worker that executes the jobs.
 #
 # The database belongs to the API alone. The worker holds none: it registers over
 # HTTP, asks for a job, and posts back what it measured. That is what lets a second
-# worker run on another machine, and why `VS_API_URL` is all it needs to find its
+# worker run on another machine, and why `PF_API_URL` is all it needs to find its
 # way home. See docker-compose.remote-worker.yml.
 #
 # With no GPU it runs as is: Gyroflow falls back to pocl/CPU and ffmpeg decodes on
 # the CPU. To make use of a GPU, add the override:
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
+# Explicit, so the project name comes from the file rather than from whatever the
+# checkout directory happens to be called. Renaming a directory would otherwise orphan
+# every container of the stack.
+name: postflight
+
 services:
   api:
-    image: ${VS_IMAGE_API:-video-stab-api:latest}
+    image: ${PF_IMAGE_API:-postflight-api:latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -21,29 +26,29 @@ services:
     restart: unless-stopped
     # Files written to /data belong to this user: without it a NAS volume fills up
     # with root-owned files.
-    user: "${VS_UID:-1000}:${VS_GID:-1000}"
+    user: "${PF_UID:-1000}:${PF_GID:-1000}"
     ports:
-      - "${VS_PORT:-8080}:8000"
+      - "${PF_PORT:-8080}:8000"
     volumes:
-      - ${VS_DATA_PATH:-./data}:/data
+      - ${PF_DATA_PATH:-./data}:/data
     environment:
-      VS_DATA_DIR: /data
-      # No VS_HWACCEL here: this image carries no GPU stack and the API decodes
+      PF_DATA_DIR: /data
+      # No PF_HWACCEL here: this image carries no GPU stack and the API decodes
       # nothing. Accelerated paths belong to the workers, which probe their own.
       # Ingestion and grouping walk the volume the dispatcher owns, so they run here
       # and not on a worker that may well be switched off.
-      VS_SCAN_INTERVAL_S: ${VS_SCAN_INTERVAL_S:-30}
-      VS_STABILITY_CHECKS: ${VS_STABILITY_CHECKS:-2}
-      VS_SPLIT_GAP_TOLERANCE_S: ${VS_SPLIT_GAP_TOLERANCE_S:-2.0}
-      VS_SPLIT_MIN_PART_BYTES: ${VS_SPLIT_MIN_PART_BYTES:-3000000000}
+      PF_SCAN_INTERVAL_S: ${PF_SCAN_INTERVAL_S:-30}
+      PF_STABILITY_CHECKS: ${PF_STABILITY_CHECKS:-2}
+      PF_SPLIT_GAP_TOLERANCE_S: ${PF_SPLIT_GAP_TOLERANCE_S:-2.0}
+      PF_SPLIT_MIN_PART_BYTES: ${PF_SPLIT_MIN_PART_BYTES:-3000000000}
       # Deleting the parts after a merge is the dispatcher's call: its copy is the
       # one that matters, a worker only ever holds a copy of it.
-      VS_PURGE_PARTS_AFTER_MERGE: ${VS_PURGE_PARTS_AFTER_MERGE:-false}
-      VS_PROXY_HEIGHT: ${VS_PROXY_HEIGHT:-960}
-      VS_PROXY_CRF: ${VS_PROXY_CRF:-26}
+      PF_PURGE_PARTS_AFTER_MERGE: ${PF_PURGE_PARTS_AFTER_MERGE:-false}
+      PF_PROXY_HEIGHT: ${PF_PROXY_HEIGHT:-960}
+      PF_PROXY_CRF: ${PF_PROXY_CRF:-26}
       # Shared secret on the worker endpoints. Empty leaves them open, which is fine
       # while nothing outside this network can reach the API.
-      VS_WORKER_TOKEN: ${VS_WORKER_TOKEN:-}
+      PF_WORKER_TOKEN: ${PF_WORKER_TOKEN:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
       interval: 30s
@@ -52,7 +57,7 @@ services:
       start_period: 20s
 
   worker:
-    image: ${VS_IMAGE_WORKER:-video-stab-worker:latest}
+    image: ${PF_IMAGE_WORKER:-postflight-worker:latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -65,21 +70,21 @@ services:
     # reboot only. The worker forwards SIGTERM to its child and waits; this gives it
     # the room to.
     stop_grace_period: 60s
-    user: "${VS_UID:-1000}:${VS_GID:-1000}"
+    user: "${PF_UID:-1000}:${PF_GID:-1000}"
     depends_on:
       - api
     volumes:
-      - ${VS_DATA_PATH:-./data}:/data
+      - ${PF_DATA_PATH:-./data}:/data
     environment:
-      VS_DATA_DIR: /data
+      PF_DATA_DIR: /data
       # The worker's only link to the rest of the system.
-      VS_API_URL: ${VS_API_URL:-http://api:8000}
-      VS_WORKER_TOKEN: ${VS_WORKER_TOKEN:-}
+      PF_API_URL: ${PF_API_URL:-http://api:8000}
+      PF_WORKER_TOKEN: ${PF_WORKER_TOKEN:-}
       # Identity, and it has to be stable: a name is what ties a worker's history to
       # its machine. The container hostname would look stable and is not, since it
       # changes on every `compose up` that recreates the container, leaving a new
       # worker row behind each time and losing whatever was measured on the old one.
-      VS_WORKER_NAME: ${VS_WORKER_NAME:-local}
-      VS_HWACCEL: ${VS_HWACCEL:-auto}
-      VS_PROXY_HEIGHT: ${VS_PROXY_HEIGHT:-960}
-      VS_PROXY_CRF: ${VS_PROXY_CRF:-26}
+      PF_WORKER_NAME: ${PF_WORKER_NAME:-local}
+      PF_HWACCEL: ${PF_HWACCEL:-auto}
+      PF_PROXY_HEIGHT: ${PF_PROXY_HEIGHT:-960}
+      PF_PROXY_CRF: ${PF_PROXY_CRF:-26}

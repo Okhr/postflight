@@ -1,214 +1,302 @@
-# video-stab
+<div align="center">
 
-Traitement des rushes FPV DJI (O3/O4), de la carte SD au clip stabilisé, dans une
-interface web. Une image Docker, deux services, déployable sur Portainer.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
+  <img src="docs/logo-light.svg" alt="" width="76">
+</picture>
 
-```
-inbox/     dépôt réseau surveillé (dump de la carte SD)
-  ↓        ingestion : attente de stabilité de taille, ffprobe, empreinte
-raw/       masters intacts, jamais réencodés ni coupés
-  ↓        fusion des parts d'un même vol (mp4_merge, sans perte, gyro conservé)
-merged/    un fichier continu par séquence
-  ↓        proxy H.264 lisible dans le navigateur + pellicule
-proxies/   ce qu'on regarde pour derusher
-  ↓        marks in/out enregistrés en frames
-out/       rendus stabilisés par Gyroflow (une passe, zones gardées uniquement)
-  ↓        étalonnage : un second encodage, sur les seuls clips gardés
-graded/    clips étalonnés en H.264, prêts à partager
-```
+# PostFlight
 
-L'interface suit ces étapes : **1 Import**, **2 Derush**, **3 Stabilize**,
-**4 Color**. Le texte de l'interface, le code et les commentaires sont en anglais.
+**From the SD card to a stabilized, graded clip.**
 
-## Pourquoi cet ordre
+A web pipeline for DJI FPV footage. It picks up your rushes, joins the parts the camera
+split, lets you mark the moments worth keeping, stabilizes them with Gyroflow and grades
+them, and it does all of that without ever destroying the gyro track. Self-hosted, two
+Docker images, and it spreads the heavy jobs over as many machines as you point at it.
 
-Un rush DJI porte son gyro dans un flux `djmd` que **ffmpeg ne sait pas
-réécrire** : toute fusion ou coupe faite avec ffmpeg détruit la télémétrie et
-rend la stabilisation impossible. La fusion passe donc par `mp4_merge`, qui
-travaille au niveau des boxes mp4, et **le derush n'est que de la métadonnée** :
-c'est Gyroflow qui coupe, pendant qu'il stabilise. Une seule passe lourde,
-uniquement sur les zones gardées, sans intermédiaire de plusieurs gigaoctets.
+[![build](https://github.com/Okhr/postflight/actions/workflows/build.yml/badge.svg)](https://github.com/Okhr/postflight/actions/workflows/build.yml)
+[![images](https://img.shields.io/badge/ghcr.io-postflight-2496ed?logo=docker&logoColor=white)](https://github.com/Okhr?tab=packages&repo_name=postflight)
+[![gyroflow](https://img.shields.io/badge/Gyroflow-1.6.3-8f4c8f)](https://gyroflow.xyz)
+[![cameras](https://img.shields.io/badge/DJI-O3%20%C2%B7%20O4%20%C2%B7%20O4%20Pro-0a7ea4)](#which-cameras)
 
-Fusionner avant de stabiliser n'est pas un détail : le lissage se calcule sur
-toute la courbe gyro. Deux parts stabilisées séparément laisseraient une couture
-visible à la jonction.
+<img src="docs/screenshots/color.png" alt="The colour page: a graded clip, its scopes and the look library" width="900">
 
-## Déploiement
+</div>
+
+## Quick start
 
 ```bash
-cp .env.example .env      # ajuster VS_DATA_PATH, VS_PORT
-docker compose up -d --build
+git clone https://github.com/Okhr/postflight.git && cd postflight
+cp .env.example .env          # set PF_DATA_PATH and PF_PORT
+docker compose up -d
 ```
 
-### Le GPU, selon la machine
+Open `http://localhost:8080`, drag your rushes into the drop zone, and the pipeline takes
+it from there. Everything below is optional: the GPU, the extra machines, the tuning.
 
-Une seule image porte les pilotes des trois fabricants. Ce qu'elle ne peut pas
-deviner, c'est **la façon dont Docker donne accès au GPU** : ça se décide au
-niveau du démon, pas dans l'application. D'où un override à choisir une fois :
+Got a GPU? One override, once, and stabilization gets about three times faster:
 
-| hôte | commande | ce que ça apporte |
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d   # NVIDIA
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d      # AMD or Intel
+```
+
+## Why it exists
+
+A four minute FPV flight lands on your card as two files, 4 GB each, with the gyro
+telemetry the camera recorded folded into a private `djmd` stream. Everything you would
+normally reach for destroys that stream, and you only find out when the stabilizer tells
+you there is nothing to stabilize.
+
+```
+inbox/     watched folder, or the browser drop zone
+  |        ingest: size settles, ffprobe, content fingerprint
+raw/       untouched masters, never re-encoded, never cut
+  |        the parts of one flight are joined losslessly (mp4_merge, gyro kept)
+merged/    one continuous file per flight
+  |        an H.264 proxy the browser can scrub, plus the gyro curve
+proxies/   what you actually watch while marking keepers
+  |        in and out marks, stored as frame numbers
+out/       Gyroflow renders: one pass, only the parts you kept
+  |        grading: a second encode, only on the clips that survived
+graded/    H.264 clips, ready to share
+```
+
+Three decisions carry the whole thing:
+
+**ffmpeg can neither join nor cut a DJI rush without killing the gyro.** The `djmd`
+stream has codec `none`, which mp4 refuses (`Could not find tag for codec none`) and mkv
+refuses too. So joining goes through [`mp4_merge`](https://github.com/gyroflow/mp4-merge),
+the same tool Gyroflow uses internally: it rewrites the sample table and keeps every
+track. 4.4 s for 4 GB.
+
+**Marking keepers stays metadata.** No master is ever cut. The in and out marks are handed
+to Gyroflow as `trim_ranges_ms`, so there is exactly one heavy pass, on the parts you
+kept, with no multi-gigabyte intermediate on the way.
+
+**Joining happens before stabilizing, never the other way round.** Smoothing and adaptive
+zoom are computed over the whole gyro curve. Two halves stabilized separately leave a
+visible seam at the junction.
+
+## The four steps
+
+|  |  |
+|---|---|
+| **1 Import** | Drop rushes in the browser, or copy them into the watched folder. Split recordings are detected and joined, duplicates are recognised by content and set aside, and a proxy is built. |
+| **2 Derush** | Scrub the proxy frame by frame with the gyro curve under it, and mark the sequences worth keeping. Nothing is cut, and nothing is saved by hand. |
+| **3 Stabilize** | One queue for every rush, three-state checkboxes, a render profile at the top. Sequences already rendered with that profile are struck out, so a second format never redoes work. |
+| **4 Color** | Six sliders and two range points, a GPU preview that follows the slider while it moves, four scopes, and a library of looks you can paint onto other clips. |
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/derush.png" alt="Derush: the proxy player and the gyro curve"></td>
+<td width="50%"><img src="docs/screenshots/stabilize.png" alt="Stabilize: the render queue"></td>
+</tr>
+<tr>
+<td><b>Derush.</b> The gyro curve under the player is where the calm passes and the shakes
+are, reconstructed from 2000 orientation samples a second.</td>
+<td><b>Stabilize.</b> One queue across every folder and rush, rather than one launcher per
+rush.</td>
+</tr>
+</table>
+
+## Deployment
+
+### The GPU, machine by machine
+
+One image carries the drivers for all three vendors. What it cannot guess is **how Docker
+hands the GPU over**, because that is decided at the daemon level and not in the
+application. Hence one override to pick once:
+
+| host | command | what it gives |
 |---|---|---|
-| pas de GPU | rien à ajouter | tout en CPU, la stack tourne |
-| **AMD / Intel** | `-f docker-compose.yml -f docker-compose.gpu.yml` | `/dev/dri` mappé (renseigner `VS_RENDER_GID` avec `getent group render`) |
-| **NVIDIA** | `-f docker-compose.yml -f docker-compose.nvidia.yml` | runtime nvidia, exige `nvidia-container-toolkit` sur l'hôte |
+| no GPU | nothing to add | everything on the CPU, the stack still runs |
+| **AMD / Intel** | `-f docker-compose.yml -f docker-compose.gpu.yml` | `/dev/dri` mapped (set `PF_RENDER_GID` from `getent group render`) |
+| **NVIDIA** | `-f docker-compose.yml -f docker-compose.nvidia.yml` | the nvidia runtime, needs `nvidia-container-toolkit` on the host |
 
-Le plus simple est de mettre la ligne `COMPOSE_FILE` correspondante dans le
-`.env` : les `docker compose up` suivants l'appliquent tout seuls, et on évite le
-classique « up sans les `-f` » qui recrée les conteneurs sans GPU.
+Put the matching `COMPOSE_FILE` line in your `.env` and every later `docker compose up`
+applies it on its own. That avoids the classic "up without the `-f`", which quietly
+recreates the containers with no GPU.
 
-Ça vaut la peine : mesuré sur un RTX 3090, sur une source 3840x2880 HEVC 10 bits à
-haut débit, le décodage passe de 0.33x à **1.40x** temps réel en NVDEC, et la passe
-proxy complète de 0.31x à **1.37x**. Le gain grandit avec le débit de la source,
-parce que c'est le décodage qui domine : accéléré, il devient si rapide que
-l'encodage du proxy ne coûte presque plus rien à côté.
+It is worth the trouble. Measured on an RTX 3090, on a high bitrate 3840x2880 HEVC 10-bit
+source, decoding goes from 0.33x to **1.40x** realtime on NVDEC, and the whole proxy pass
+from 0.31x to **1.37x**. The gain grows with the bitrate, because decoding dominates:
+accelerate it and the proxy encode costs almost nothing next to it.
 
-Se tromper n'est jamais fatal, seulement lent. Aucun chemin accéléré n'est pris
-sur parole : au démarrage, le worker **décode réellement** un échantillon HEVC
-10 bits en NVDEC puis en VAAPI et garde le premier qui marche, et il énumère les
-vrais devices OpenCL au lieu de compter les pilotes installés. Ce qui échoue
-n'est pas utilisé, et l'en-tête de l'interface affiche ce qui a été retenu, avec
-la raison du repli quand il y en a un.
+Getting it wrong is never fatal, only slow. **No accelerated path is taken on trust**: at
+startup the worker really decodes an HEVC 10-bit sample on NVDEC and then on VAAPI and
+keeps the first that works, and it enumerates actual OpenCL devices instead of counting
+installed drivers. Whatever fails is not used, and the interface says what was picked, and
+why it fell back when it did.
 
-Cette prudence est chèrement acquise : sur une machine dont le module noyau et
-l'espace utilisateur NVIDIA étaient à la même version, avec `/dev/nvidia*`
-présents et `nvidia-smi` parfaitement fonctionnel, `cuInit()` renvoyait
-`CUDA_ERROR_UNKNOWN`, sur l'hôte, hors conteneur. Tous les indices statiques
-disaient « GPU prêt ».
+That caution was expensive to learn. On a machine whose NVIDIA kernel module and userspace
+were on the same version, with `/dev/nvidia*` present and `nvidia-smi` answering
+perfectly, `cuInit()` returned `CUDA_ERROR_UNKNOWN`, on the host, outside any container.
+Every static clue said "GPU ready".
 
-**Portainer** : coller le contenu de `docker-compose.yml` en stack, y ajouter la
-section de l'override correspondant au matériel, et renseigner les variables
-d'environnement de `.env.example`.
+### Two images out of one Dockerfile
 
-Deux images sortent d'un seul Dockerfile : `video-stab-api` pour le dispatcher, qui
-sert aussi l'interface, et `video-stab-worker` pour les machines qui travaillent.
-L'API ne décode, ne warpe et ne fusionne rien, donc elle n'embarque ni OpenCL, ni
-Vulkan, ni Gyroflow : **656 Mo contre 1,98 Go**, soit 1,33 Go de moins. Elle garde
-ffmpeg, dont l'aperçu d'étalonnage a besoin. Les overrides GPU ne concernent donc que
-le worker.
+`postflight-api` is the dispatcher, and it also serves the interface. `postflight-worker`
+is what does the work. The API decodes nothing, warps nothing and joins nothing, so it
+carries no OpenCL, no Vulkan and no Gyroflow: **656 MB against 1.99 GB**. It keeps ffmpeg,
+which the grading analysis needs. The GPU overrides therefore only ever apply to workers.
 
-Interface sur `http://<hôte>:8080`.
+**Portainer**: paste `docker-compose.yml` as a stack, add the section from the override
+that matches your hardware, and fill in the variables from `.env.example`.
 
-### Ajouter une machine
+### Adding a machine
 
-Un worker de plus, sur n'importe quelle autre machine, en une commande :
+One more worker, on any other machine, in one command:
 
 ```bash
-VS_API_URL=http://192.168.1.104:8080 VS_WORKER_NAME=desktop \
+PF_API_URL=http://192.168.1.104:8080 PF_WORKER_NAME=desktop \
   docker compose -f docker-compose.remote-worker.yml up -d
 ```
 
-Rien à ouvrir de ce côté, rien à découvrir : le worker appelle le dispatcher, s'annonce
-et réclame du travail ; le dispatcher ne rappelle jamais. Le nom doit être **stable**,
-c'est ce qui rattache à la machine tout ce que ses vrais jobs ont mesuré. Ajouter le
-même override GPU que pour la stack principale (`-f docker-compose.nvidia.yml` ou
-`-f docker-compose.gpu.yml`).
+Nothing to open on that side and nothing to discover: **the worker dials out**, announces
+itself and asks for work, and the dispatcher never calls back. Give it the same GPU
+override as the main stack. The name has to be stable, because it is what ties everything
+its real jobs measured to that machine.
 
-Le volume est ici un **volume de travail**, pas celui du dispatcher : il ne contient que
-ce dont cette machine a eu besoin. Le worker s'en aperçoit tout seul (l'API marque son
-volume, le worker envoie la marque qu'il arrive à lire, et l'égalité est tout le test),
-puis récupère ses entrées en HTTP et renvoie ses sorties pareil. Il garde en cache ce
-qu'il a déjà pris, donc un deuxième rendu de la même séquence ne retransfère rien, et il
-supprime ses plus vieux rushes pour rester sous `VS_WORKER_CACHE_BYTES`.
+Its volume is a **work volume**, not the dispatcher's. It holds only what this machine
+needed. The worker notices which case it is in on its own: the API stamps its data
+directory with a uuid, the worker sends back the one it can read, and equality is the
+whole test. Inputs then arrive over HTTP and outputs go back the same way, with a cache so
+a second cut of the same flight transfers nothing, evicting its oldest footage to stay
+under `PF_WORKER_CACHE_BYTES`.
 
-**Le dispatcher décide seul où va chaque job**, sans jamais rien demander à
-l'utilisateur. Chaque worker mesure ses quatre débits au démarrage en exécutant les
-quatre vraies étapes sur un demi-seconde de rush embarqué dans l'image (4,4 s), et le
-dispatcher compare `ampleur / débit + transfert / lien`. Ça donne les décisions qu'on
-attend : une fusion reste sur la machine qui voit le volume, parce que déplacer 4 Go
-coûte dix fois plus que la fusion elle-même ; un rendu part chez la machine qui a déjà
-le master. Et ces débits ne restent pas des estimations, chaque job terminé les corrige
-(mesuré : 28,0 img/s annoncés par le benchmark, 24,9 img/s après deux vrais rendus).
+<img src="docs/screenshots/workers.png" alt="The workers dialog: what each machine decodes with, warps with, and how fast it really is" width="720">
 
-### Le volume de données
+**The dispatcher decides where every job goes, and never asks.** Each worker measures its
+four throughputs at startup by running the four real steps on half a second of rush baked
+into the image (4.4 s in total), and the dispatcher compares `magnitude / rate + transfer
+/ link`. That yields the decisions you would want: a join stays on the machine that can
+see the volume, because moving 4 GB costs ten times more than the join itself, and a
+render goes to the machine that already holds the master. Those rates do not stay
+estimates either, every finished job corrects them (measured: 28.0 img/s claimed by the
+benchmark, 24.9 img/s after two real renders).
 
-Un seul bind mount, `/data`. Garder `inbox/` et `raw/` sur le **même système de
-fichiers** : l'ingestion devient un `rename()` instantané au lieu d'une copie de
-plusieurs gigaoctets. Compter environ 2x la taille des rushes tant que
-`VS_PURGE_PARTS_AFTER_MERGE` est à `false` (masters + fusionnés), plus environ
-8 Mb/s de proxy.
+Something that fell out of measuring rather than assuming: **a Gyroflow render is bound by
+the CPU, not by the GPU**. On an RTX 3090 the warp really does run on OpenCL, and the
+container still sits at 676% of 800% CPU while the GPU idles at 13%. Which is why that
+RTX 3090 renders at the same speed as a Radeon 890M iGPU. "Send the renders to the machine
+with the big GPU" is simply the wrong model, and only a real throughput measurement
+settles it.
 
-## Utilisation
+### The data volume, and where the database goes
 
-1. Vider la carte SD dans `inbox/`, de deux façons au choix :
-   - **copie directe** dans le dossier réseau. Le dispatcher scanne toutes les 30 s
-     et n'ingère un fichier qu'après plusieurs scans à taille identique,
-     inotify n'est pas fiable sur NFS/SMB et un rush de 4 Go met du temps à
-     arriver.
-   - **glisser-déposer** dans la zone du tableau de bord. Les fichiers partent
-     l'un après l'autre avec une progression par fichier, et sont ingérés dès la
-     fin de l'envoi (pas d'attente : le fichier est écrit sous `.partial` et
-     renommé seulement une fois complet, donc sa complétude est certaine).
-     Un rush déjà connu est reconnu à l'empreinte et écarté dans
-     `inbox/.duplicates/` au lieu d'être traité deux fois.
+One bind mount, `/data`. Keep `inbox/` and `raw/` **on the same filesystem**: ingestion is
+then an instant `rename()` instead of a multi-gigabyte copy. Budget about 2x the size of
+your footage while `PF_PURGE_PARTS_AFTER_MERGE` is `false` (masters plus joined files),
+plus roughly 8 Mb/s of proxy.
 
-   Une **sortie Gyroflow** revenue dans le dossier est reconnue à son nom
-   (`..._stabilized`) et écartée dans `inbox/.stabilized/`, le compte remontant à
-   l'interface. Rien n'est supprimé. Et un fichier dont **l'heure de départ est
-   introuvable** (ni dans le nom, ni dans le conteneur) est refusé avec la raison
-   plutôt que groupé au hasard.
-2. Les parts d'un même vol sont regroupées automatiquement, fusionnées, puis un
-   proxy est généré. La séquence passe à *prête*. Les trois nommages DJI sont
-   reconnus, y compris l'ancien `DJI_0327.MP4` qui ne porte aucun horodatage : dans
-   ce cas l'heure de départ vient du `creation_time` du conteneur, qui survit à la
-   copie, et non du `mtime`, qu'un simple `cp` détruit.
-3. Derush : `←`/`→` image par image, `maj` pour une seconde, `espace` lecture,
-   sélecteur de vitesse. `I` pose un début, `O` ferme la zone, `ctrl+S`
-   enregistre. Sous le lecteur, la pellicule et la **courbe gyro** (vitesse
-   angulaire X/Y/Z en °/s) partagent la même timeline, zoomable à la molette
-   jusqu'à ×24, c'est là qu'on repère les passages calmes et les secousses.
-4. Choisir un template et lancer le rendu. Un fichier par zone.
-5. Étalonner si besoin : six curseurs, un auto-niveaux mesuré sur le clip, un
-   aperçu image fixe qui traverse exactement les filtres du rendu final. La
-   sortie est un **nouveau fichier** H.264 ; le rendu stabilisé reste intact.
+The footage is happy on a NAS share. **The `db/` directory is not.** SQLite runs in WAL
+mode, which needs a shared-memory file that network filesystems do not provide. If `/data`
+is an NFS or SMB mount, give the database a local disk:
 
-## Templates
+```yaml
+services:
+  api:
+    volumes:
+      - /mnt/nas/footage:/data
+      - ./db:/data/db          # a local disk, on the machine running the API
+```
 
-Deux à l'installation, copiés dans `data/templates/` où ils sont éditables sans
-reconstruire l'image :
+## Configuration
 
-| id | sortie | recadrage |
+Everything is an environment variable with a `PF_` prefix, and `.env.example` documents
+each one where it is defined. The ones that matter on day one:
+
+| variable | default | what it is |
 |---|---|---|
-| `h_1080` | 1920×1080 | crop 16:9 dans le 4:3 source |
-| `v_1080` | 1080×1920 | crop 9:16, offset réglable |
+| `PF_DATA_PATH` | `./data` | the host directory behind `/data` |
+| `PF_PORT` | `8080` | where the interface listens |
+| `PF_UID` / `PF_GID` | `1000` | who owns the files written to `/data` |
+| `PF_HWACCEL` | `auto` | `auto` probes NVDEC then VAAPI by really decoding a sample; `cuda`, `vaapi` or `cpu` pins one |
+| `PF_WORKER_NAME` | `local` | a worker's identity, and it has to be stable |
+| `PF_WORKER_TOKEN` | empty | shared secret on the worker endpoints. Empty leaves them open, which is fine on a LAN and only there |
+| `PF_PURGE_PARTS_AFTER_MERGE` | `false` | delete the parts once they are joined. The join is lossless, the deletion is not undoable |
 
-Un template est un JSON partiel de projet Gyroflow (`stabilization` + `output`) ;
-l'application y injecte les bornes du cut et les chemins de sortie. Le projet
-généré est conservé dans `projects/` : chaque rendu est rejouable à l'identique.
+## Render profiles
 
-## Identité de contenu : ne rien recalculer deux fois
+A profile is a **partial Gyroflow project** (`data/templates/*.json`) passed as `--preset`,
+so what you validated in Gyroflow itself is what runs here. Two ship with the app, both
+editable in the interface without rebuilding anything:
 
-Chaque séquence porte le hash de ses parts (empreintes ordonnées), et ce hash est
-dans le nom des fichiers produits : `DJI_..._0044_D__934e00ad7607.mp4`. Une
-séquence supprimée puis reformée retrouve donc sa fusion et son proxy sur le
-disque et repasse à *prête* sans rien réencoder, mesuré à 186 ms au lieu de sept
-minutes. Même principe pour l'étalonnage, dont le fichier porte en plus le hash du
-look. C'est aussi pourquoi supprimer une séquence ne supprime que sa ligne en
-base : `keep_derived=false` pour effacer les dérivés, `keep_raw=false` pour tout
-purger.
-
-## Ce qui reste ouvert
-
-- Le niveau de lissage et l'offset de recadrage vertical sont dans les templates ;
-  ils gagneraient à être réglables par zone dans l'UI.
-- Le regroupement automatique ne touche jamais une séquence déjà fusionnée. Une
-  part arrivée en retard forme sa propre séquence, et il n'existe aucun geste
-  manuel pour recoller : il faut supprimer les deux séquences, ce qui rend leurs
-  clips libres, et laisser le scan suivant les regrouper.
-- Pas d'authentification : à placer derrière un reverse proxy si l'accès sort du
-  réseau local.
-
-## Piège : l'upload derrière un reverse proxy
-
-Le glisser-déposer envoie le fichier entier dans une requête. En accès direct sur
-le LAN, aucune limite. Mais devant un proxy, les plafonds par défaut sont très
-en dessous d'un rush de 4 Go :
-
-| couche | défaut | à faire |
+| id | output | framing |
 |---|---|---|
-| nginx / Nginx Proxy Manager | **1 Mo** | `client_max_body_size 0;` et remonter `proxy_read_timeout` |
-| Cloudflare (proxy orange) | **100 Mo**, non contournable hors Enterprise | ne pas faire passer l'upload par Cloudflare |
+| `h_1080` | 1920x1080 | 16:9 crop out of the 4:3 source |
+| `v_1080` | 1080x1920 | 9:16 crop, with an adjustable offset |
 
-Autrement dit : pour déposer des rushes depuis le navigateur, viser l'app **en
-direct sur le LAN** (ou via un tunnel type Tailscale), pas la chaîne
-Cloudflare → box → proxy. La copie de fichiers dans le dossier réseau, elle,
-n'est concernée par aucune de ces limites.
+Seven of Gyroflow's ninety settings are exposed: dimensions, codec, bitrate, smoothness,
+horizon lock, lens correction, FOV and the framing offset on both axes. The rest is left
+where Gyroflow puts it, and a save **patches** the file rather than rewriting it, so
+anything the form does not show survives. The generated project is kept in `projects/`,
+which means every render can be replayed exactly.
+
+## FAQ
+
+#### Which cameras?
+
+Built and measured on **DJI O3 and O4 / O4 Pro** goggles recordings, in all three naming
+schemes DJI has used, including the old `DJI_0327.MP4` that carries no timestamp at all.
+Anything Gyroflow can read should render; what is DJI-specific here is the split detection
+and the gyro chart.
+
+#### Do I need a GPU?
+
+No. Everything falls back to the CPU and the stack runs. A GPU roughly triples the
+stabilization pass and helps the proxy a lot on high bitrate footage.
+
+#### Can it run on a NAS or a small VM?
+
+Yes, and that is a good place for the **dispatcher**, which hands work out rather than
+doing it. Put the heavy workers on machines with a decent CPU (see above: the render is
+CPU bound), point them at it with `PF_API_URL`, and the dispatcher routes around the slow
+ones on its own.
+
+#### Does it re-encode my masters?
+
+Never. Masters land in `raw/` and are only ever read. Joining is lossless. Everything else
+is written as a new file next to them.
+
+#### What if two flights get glued together, or one flight gets split in two?
+
+Grouping is automatic and has no manual override, on purpose. Two parts wrongly separated
+are fixed by deleting both sequences, which frees their clips and lets the next scan
+regroup them. Two unrelated flights wrongly glued have no recourse, which is why the gap
+tolerance is tight: measured over 179 consecutive pairs of a real collection, the 51
+genuine splits all follow within 0.79 s and the nearest unrelated flight is 1.11 s behind.
+
+#### Is there authentication?
+
+No. Put it behind a reverse proxy if it leaves your LAN, and set `PF_WORKER_TOKEN` on both
+sides. Note that uploads are single requests of several gigabytes: nginx defaults to
+**1 MB** (`client_max_body_size 0;` lifts it) and Cloudflare's orange proxy caps at
+**100 MB** with no way around it outside Enterprise. For dropping rushes from the browser,
+reach the app directly on the LAN or through a tunnel like Tailscale.
+
+## Development
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
+cd backend && PF_DATA_DIR=../data ../.venv/bin/uvicorn app.main:app --port 8000
+PF_DATA_DIR=../data ../.venv/bin/python -m app.worker
+
+cd frontend && npm install && npm run dev    # proxies /api to port 8000
+```
+
+Running locally needs `mp4_merge` on the `PATH` (or `PF_MP4_MERGE_BIN`); prebuilt binaries
+are on the [mp4-merge releases](https://github.com/gyroflow/mp4-merge/releases). Tests are
+`pytest -q` from `backend/`; a handful of them run a real ffmpeg and skip themselves
+without one.
+
+The interface is React, Vite, Tailwind and base shadcn/ui components. The backend is
+FastAPI, SQLModel and SQLite. Code, comments and interface text are in English.
+
+## Credits
+
+Standing on [Gyroflow](https://gyroflow.xyz) and its
+[telemetry-parser](https://github.com/AdrianEddy/telemetry-parser), which is what reads
+DJI's `djmd` stream in the first place, [mp4-merge](https://github.com/gyroflow/mp4-merge),
+[ffmpeg](https://ffmpeg.org) and [shadcn/ui](https://ui.shadcn.com).

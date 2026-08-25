@@ -83,7 +83,7 @@ async def lifespan(_app: FastAPI):
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-app = FastAPI(title="video-stab", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="PostFlight", version="0.1.0", lifespan=lifespan)
 app.include_router(router)
 app.include_router(worker_router)
 app.include_router(blob_router)
