@@ -14,6 +14,7 @@
  * lib/grade-shader): an approximation of the encode, 39 dB from it, and the file that
  * gets written always comes from ffmpeg.
  */
+import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -233,17 +234,23 @@ export function Color() {
   const profile = (template: string) =>
     templates?.find((option) => option.id === template)?.label ?? template;
 
+  /* The picker sits under the picture, not in a column of its own (florian, 2026-08-25).
+     It costs a scroll when changing clip, which happens once per clip, and it gives the
+     picture the width a whole column used to hold: measured 462 px wide before, 888
+     after, on a 1600 window. */
+  const picker = (
+    <Clips
+      tree={build(folders ?? [], clips)}
+      grades={grades ?? []}
+      gradeOf={gradeOf}
+      profile={profile}
+      selected={selected}
+    />
+  );
+
   return (
     <div className="space-y-4">
       <LooksCard current={open?.params ?? null} onApply={(look) => apply.mutate(look)} />
-      <div className="grid items-start gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
-      <Clips
-        tree={build(folders ?? [], clips)}
-        grades={grades ?? []}
-        gradeOf={gradeOf}
-        profile={profile}
-        selected={selected}
-      />
       {selected ? (
         <Editor
           key={selected}
@@ -253,11 +260,14 @@ export function Color() {
           others={clips.filter((clip) => clip.id !== selected)}
           folders={folders ?? []}
           gradeOf={gradeOf}
+          picker={picker}
         />
       ) : (
-        <p className="pt-2 text-sm text-muted-foreground">Pick a clip.</p>
+        <>
+          <p className="text-sm text-muted-foreground">Pick a clip.</p>
+          {picker}
+        </>
       )}
-      </div>
     </div>
   );
 }
@@ -295,10 +305,22 @@ function Clips({
 
   const count = tree.flatMap(clipsOf).length;
   return (
-    <aside className="lg:sticky lg:top-4 lg:self-start">
-      <div className="mb-2 flex items-baseline justify-between px-1">
+    <aside>
+      {/* The batch button rides in the header row: full width, under the picture, it was
+          a 900 px primary button. Same shape as the launch button on Stabilize. */}
+      <div className="mb-2 flex items-center gap-2 px-1">
         <h2 className="text-sm font-medium">Stabilized clips</h2>
         <span className="tnum text-sm text-muted-foreground">{count}</span>
+        {waiting.length > 0 && (
+          <Button
+            size="sm"
+            className="ml-auto"
+            disabled={renderAll.isPending}
+            onClick={() => renderAll.mutate()}
+          >
+            Render {waiting.length} look{waiting.length > 1 ? "s" : ""}
+          </Button>
+        )}
       </div>
 
       {count === 0 ? (
@@ -311,17 +333,7 @@ function Clips({
         </p>
       ) : (
         <div className="space-y-2">
-          {waiting.length > 0 && (
-            <Button
-              size="sm"
-              className="w-full"
-              disabled={renderAll.isPending}
-              onClick={() => renderAll.mutate()}
-            >
-              Render {waiting.length} look{waiting.length > 1 ? "s" : ""}
-            </Button>
-          )}
-          <div className="max-h-[calc(100vh-12rem)] space-y-0.5 overflow-y-auto pr-1">
+          <div className="space-y-0.5">
             {tree.map((node) => (
               <FolderRow
                 key={node.folder?.id ?? "global"}
@@ -490,6 +502,7 @@ function Editor({
   others,
   folders,
   gradeOf,
+  picker,
 }: {
   renderId: number;
   render?: Render;
@@ -497,6 +510,8 @@ function Editor({
   others: Render[];
   folders: Folder[];
   gradeOf: Map<number, Grade>;
+  /** The clip list, dropped under the picture. */
+  picker: React.ReactNode;
 }) {
   const queryClient = useQueryClient();
   const [params, setParams] = useState<GradeParams>(NEUTRAL_GRADE);
@@ -587,46 +602,49 @@ function Editor({
         </Button>
       </div>
 
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
-        <Card className="overflow-hidden">
-          <CardContent className="p-3">
-            <GradedVideo
-              src={mediaUrl.render(renderId)}
-              plan={{
-                levels: showBefore ? null : levelsOf(params.black_point, params.white_point),
-                exposure: showBefore ? 0 : params.exposure,
-                shadows: showBefore ? 0 : params.shadows,
-                highlights: showBefore ? 0 : params.highlights,
-                contrast: showBefore ? 1 : params.contrast,
-                saturation: showBefore ? 1 : params.saturation,
-                temperature: showBefore ? 6500 : params.temperature,
-                zebras: scopes.zebras,
-              }}
-              marks={marks}
-              scopes={scopes}
-              sink={sink}
-              actions={
-                /* The reason a button is dead goes in a tooltip, not in a line of
-                   prose under it. A disabled button takes no pointer events, so the
-                   title has to sit on something around it. */
-                <span title={neutral ? "Nothing to compare: the look is neutral" : "Hold to see it ungraded"}>
-                  <Button
-                    size="icon"
-                    variant={showBefore ? "default" : "outline"}
-                    disabled={neutral}
-                    onMouseDown={() => setShowBefore(true)}
-                    onMouseUp={() => setShowBefore(false)}
-                    onMouseLeave={() => setShowBefore(false)}
-                    onTouchStart={() => setShowBefore(true)}
-                    onTouchEnd={() => setShowBefore(false)}
-                  >
-                    <Eye className="h-4 w-4" />
-                  </Button>
-                </span>
-              }
-            />
-          </CardContent>
-        </Card>
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_clamp(21rem,22vw,26rem)]">
+        <div className="min-w-0 space-y-4">
+          <Card className="overflow-hidden">
+            <CardContent className="p-3">
+              <GradedVideo
+                src={mediaUrl.render(renderId)}
+                plan={{
+                  levels: showBefore ? null : levelsOf(params.black_point, params.white_point),
+                  exposure: showBefore ? 0 : params.exposure,
+                  shadows: showBefore ? 0 : params.shadows,
+                  highlights: showBefore ? 0 : params.highlights,
+                  contrast: showBefore ? 1 : params.contrast,
+                  saturation: showBefore ? 1 : params.saturation,
+                  temperature: showBefore ? 6500 : params.temperature,
+                  zebras: scopes.zebras,
+                }}
+                marks={marks}
+                scopes={scopes}
+                sink={sink}
+                actions={
+                  /* The reason a button is dead goes in a tooltip, not in a line of
+                     prose under it. A disabled button takes no pointer events, so the
+                     title has to sit on something around it. */
+                  <span title={neutral ? "Nothing to compare: the look is neutral" : "Hold to see it ungraded"}>
+                    <Button
+                      size="icon"
+                      variant={showBefore ? "default" : "outline"}
+                      disabled={neutral}
+                      onMouseDown={() => setShowBefore(true)}
+                      onMouseUp={() => setShowBefore(false)}
+                      onMouseLeave={() => setShowBefore(false)}
+                      onTouchStart={() => setShowBefore(true)}
+                      onTouchEnd={() => setShowBefore(false)}
+                    >
+                      <Eye className="h-4 w-4" />
+                    </Button>
+                  </span>
+                }
+              />
+            </CardContent>
+          </Card>
+          {picker}
+        </div>
 
         <div className="space-y-4">
           {/* The instruments, at the top of the column they are read from: the hand is

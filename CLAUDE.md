@@ -504,8 +504,7 @@ l'image (aire libre, un coin caché), replier la liste des clips (2,4x). **Choix
 florian : la colonne de droite**, et c'est la seule qui règle aussi la diagonale du
 regard.
 
-La colonne passe donc de 19 à 24 rem, chaque scope à **366x80** (l'image paie 80 px), et
-la carte est **épinglée** (`xl:sticky`) parce que la colonne est plus haute que la
+La carte est **épinglée** (`xl:sticky`) parce que la colonne est plus haute que la
 fenêtre : sans ça les derniers curseurs se tirent avec les scopes sortis par le haut.
 Mesuré après 342 px de défilement : histogramme à y=65, waveform à y=153, curseur
 Highlights à y=709, les trois visibles ensemble.
@@ -515,6 +514,34 @@ passer la barre du lecteur sur deux lignes dans une colonne rétrécie ; le `tit
 déjà « Hold to see it ungraded »). Et l'échantillon voyage par une **poignée impérative**
 (`ScopeSink`), pas par un prop : une image atterrit par présentation, et la page ne doit
 pas se re-rendre autour.
+
+**Les lignes de bout de graphe sont sorties** (florian, même jour) : elles marquaient
+l'écrêtage à chaque extrémité, et le bord de la toile le dit déjà. Les scopes sont passés
+à 96 px de haut au même moment, 80 aplatissant tout ce qui n'était pas le pic.
+
+#### La colonne du milieu ne paie plus tout
+
+Deux corrections du même défaut, le 2026-08-25 : **l'image est la seule chose flexible de
+cette page**, donc elle encaissait 100 % de ce que la fenêtre perdait, sous deux colonnes
+fixes qui n'en perdaient rien.
+
+| largeur de fenêtre | image avant | image après |
+|---|---|---|
+| 2560 | 1156x650 | 1156x650 (plafonnée par `65vh`) |
+| 1920 | 782x440 | **1094x615** |
+| 1600 | 462x260 | **838x471** |
+| 1440 | 302x170 | **694x390** |
+| 1300 | **162x91** | **554x312** |
+
+Ce qui a changé, dans cet ordre :
+
+- **l'arbre des clips est passé sous l'image** (florian) au lieu d'occuper une colonne. Il
+  coûte un défilement quand on change de clip, ce qui arrive une fois par clip, et il rend
+  à l'image la largeur d'une colonne entière. Son bouton de lot est monté dans la ligne de
+  titre : pleine largeur sous l'image, c'était un bouton primaire de 900 px.
+- **la colonne des réglages est en `clamp(21rem, 22vw, 26rem)`**, donc elle rétrécit avec
+  la fenêtre au lieu d'être fixe, et sans à-coup au redimensionnement (des paliers de
+  breakpoint faisaient sauter l'image de 111 px pour 1 px de fenêtre).
 
 Deux détails techniques qui comptent :
 

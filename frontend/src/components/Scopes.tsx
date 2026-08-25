@@ -56,10 +56,10 @@ export interface ScopeSink {
 /**
  * Three channels on one plot, with the ends marked.
  *
- * The scale is absolute against the tallest bin of the frame, but the marks are what
- * make it readable: a line at each end says where clipping is, which the old version
- * had no way of showing. Additive drawing, so where the three agree it goes white,
- * which is what a neutral frame looks like.
+ * The scale is absolute against the tallest bin of the frame. Additive drawing, so
+ * where the three agree it goes white, which is what a neutral frame looks like. The
+ * ends carried a marker line each and they went out on florian's word: the edge of the
+ * canvas already says where the range stops.
  */
 function drawHistogram(target: HTMLCanvasElement | null, channels: Float32Array[]) {
   const ctx = target?.getContext("2d");
@@ -80,9 +80,6 @@ function drawHistogram(target: HTMLCanvasElement | null, channels: Float32Array[
     }
   });
   ctx.globalCompositeOperation = "source-over";
-  ctx.fillStyle = "rgba(250,250,250,0.25)";
-  ctx.fillRect(0, 0, 1, height);
-  ctx.fillRect(width - 1, 0, 1, height);
 }
 
 /**
@@ -91,7 +88,8 @@ function drawHistogram(target: HTMLCanvasElement | null, channels: Float32Array[
  * The half a histogram cannot say. On this footage it separates sky from ground at a
  * glance, which is exactly the decision the highlights slider is for. Counts are
  * mapped to alpha with a square root, since one flat area otherwise saturates
- * everything else out of view.
+ * everything else out of view. No line at top and bottom, for the same reason as the
+ * histogram: the canvas edge is the mark.
  */
 function drawWaveform(target: HTMLCanvasElement | null, wave: Float32Array) {
   const ctx = target?.getContext("2d");
@@ -113,9 +111,6 @@ function drawWaveform(target: HTMLCanvasElement | null, wave: Float32Array) {
   buffer.getContext("2d")?.putImageData(image, 0, 0);
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(buffer, 0, 0, width, height);
-  ctx.fillStyle = "rgba(250,250,250,0.25)";
-  ctx.fillRect(0, 0, width, 1);
-  ctx.fillRect(0, height - 1, width, 1);
 }
 
 /**
@@ -149,18 +144,18 @@ export const ScopePanel = forwardRef<
         <canvas
           ref={histRef}
           width={512}
-          height={80}
+          height={96}
           title="Red, green and blue against level. The ends are marked: anything against them is clipped."
-          className="h-20 w-full rounded bg-muted/30"
+          className="h-24 w-full rounded bg-muted/30"
         />
       )}
       {scopes.waveform && (
         <canvas
           ref={waveRef}
           width={512}
-          height={80}
+          height={96}
           title="Luma against horizontal position: where in the frame the darks and the brights are."
-          className="h-20 w-full rounded bg-muted/30"
+          className="h-24 w-full rounded bg-muted/30"
         />
       )}
       {scopes.numbers && stats && (
