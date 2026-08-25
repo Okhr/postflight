@@ -41,10 +41,14 @@ log = logging.getLogger(__name__)
 LEGAL_BLACK = 64.0
 LEGAL_WHITE = 940.0
 LEGAL_SPAN = LEGAL_WHITE - LEGAL_BLACK
-# Same bounds as fractions of full scale, so expressions work at any bit depth.
 FULL_SCALE = 1023.0
-BLACK_N = LEGAL_BLACK / FULL_SCALE
-WHITE_N = LEGAL_WHITE / FULL_SCALE
+# The space `lutyuv` works in, which is not full scale: measured, its luma `minval`
+# and `maxval` are 16 and 235 in 8 bits, so `val/maxval` puts legal white at 1.0 and
+# legal black at 64/940. The expression used to divide by maxval and then compare
+# against fractions of full scale (64/1023, 940/1023), mixing two normalisations:
+# legal white came out at 215 instead of 235, losing twenty levels off the top of
+# every stretched clip. The ratio is depth-proof, 16/235 and 64/940 being equal.
+BLACK_N = LEGAL_BLACK / LEGAL_WHITE
 
 DEFAULTS: dict[str, Any] = {
     "exposure": 0.0,        # EV, -2 .. 2
@@ -222,9 +226,9 @@ def levels(values: dict) -> tuple[float, float] | None:
         return None
     if black <= 0.0 and white >= 1.0:
         return None
-    lo = BLACK_N + black * (WHITE_N - BLACK_N)
-    hi = BLACK_N + white * (WHITE_N - BLACK_N)
-    return lo, (WHITE_N - BLACK_N) / max(hi - lo, 1e-3)
+    lo = BLACK_N + black * (1.0 - BLACK_N)
+    hi = BLACK_N + white * (1.0 - BLACK_N)
+    return lo, (1.0 - BLACK_N) / max(hi - lo, 1e-3)
 
 
 def suggest_levels(analysis: dict | None) -> dict[str, float] | None:
@@ -269,11 +273,11 @@ def build_filters(params: dict) -> list[str]:
     # chain, ffmpeg inserted a conversion and the same parameters behaved.
     if (stretch := levels(values)):
         lo, gain = stretch
+        # `minval/maxval` rather than a literal: ffmpeg fills in the right pair at
+        # whatever depth the clip is, and it is exactly where legal black belongs.
         chain.append(
-            "lutyuv=y='clip(((val/maxval)-{lo:.5f})*{gain:.5f}+{black:.5f},"
-            "{black:.5f},{white:.5f})*maxval'".format(
-                lo=lo, gain=gain, black=BLACK_N, white=WHITE_N
-            )
+            "lutyuv=y='clip(((val/maxval)-{lo:.5f})*{gain:.5f}+minval/maxval,"
+            "minval/maxval,1)*maxval'".format(lo=lo, gain=gain)
         )
 
     if abs(values["exposure"]) > 1e-3:

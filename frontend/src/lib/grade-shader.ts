@@ -24,9 +24,18 @@
  * reasoning, not arithmetic, and reasoning must not exist twice.
  */
 
-/** Legal range as fractions of full scale, the same numbers the server writes. */
-const BLACK_N = 64 / 1023;
-const WHITE_N = 940 / 1023;
+/**
+ * Legal range in the space this shader actually works in.
+ *
+ * `toYuv` re-encodes the browser's full-range RGB into limited-range luma, so a value
+ * here is a fraction of 255 and legal black and white are 16 and 235. It used to hold
+ * 64/1023 and 940/1023, right to within a level by luck rather than by construction.
+ * The server has its own pair, because `lutyuv` normalises by legal white instead;
+ * mixing the two is exactly the bug that clamped whites at 215.
+ */
+const BLACK_N = 16 / 255;
+const WHITE_N = 235 / 255;
+const SPAN_N = WHITE_N - BLACK_N;
 
 /**
  * The luma stretch two points ask for, as [low, gain], or null for none.
@@ -39,9 +48,11 @@ const WHITE_N = 940 / 1023;
 export function levelsOf(black: number, white: number): [number, number] | null {
   if (white - black < 0.05) return null;
   if (black <= 0 && white >= 1) return null;
-  const low = BLACK_N + black * (WHITE_N - BLACK_N);
-  const high = BLACK_N + white * (WHITE_N - BLACK_N);
-  return [low, (WHITE_N - BLACK_N) / Math.max(high - low, 1e-3)];
+  const low = BLACK_N + black * SPAN_N;
+  const high = BLACK_N + white * SPAN_N;
+  // The gain is a ratio of spans, so it comes out the same number the server computes
+  // in its own normalisation. Only the low point is space-dependent.
+  return [low, SPAN_N / Math.max(high - low, 1e-3)];
 }
 
 export interface GradePlan {

@@ -25,8 +25,9 @@ def test_the_default_points_leave_the_clip_alone():
 
 def test_a_black_point_stretches_from_there():
     low, gain = _levels(black_point=0.2)
-    # 20% into the legal range, and everything above it scaled to reach white.
-    assert round(low, 4) == round(grading.BLACK_N + 0.2 * (grading.WHITE_N - grading.BLACK_N), 4)
+    # 20% into the legal range, in the space lutyuv works in: legal black is
+    # 64/940 there, and legal white is 1.
+    assert round(low, 4) == round(grading.BLACK_N + 0.2 * (1.0 - grading.BLACK_N), 4)
     assert round(gain, 3) == 1.25
 
 
@@ -82,3 +83,41 @@ def test_the_proposal_is_a_look_the_sliders_can_hold():
     write something the page cannot show."""
     proposal = grading.suggest_levels(MEASURED)
     assert grading.levels(grading.merge_params(proposal)) is not None
+
+
+# --------------------------------------------------------------------------- #
+# The expression works in lutyuv's own space
+# --------------------------------------------------------------------------- #
+
+def _through(chain: str) -> list[int]:
+    """A 256 step luma ramp through one filter chain, read back byte by byte."""
+    import subprocess
+
+    out = subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi",
+         "-i", "color=c=black:s=256x2,format=yuv420p",
+         "-vf", f"geq=lum='X':cb=128:cr=128,setrange=full,{chain},setrange=full",
+         "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+        capture_output=True, timeout=120,
+    ).stdout
+    return list(out[:256])
+
+
+def test_a_stretch_keeps_legal_black_and_white_where_they_are():
+    """`lutyuv` normalises by legal white, not full scale: measured, its luma minval
+    and maxval are 16 and 235 in 8 bits. The expression used to divide by maxval and
+    then clamp against fractions of full scale, so legal white came out at 215 and
+    twenty levels went missing off the top of every stretched clip.
+    """
+    ramp = _through(grading.build_filters(grading.merge_params({"black_point": 0.22}))[0])
+
+    assert ramp[16] == 16          # legal black stays legal black
+    assert abs(ramp[235] - 235) <= 1  # and legal white stays legal white
+    assert ramp[60] < ramp[128] < ramp[200]  # still monotonic in between
+
+
+def test_the_expression_asks_ffmpeg_for_the_bounds():
+    """Written as `minval/maxval` so the pair is right at any depth, rather than a
+    literal that happens to suit 8 bits."""
+    chain = grading.build_filters(grading.merge_params({"black_point": 0.2}))[0]
+    assert "minval/maxval" in chain
