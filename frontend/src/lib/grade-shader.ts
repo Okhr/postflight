@@ -64,6 +64,8 @@ export interface GradePlan {
   contrast: number;
   saturation: number;
   temperature: number;
+  /** Paint what is clipped, on the picture. Off by default: it is an instrument. */
+  zebras?: boolean;
 }
 
 /**
@@ -183,6 +185,7 @@ uniform float u_hasCurve;
 uniform float u_contrast;
 uniform float u_saturation;
 uniform vec3 u_gains;
+uniform float u_zebras;
 
 const float KR = 0.2126;
 const float KB = 0.0722;
@@ -228,7 +231,18 @@ void main() {
     yuv.yz *= u_saturation;
     c = clamp(toRgb(yuv), 0.0, 1.0);
   }
-  outColor = vec4(clamp(c * u_gains, 0.0, 1.0), 1.0);
+  c = clamp(c * u_gains, 0.0, 1.0);
+
+  // Clipping, painted on the picture rather than inferred from a graph. The browser
+  // hands the video over as full-range RGB, so 1.0 here is legal white in the file
+  // and 0.0 is legal black: what shows up is exactly what the encode cannot keep.
+  if (u_zebras > 0.5) {
+    float top = max(max(c.r, c.g), c.b);
+    float bottom = min(min(c.r, c.g), c.b);
+    if (top >= 254.0 / 255.0) c = vec3(1.0, 0.15, 0.15);
+    else if (bottom <= 1.0 / 255.0) c = vec3(0.2, 0.4, 1.0);
+  }
+  outColor = vec4(c, 1.0);
 }`;
 
 function compile(gl: WebGL2RenderingContext, kind: number, source: string) {
@@ -329,6 +343,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
       gl.uniform1f(at("u_contrast"), plan.contrast);
       gl.uniform1f(at("u_saturation"), plan.saturation);
       gl.uniform3fv(at("u_gains"), kelvinGains(plan.temperature));
+      gl.uniform1f(at("u_zebras"), plan.zebras ? 1 : 0);
 
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.drawArrays(gl.TRIANGLES, 0, 3);

@@ -18,32 +18,124 @@ import { Button } from "@/components/ui/button";
 import { createRenderer, type GradePlan, type Renderer } from "@/lib/grade-shader";
 import { cn } from "@/lib/utils";
 
-const HIST_W = 192;
-const HIST_H = 108;
+/** The sample the scopes are computed from: 256 columns so the waveform has one per
+ *  drawn pixel, 144 rows because that is enough of the picture to describe it. */
+const SAMPLE_W = 256;
+const SAMPLE_H = 144;
+const BINS = 128;
+
+/** What the frame measures, for the line of numbers under the scopes. */
+export interface FrameStats {
+  clippedHigh: number;
+  clippedLow: number;
+  min: number;
+  avg: number;
+  max: number;
+}
+
+/** Which instruments are on. They are remembered by the page, not by this component. */
+export interface Scopes {
+  zebras: boolean;
+  histogram: boolean;
+  waveform: boolean;
+  numbers: boolean;
+}
 
 export interface Mark {
   label: string;
   ms: number;
 }
 
+/**
+ * Three channels on one plot, with the ends marked.
+ *
+ * The scale is absolute against the tallest bin of the frame, but the marks are what
+ * make it readable: a line at each end says where clipping is, which the old version
+ * had no way of showing. Additive drawing, so where the three agree it goes white,
+ * which is what a neutral frame looks like.
+ */
+function drawHistogram(target: HTMLCanvasElement | null, channels: Float32Array[]) {
+  const ctx = target?.getContext("2d");
+  if (!target || !ctx) return;
+  const { width, height } = target;
+  ctx.clearRect(0, 0, width, height);
+  let top = 1;
+  for (const channel of channels) for (const value of channel) if (value > top) top = value;
+
+  ctx.globalCompositeOperation = "lighter";
+  const colours = ["rgba(255,80,80,0.75)", "rgba(80,220,120,0.75)", "rgba(90,140,255,0.75)"];
+  const step = width / BINS;
+  channels.forEach((channel, index) => {
+    ctx.fillStyle = colours[index];
+    for (let i = 0; i < BINS; i += 1) {
+      const h = (channel[i] / top) * height;
+      if (h > 0) ctx.fillRect(i * step, height - h, Math.max(1, step), h);
+    }
+  });
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "rgba(250,250,250,0.25)";
+  ctx.fillRect(0, 0, 1, height);
+  ctx.fillRect(width - 1, 0, 1, height);
+}
+
+/**
+ * Luma against horizontal position: where in the frame the darks and brights are.
+ *
+ * The half a histogram cannot say. On this footage it separates sky from ground at a
+ * glance, which is exactly the decision the highlights slider is for. Counts are
+ * mapped to alpha with a square root, since one flat area otherwise saturates
+ * everything else out of view.
+ */
+function drawWaveform(target: HTMLCanvasElement | null, wave: Float32Array) {
+  const ctx = target?.getContext("2d");
+  if (!target || !ctx) return;
+  const { width, height } = target;
+  const image = ctx.createImageData(SAMPLE_W, BINS);
+  let top = 1;
+  for (const value of wave) if (value > top) top = value;
+  for (let i = 0; i < wave.length; i += 1) {
+    const alpha = Math.sqrt(wave[i] / top);
+    image.data[i * 4] = 210;
+    image.data[i * 4 + 1] = 240;
+    image.data[i * 4 + 2] = 210;
+    image.data[i * 4 + 3] = Math.min(255, alpha * 320);
+  }
+  ctx.clearRect(0, 0, width, height);
+  // Through a bitmap of its own, because putImageData ignores any scaling.
+  const buffer = new OffscreenCanvas(SAMPLE_W, BINS);
+  buffer.getContext("2d")?.putImageData(image, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(buffer, 0, 0, width, height);
+  ctx.fillStyle = "rgba(250,250,250,0.25)";
+  ctx.fillRect(0, 0, width, 1);
+  ctx.fillRect(0, height - 1, width, 1);
+}
+
 export function GradedVideo({
   src,
   plan,
   marks = [],
+  scopes,
   actions,
+  instruments,
   className,
 }: {
   src: string;
   plan: GradePlan;
   marks?: Mark[];
+  /** Which instruments are on. Nothing is computed for one that is off. */
+  scopes: Scopes;
   /** Dropped in the control row. What compares before and after belongs next to the
    *  play button, not on a line of its own under the picture. */
   actions?: React.ReactNode;
+  /** The instruments' own toggles, on the right of the same row. */
+  instruments?: React.ReactNode;
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const histRef = useRef<HTMLCanvasElement>(null);
+  const waveRef = useRef<HTMLCanvasElement>(null);
   const scratch = useRef<HTMLCanvasElement | null>(null);
   const renderer = useRef<Renderer | null>(null);
   const planRef = useRef(plan);
@@ -52,10 +144,25 @@ export function GradedVideo({
   const [length, setLength] = useState(0);
   const [broken, setBroken] = useState<string | null>(null);
   const [undecodable, setUndecodable] = useState(false);
+  const [stats, setStats] = useState<FrameStats | null>(null);
+  const scopesRef = useRef(scopes);
 
   planRef.current = plan;
+  scopesRef.current = scopes;
 
-  /** One frame: the shader, then the histogram off the very pixels it wrote. */
+  /**
+   * One frame: the shader, then every instrument off the very pixels it wrote.
+   *
+   * All of them share a single readback of a reduced copy. 36 000 pixels describe a
+   * two megapixel frame well enough for a scope, and the read has to happen in the
+   * same task as the draw, before the drawing buffer is cleared.
+   *
+   * Which is why the clipping overlay is not derived from these numbers: it runs per
+   * pixel in the shader, at full resolution. Seen on a real frame, the sample reported
+   * a maximum of 234 while the overlay still found pixels at the ceiling, because
+   * scaling the frame down averages a lone blown pixel away. The overlay is the exact
+   * instrument, the numbers are a sample of the same frame.
+   */
   const paint = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -66,35 +173,55 @@ export function GradedVideo({
     }
     renderer.current.draw(video, planRef.current);
 
-    const hist = histRef.current;
-    if (!hist) return;
+    const want = scopesRef.current;
+    if (!want.histogram && !want.waveform && !want.numbers) return;
     if (!scratch.current) {
       scratch.current = document.createElement("canvas");
-      scratch.current.width = HIST_W;
-      scratch.current.height = HIST_H;
+      scratch.current.width = SAMPLE_W;
+      scratch.current.height = SAMPLE_H;
     }
-    // Read a reduced copy: 20 000 pixels say the same thing as two million about
-    // where the luma sits, and it costs nothing per frame. It has to happen in the
-    // same task as the draw, before the drawing buffer is cleared.
     const small = scratch.current.getContext("2d", { willReadFrequently: true });
     if (!small) return;
-    small.drawImage(canvas, 0, 0, HIST_W, HIST_H);
-    const { data } = small.getImageData(0, 0, HIST_W, HIST_H);
-    const bins = new Float32Array(64);
-    for (let i = 0; i < data.length; i += 4) {
-      const luma = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
-      bins[Math.min(63, (luma / 4) | 0)] += 1;
+    small.drawImage(canvas, 0, 0, SAMPLE_W, SAMPLE_H);
+    const { data } = small.getImageData(0, 0, SAMPLE_W, SAMPLE_H);
+
+    const red = new Float32Array(BINS);
+    const green = new Float32Array(BINS);
+    const blue = new Float32Array(BINS);
+    // The waveform is a density: one column per sampled column, counts down the rows.
+    const wave = new Float32Array(SAMPLE_W * BINS);
+    let high = 0;
+    let low = 0;
+    let min = 255;
+    let max = 0;
+    let sum = 0;
+    for (let i = 0, p = 0; i < data.length; i += 4, p += 1) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      red[(r * (BINS - 1)) / 255 | 0] += 1;
+      green[(g * (BINS - 1)) / 255 | 0] += 1;
+      blue[(b * (BINS - 1)) / 255 | 0] += 1;
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (r >= 254 || g >= 254 || b >= 254) high += 1;
+      if (r <= 1 && g <= 1 && b <= 1) low += 1;
+      if (luma < min) min = luma;
+      if (luma > max) max = luma;
+      sum += luma;
+      const bin = (luma * (BINS - 1)) / 255 | 0;
+      wave[(BINS - 1 - bin) * SAMPLE_W + (p % SAMPLE_W)] += 1;
     }
-    const top = Math.max(...bins) || 1;
-    const ctx = hist.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, hist.width, hist.height);
-    ctx.fillStyle = "rgba(250, 250, 250, 0.75)";
-    const step = hist.width / bins.length;
-    for (let i = 0; i < bins.length; i += 1) {
-      const h = (bins[i] / top) * hist.height;
-      ctx.fillRect(i * step, hist.height - h, Math.max(1, step - 1), h);
-    }
+    const pixels = data.length / 4;
+    setStats({
+      clippedHigh: high / pixels,
+      clippedLow: low / pixels,
+      min: Math.round(min),
+      avg: Math.round(sum / pixels),
+      max: Math.round(max),
+    });
+
+    drawHistogram(histRef.current, [red, green, blue]);
+    drawWaveform(waveRef.current, wave);
   }, []);
 
   // The pipeline lives as long as the canvas does.
@@ -232,11 +359,51 @@ export function GradedVideo({
           </Button>
         ))}
         {actions && <span className="ml-auto flex items-center gap-2">{actions}</span>}
+        {instruments && (
+          <span className={cn("flex items-center gap-0.5", !actions && "ml-auto")}>
+            {instruments}
+          </span>
+        )}
       </div>
 
-      {/* Full width, under the controls: it replaced a card of prose about the same
-          measurements, and a 48 px thumbnail in a corner would not have. */}
-      <canvas ref={histRef} width={512} height={64} className="h-16 w-full rounded bg-muted/30" />
+      {/* Whichever instruments are on share the width. No tabs: reading the histogram
+          and the waveform at once is the whole point of having both, and hiding one
+          behind the other turns a glance into a round trip. */}
+      {(scopes.histogram || scopes.waveform) && (
+        <div className="flex gap-2">
+          {scopes.histogram && (
+            <canvas
+              ref={histRef}
+              width={512}
+              height={80}
+              title="Red, green and blue against level. The ends are marked: anything against them is clipped."
+              className="h-20 min-w-0 flex-1 rounded bg-muted/30"
+            />
+          )}
+          {scopes.waveform && (
+            <canvas
+              ref={waveRef}
+              width={512}
+              height={80}
+              title="Luma against horizontal position: where in the frame the darks and the brights are."
+              className="h-20 min-w-0 flex-1 rounded bg-muted/30"
+            />
+          )}
+        </div>
+      )}
+      {scopes.numbers && stats && (
+        <p className="tnum flex flex-wrap gap-x-4 text-xs text-muted-foreground">
+          <span className={cn(stats.clippedHigh > 0.02 && "text-amber-400")}>
+            clipped {(stats.clippedHigh * 100).toFixed(1)} % high
+          </span>
+          <span className={cn(stats.clippedLow > 0.02 && "text-amber-400")}>
+            {(stats.clippedLow * 100).toFixed(1)} % low
+          </span>
+          <span>min {stats.min}</span>
+          <span>avg {stats.avg}</span>
+          <span>max {stats.max}</span>
+        </p>
+      )}
       {broken && (
         <p className="text-sm text-red-400">
           No GPU preview here ({broken}), showing the clip ungraded.

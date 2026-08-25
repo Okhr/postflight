@@ -18,19 +18,23 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Activity,
+  BarChart3,
   ChevronRight,
   Copy,
   Download,
   Droplet,
   Eye,
+  Hash,
   Loader2,
   RotateCcw,
   Trash2,
+  TriangleAlert,
   Wand2,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { GradedVideo } from "@/components/GradedVideo";
+import { GradedVideo, type Scopes } from "@/components/GradedVideo";
 import { StateBadge } from "@/components/StateBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -56,6 +60,7 @@ import {
   type Render,
 } from "@/lib/api";
 import { folderColor } from "@/lib/colors";
+import { usePersistentState } from "@/lib/persist";
 import { levelsOf } from "@/lib/grade-shader";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -84,6 +89,23 @@ const POINTS = [
   { key: "black_point", label: "Black point", min: 0, max: 0.9, step: 0.005, neutral: 0 },
   { key: "white_point", label: "White point", min: 0.1, max: 1, step: 0.005, neutral: 1 },
 ] as const;
+
+/**
+ * The instruments, and what each one answers.
+ *
+ * All four are toggles, remembered across clips: a colourist sets up their scopes once
+ * and then works. Nothing is computed for one that is off.
+ */
+const INSTRUMENTS = [
+  {
+    key: "zebras" as const,
+    icon: TriangleAlert,
+    title: "Paint what is clipped, on the picture: red at white, blue at black",
+  },
+  { key: "histogram" as const, icon: BarChart3, title: "Histogram, red green and blue" },
+  { key: "waveform" as const, icon: Activity, title: "Waveform: luma across the frame" },
+  { key: "numbers" as const, icon: Hash, title: "What this frame measures, in numbers" },
+];
 
 /** A look that would change nothing, so there is nothing to encode. */
 function isNeutral(params: GradeParams): boolean {
@@ -441,6 +463,12 @@ function Editor({
   const [params, setParams] = useState<GradeParams>(NEUTRAL_GRADE);
   const [showBefore, setShowBefore] = useState(false);
   const [copying, setCopying] = useState(false);
+  const [scopes, setScopes] = usePersistentState<Scopes>("color.scopes", {
+    zebras: false,
+    histogram: true,
+    waveform: false,
+    numbers: true,
+  });
 
   const { data: grade, isLoading } = useQuery({
     queryKey: ["grade", renderId],
@@ -530,8 +558,10 @@ function Editor({
                 contrast: showBefore ? 1 : params.contrast,
                 saturation: showBefore ? 1 : params.saturation,
                 temperature: showBefore ? 6500 : params.temperature,
+                zebras: scopes.zebras,
               }}
               marks={marks}
+              scopes={scopes}
               actions={
                 /* The reason a button is dead goes in a tooltip, not in a line of
                    prose under it. A disabled button takes no pointer events, so the
@@ -552,16 +582,31 @@ function Editor({
                   </Button>
                 </span>
               }
+              instruments={INSTRUMENTS.map((instrument) => (
+                <Button
+                  key={instrument.key}
+                  size="icon"
+                  variant={scopes[instrument.key] ? "secondary" : "ghost"}
+                  title={instrument.title}
+                  className="h-8 w-8 text-muted-foreground data-[on=true]:text-foreground"
+                  data-on={scopes[instrument.key]}
+                  onClick={() =>
+                    setScopes({ ...scopes, [instrument.key]: !scopes[instrument.key] })
+                  }
+                >
+                  <instrument.icon className="h-4 w-4" />
+                </Button>
+              ))}
             />
           </CardContent>
         </Card>
 
         <div className="space-y-4">
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Look</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
+            {/* No card title: the two points at the top are not part of the look, they
+                are this clip's own range, so "Look" belongs below the separator with
+                the settings that travel. */}
+            <CardContent className="space-y-3 pt-4">
               {POINTS.map((point) => (
                 <Range
                   key={point.key}
@@ -589,11 +634,13 @@ function Editor({
                   onClick={() => grade?.suggested && commit({ ...params, ...grade.suggested })}
                 >
                   <Wand2 className="h-4 w-4" />
-                  Measure this clip
+                  Auto range
                 </Button>
               </span>
 
               <Separator />
+
+              <CardTitle className="text-sm">Look</CardTitle>
 
               {CONTROLS.map((control) => (
                 <Range

@@ -433,6 +433,43 @@ hashes**, et un `PUT` qui ne change rien ne touche à rien. Sans ça, une page q
 chaque relâchement de curseur tuerait un encodage au premier curseur relâché sur sa
 propre valeur.
 
+### Les instruments : quatre, tous débrayables
+
+Brainstorm du 2026-08-25, parti d'un constat de florian : « l'hist est pas très parlant
+c'est quoi exactement ». Il ne l'était pas, et pour cinq raisons cumulées : luma seule
+(donc muet sur une dominante et sur le canal qui écrête le premier), aucun repère aux
+extrémités, **normalisé sur sa classe la plus haute** (donc un plan de ciel plat et un
+plan équilibré se ressemblent), 64 classes seulement, et aucune information de position.
+
+Quatre instruments à la place, tous des bascules mémorisées (`color.scopes`) parce qu'on
+règle ses instruments une fois puis on travaille :
+
+| instrument | ce qu'il répond |
+|---|---|
+| **écrêtage sur l'image** | quoi est brûlé, et **où**. Rouge au blanc, bleu au noir |
+| **histogramme R/V/B** | la dominante, et quel canal meurt d'abord |
+| **waveform** | où se trouvent les sombres et les clairs dans le cadre |
+| **chiffres du plan** | % de pixels écrêtés, min, moyenne, max |
+
+**Pas d'onglets**, choix de conception : lire l'histogramme *et* la waveform en même
+temps est la raison d'avoir les deux, et en cacher un derrière l'autre transforme un
+coup d'œil en aller-retour. Les scopes allumés se partagent la largeur d'une bande sous
+l'image.
+
+Deux détails techniques qui comptent :
+
+- **un seul relevé de pixels** alimente les trois scopes hors image : une copie réduite
+  en 256x144, soit 36 000 pixels, lue dans la même tâche que le dessin (avant que le
+  drawing buffer soit effacé). Rien n'est calculé pour un instrument éteint.
+- **l'écrêtage n'est pas déduit de ces chiffres**, il tourne par pixel dans le shader, à
+  pleine résolution. Vu sur une vraie image : le relevé annonçait un maximum de 234
+  alors que l'overlay trouvait encore des pixels au plafond, la réduction ayant moyenné
+  un pixel brûlé isolé. L'overlay est l'instrument exact, les chiffres un échantillon.
+
+Le bouton des points s'appelle **« Auto range »** (florian, même jour), et le titre
+« Look » est passé **sous** les deux points : ce qui est au-dessus du séparateur
+appartient au clip, ce qui est en dessous voyage.
+
 ### L'aperçu en shader : une seconde implémentation, mesurée
 
 Le modèle est celui de Resolve ou Lightroom : un aperçu GPU qui suit les curseurs, un
