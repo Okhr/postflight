@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- PostFlight worker, running. Same wave as the app mark and the favicon,
+       without its background square: a #09090b square is invisible on a dark
+       panel. Painted white, which is what a tray expects. -->
+  <path d="M4.5 16 q3 -9 6 0 t6 0 h11" fill="none" stroke="#ffffff"
+        stroke-width="3.6" stroke-linecap="round"/>
+</svg>

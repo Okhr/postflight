@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Turn the appoint worker on proxima on or off.
+#
+# Every verb is idempotent: `on` on a running worker is a no-op, `off` on a stopped
+# one too. That holds because it is `docker compose up -d` and `stop` underneath,
+# which are themselves idempotent.
+#
+# Turning it off mid-job is safe. The worker forwards SIGTERM to its ffmpeg or
+# gyroflow and hands the job back to the queue without spending an attempt, so the
+# dispatcher just gives it to someone else. That is what stop_grace_period: 60s is
+# for, and why `off` can take up to a minute to return.
+set -euo pipefail
+
+REPO=/home/florian/Documents/code/postflight
+ENV_FILE=/home/florian/.config/postflight-worker.env
+CONTAINER=postflight-remote-worker-1
+
+compose() {
+  docker compose \
+    -f "$REPO/docker-compose.remote-worker.yml" \
+    -f "$REPO/docker-compose.nvidia.yml" \
+    --env-file "$ENV_FILE" "$@"
+}
+
+state() { docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo absent; }
+
+say() {
+  echo "$1"
+  # Only when there is a session to notify: this script is also used from a shell
+  # over SSH, where notify-send would just fail.
+  [ -n "${DISPLAY:-}" ] && command -v notify-send >/dev/null \
+    && notify-send -a "PostFlight" -i postflight-worker \
+         -h boolean:suppress-sound:true "PostFlight worker" "$1" || true
+}
+
+# The message says what happened, not what was asked: pressing Start on a worker
+# that is already up should read differently from actually starting it, otherwise
+# the notification teaches nothing.
+case "${1:-status}" in
+  on)
+    if [ "$(state)" = running ]; then
+      say "Already running"
+    else
+      compose up -d >/dev/null 2>&1
+      say "Started"
+    fi
+    ;;
+  off)
+    if [ "$(state)" = running ]; then
+      compose stop >/dev/null 2>&1
+      say "Stopped"
+    else
+      say "Already stopped"
+    fi
+    ;;
+  toggle) if [ "$(state)" = running ]; then "$0" off; else "$0" on; fi ;;
+  status) state ;;
+  *)      echo "usage: $(basename "$0") {on|off|toggle|status}" >&2; exit 2 ;;
+esac

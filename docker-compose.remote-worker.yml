@@ -18,6 +18,11 @@
 #   -f docker-compose.remote-worker.yml -f docker-compose.nvidia.yml    (NVIDIA)
 #   -f docker-compose.remote-worker.yml -f docker-compose.gpu.yml       (AMD/Intel)
 
+# Explicit, and it has to differ from the main stack's: a machine that also has a
+# checkout of this repo would otherwise deploy this worker into the `postflight`
+# project and adopt, or replace, the containers already there.
+name: postflight-remote
+
 services:
   worker:
     image: ${PF_IMAGE_WORKER:-ghcr.io/okhr/postflight-worker:latest}

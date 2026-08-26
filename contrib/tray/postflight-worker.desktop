@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PostFlight worker
+Comment=Tray icon to turn this machine's render worker on or off
+Exec=/usr/bin/python3 /home/florian/.local/share/postflight/tray.py
+Icon=postflight-worker
+Terminal=false
+Categories=Utility;
+StartupNotify=false

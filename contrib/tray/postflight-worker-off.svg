@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Worker off. The same wave, dimmed and struck through: opacity alone is too
+       subtle at 16 px, and the slash is the one mark that reads as "not running"
+       without changing the silhouette the eye has learned. -->
+  <g opacity="0.55">
+    <path d="M4.5 16 q3 -9 6 0 t6 0 h11" fill="none" stroke="#ffffff"
+          stroke-width="3.6" stroke-linecap="round"/>
+  </g>
+  <path d="M6 26 L26 6" fill="none" stroke="#ffffff" stroke-width="3.2"
+        stroke-linecap="round"/>
+</svg>

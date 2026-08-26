@@ -2151,6 +2151,48 @@ conteneur : 404 sur les cinq verbes avec le chemin nommé dans le corps, les vra
 toujours en 200 (`/api/status`, `/api/media/proxy/1` inclus), et `/derush/1`,
 `/color/2/2`, `/stabilisation` qui rendent toujours la page.
 
+## Un worker d'appoint, et son icône de barre
+
+Déployé le 2026-08-26 : le dispatcher et un worker vivent sur **vm4 (xenon)** du homelab,
+proxima prête son 3090 par intermittence. `contrib/tray/` porte de quoi l'allumer et
+l'éteindre depuis la barre système, ce qui n'existait pas et manquait tous les jours.
+
+Ce que le déploiement a mesuré, et qui vaut mieux que le tableau des capacités :
+
+| worker | décodage | OpenCL | rendu | lien vers le dispatcher |
+|---|---|---|---|---|
+| **xenon** (vm4, 8 vCPU, sans GPU) | cpu | aucun | **8,4 img/s** | 4028 Mo/s (même hôte) |
+| **proxima** (i7-7700K, RTX 3090) | NVDEC | RTX 3090 | **24,6 img/s** | 111 Mo/s (gigabit réel) |
+
+C'est la fonction de coût en situation : proxima rend 2,9x plus vite mais paie le
+transfert, xenon est lent et a les fichiers sous la main. Les 8,4 img/s confirment au
+passage les ~8,7 mesurés en CPU pur sur une autre machine.
+
+Quatre choses apprises sur l'icône, toutes par l'essai :
+
+- **`env python3` est le mauvais interpréteur.** PyGObject vient des paquets de la
+  distribution, et un miniforge en tête de `PATH` n'a pas `gi` du tout. Le shebang
+  nomme donc `/usr/bin/python3`. Première version morte exactement là.
+- **L'inscription DBus n'est pas l'écran.** Le programme vivait et parlait à
+  `org.kde.StatusNotifierWatcher` sans qu'aucune icône soit visible. Ce qui a tranché
+  est un **test différentiel** : capture d'écran worker allumé, puis éteint, et c'est
+  la seule icône qui change qui est la nôtre. Vérifier une paire d'états vaut mieux que
+  chercher une icône dans une barre qui en porte huit.
+- **Une icône d'état doit se distinguer de ses voisines, pas seulement d'elle-même.**
+  `network-offline-symbolic` était la même forme que l'icône réseau du système deux
+  crans à droite, en plus pâle. Remplacé par la vague du logo, et sa variante barrée
+  pour l'arrêt : à 16 px l'opacité seule ne se lit pas, et changer de silhouette
+  cesserait de dire « PostFlight ».
+- **L'état est relu, jamais mémorisé** (`docker inspect` toutes les 3 s) : le worker
+  s'allume aussi depuis un shell ou par `restart: unless-stopped` après un reboot, et
+  une icône qui ment est pire que pas d'icône.
+
+Et deux pièges de méthode dans lesquels je suis tombé le même jour, tous deux la même
+faute : **`pgrep -f` et `pkill -f` correspondent à leur propre ligne de commande**. Le
+premier m'a fait déclarer vivant un processus mort, le second a tué le shell qui le
+lançait, le motif étant présent dans son propre `bash -c`. Filtrer par PID, ou avec un
+motif entre crochets.
+
 ## Conventions
 
 - Les marks de derush sont stockés en **numéros de frame**, jamais en ms : à
