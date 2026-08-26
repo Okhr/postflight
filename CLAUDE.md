@@ -2065,6 +2065,31 @@ restauration supprime toutes les lignes `job` : une ligne `queued` qui disparaî
 rattrape, un encodage en cours est des minutes de machine. Les lignes `queued` partent
 quand même sans que ça bloque, c'est assumé.
 
+## Le fallback SPA avalait les 404 de l'API
+
+Corrigé le 2026-08-26. Le front est servi par un attrape-tout, `@app.get("/{full_path:
+path}")`, qui rend `index.html` pour tout ce que l'API n'a pas déclaré. **`/api/*`
+tombait dedans** : une route mal tapée renvoyait **200 et une page HTML**, et le client
+échouait ensuite sur un parsing JSON, ailleurs. Le symptôme ne désigne pas la cause, et
+c'est une heure perdue pour une faute de frappe.
+
+Pire pour les autres verbes : un `POST` sur un chemin inconnu rendait **405**, parce que
+l'attrape-tout était en GET seul et que le chemin correspondait quand même. « Mauvais
+verbe » est un diagnostic différent de « mauvais chemin », et il envoie chercher au
+mauvais endroit.
+
+Un second attrape-tout sur `/api/{rest:path}`, **tous les verbes**, est donc enregistré
+**après les routers et avant le fallback**. Il vit dans `_mount_frontend` parce qu'il
+n'existe que pour contrer le fallback : sans front construit il n'y a pas d'attrape-tout,
+et un chemin inconnu tombe déjà en 404 tout seul.
+
+`_mount_frontend` prend l'app en paramètre au lieu de fermer sur celle du module, pour
+que **l'ordre de la table de routes** soit lisible sur une app jetable. C'est l'ordre qui
+décide de tout ici, et sans ça un test devrait le croire sur parole. Mesuré sur le
+conteneur : 404 sur les cinq verbes avec le chemin nommé dans le corps, les vraies routes
+toujours en 200 (`/api/status`, `/api/media/proxy/1` inclus), et `/derush/1`,
+`/color/2/2`, `/stabilisation` qui rendent toujours la page.
+
 ## Conventions
 
 - Les marks de derush sont stockés en **numéros de frame**, jamais en ms : à

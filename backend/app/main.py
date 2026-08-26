@@ -4,7 +4,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -111,8 +111,28 @@ def healthz() -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def _mount_frontend() -> None:
-    """Serve the built frontend, with an SPA fallback on index.html."""
+# Every method the API answers on, so an unknown path under /api gets the same 404
+# whichever verb asked for it.
+_API_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+
+
+def api_not_found(rest: str) -> None:
+    """Everything under /api that no route claimed.
+
+    Only reachable because of the SPA fallback below, which is a catch-all on every
+    path: without this, a mistyped endpoint got 200 and a page of HTML, and the client
+    then failed parsing JSON somewhere else entirely.
+    """
+    raise HTTPException(status.HTTP_404_NOT_FOUND, f"no such endpoint: /api/{rest}")
+
+
+def _mount_frontend(target: FastAPI) -> None:
+    """Serve the built frontend, with an SPA fallback on index.html.
+
+    Takes the app rather than closing over the module one, so the route table this
+    builds can be inspected on a throwaway app: what matters here is the order, and
+    the order is the thing a unit test would otherwise have to take on trust.
+    """
     index = settings.static_dir / "index.html"
     if not index.exists():
         log.warning("frontend missing (%s): serving the API only", settings.static_dir)
@@ -120,16 +140,24 @@ def _mount_frontend() -> None:
 
     assets = settings.static_dir / "assets"
     if assets.is_dir():
-        app.mount("/assets", StaticFiles(directory=assets), name="assets")
+        target.mount("/assets", StaticFiles(directory=assets), name="assets")
 
-    @app.get("/{full_path:path}", include_in_schema=False)
+    # After the routers and before the fallback, so the real API routes still win and
+    # everything else under /api stops here. Registered inside this function because it
+    # exists only to counteract the fallback: with no frontend built there is no
+    # catch-all, and an unknown path already 404s on its own.
+    target.api_route("/api/{rest:path}", methods=_API_METHODS, include_in_schema=False)(
+        api_not_found
+    )
+
+    @target.get("/{full_path:path}", include_in_schema=False)
     def spa(full_path: str) -> FileResponse:
         candidate = settings.static_dir / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(index)
 
-    log.info("Front servi depuis %s", settings.static_dir)
+    log.info("Frontend served from %s", settings.static_dir)
 
 
-_mount_frontend()
+_mount_frontend(app)
