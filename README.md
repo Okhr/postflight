@@ -29,7 +29,7 @@ Docker images, and it spreads the heavy jobs over as many machines as you point 
 ```bash
 git clone https://github.com/Okhr/postflight.git && cd postflight
 cp .env.example .env          # set PF_DATA_PATH and PF_PORT
-docker compose up -d
+docker compose pull && docker compose up -d
 ```
 
 Open `http://localhost:8080`, drag your rushes into the drop zone, and the pipeline takes
@@ -137,8 +137,10 @@ Every static clue said "GPU ready".
 
 ### Two images out of one Dockerfile
 
-`postflight-api` is the dispatcher, and it also serves the interface. `postflight-worker`
-is what does the work. The API decodes nothing, warps nothing and joins nothing, so it
+`ghcr.io/okhr/postflight-api` is the dispatcher, and it also serves the interface.
+`ghcr.io/okhr/postflight-worker` is what does the work. Both are built by CI from the
+Dockerfile the machines run; point `PF_IMAGE_API` and `PF_IMAGE_WORKER` at local names to
+build from a checkout instead. The API decodes nothing, warps nothing and joins nothing, so it
 carries no OpenCL, no Vulkan and no Gyroflow: **656 MB against 1.99 GB**. It keeps ffmpeg,
 which the grading analysis needs. The GPU overrides therefore only ever apply to workers.
 
@@ -250,7 +252,8 @@ rumour.
 **A restore waits for a restart, and says so.** Replacing the file under a running
 engine would race with whatever request is mid-transaction, so the chosen snapshot is
 staged next to the database and swapped in at the next start, before anything opens it.
-Jobs in flight are dropped, and workers notice within a heartbeat.
+It is refused outright while a job is running, since a restore drops every job row and an
+interrupted render is minutes of a machine's time.
 
 **A restore snapshots what it replaces, first.** The response names that snapshot, so
 restoring the wrong thing is one more restore away from being undone. A snapshot from an

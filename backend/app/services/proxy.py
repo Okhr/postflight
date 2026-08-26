@@ -1,4 +1,4 @@
-"""Building proxies and filmstrips.
+"""Building proxies.
 
 The master is HEVC 10-bit 3840x2880, which no browser can play. Derushing
 therefore happens on an 8-bit H.264 proxy: smaller, and steppable frame by frame.
@@ -18,8 +18,8 @@ Beware: even VAAPI *decoding* wedged the amdgpu driver on a real 3840x2880
 HEVC 10-bit stream (unkillable ffmpeg, GPU stuck). Hence `PF_HWACCEL=cpu` as the
 recommended default on that hardware: the 1.6x gain is not worth the risk.
 
-The filmstrip is extracted **from the proxy**, not the master: same picture, ten
-times cheaper to decode.
+The poster is extracted **from the proxy**, not the master: same picture, ten times
+cheaper to decode.
 """
 
 from __future__ import annotations
@@ -111,37 +111,6 @@ def build_proxy(
     info = probe(dest)
     log.info("Proxy %s : %dx%d", dest.name, info.width, info.height)
     return ProxyResult(path=dest, width=info.width, height=info.height, log_tail=log_tail)
-
-
-def build_filmstrip(
-    proxy_path: Path,
-    dest: Path,
-    duration_ms: float,
-    columns: int | None = None,
-    thumb_height: int | None = None,
-) -> Path:
-    """A single image, N thumbnails side by side, shown under the slider."""
-    columns = columns or settings.filmstrip_columns
-    thumb_height = thumb_height or settings.filmstrip_thumb_height
-    duration_s = max(duration_ms / 1000.0, 0.001)
-    rate = max(columns / duration_s, 0.001)
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(".partial.jpg")
-    tmp.unlink(missing_ok=True)
-
-    cmd = [
-        settings.ffmpeg_bin, "-hide_banner", "-nostats", "-loglevel", "error", "-y",
-        "-i", str(proxy_path),
-        "-vf", f"fps={rate:.6f},scale=-1:{thumb_height},tile={columns}x1",
-        "-frames:v", "1", "-q:v", "4",
-        str(tmp),
-    ]
-    run_with_progress(cmd, timeout=3600)
-    if not tmp.exists():
-        raise RuntimeError("ffmpeg n'a produit aucune pellicule")
-    tmp.replace(dest)
-    return dest
 
 
 def build_poster(proxy_path: Path, dest: Path, duration_ms: float) -> Path:

@@ -179,7 +179,6 @@ def _sequence_out(session: Session, seq: Sequence) -> schemas.SequenceOut:
         size_bytes=seq.size_bytes,
         recorded_at=seq.recorded_at,
         has_proxy=path_exists(seq.proxy_path),
-        has_filmstrip=path_exists(seq.filmstrip_path),
         proxy_width=seq.proxy_width,
         proxy_height=seq.proxy_height,
         cut_count=_count(session, Cut, sequence_id=seq.id),
@@ -506,7 +505,25 @@ async def create_backup() -> schemas.SnapshotOut:
 
 
 @router.post("/backups/{name}/restore", response_model=schemas.RestoreOut)
-async def restore_backup(name: str) -> schemas.RestoreOut:
+async def restore_backup(
+    name: str, session: Session = Depends(get_session)
+) -> schemas.RestoreOut:
+    """Stage a snapshot, unless something is mid-flight.
+
+    A restore drops every job row, so a running one loses the encode it is in the
+    middle of. Queued rows disappearing is recoverable, an interrupted render is
+    minutes of a machine's time, so that is what this refuses on.
+    """
+    running = session.exec(
+        select(Job).where(Job.state == JobState.RUNNING)  # type: ignore[arg-type]
+    ).all()
+    if running:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "a job is running ("
+            + ", ".join(sorted({j.kind.value for j in running}))
+            + "): let it finish, or cancel it, then restore",
+        )
     try:
         safety = await run_in_threadpool(backup.stage_restore, name)
     except FileNotFoundError as exc:
@@ -1057,7 +1074,7 @@ def delete_sequence(
     """Delete the sequence row. What is kept on disk is up to the caller.
 
     By default both the masters in `raw/` and the derived files (merge, proxy,
-    filmstrip) stay: the derived ones carry the content hash in their name, so
+    poster) stay: the derived ones carry the content hash in their name, so
     regrouping the same parts finds them again and skips the reprocessing
     entirely. `keep_derived=false` is the real cleanup, `keep_raw=false` the full
     purge. Renders in `out/` always go, graded files with them: they belong to this
@@ -1067,7 +1084,7 @@ def delete_sequence(
     removed: list[str] = []
 
     if not keep_derived:
-        for attribute in ("merged_path", "proxy_path", "filmstrip_path"):
+        for attribute in ("merged_path", "proxy_path"):
             target = to_absolute(getattr(seq, attribute))
             if target and target.exists():
                 target.unlink(missing_ok=True)
@@ -1234,7 +1251,6 @@ def create_renders(
             cut_id=cut_id,
             template=payload.template,
             state=RenderState.QUEUED,
-            overrides=payload.overrides or {},
         )
         session.add(render)
         session.commit()
@@ -1724,15 +1740,6 @@ def get_proxy(sequence_id: int, request: Request, session: Session = Depends(get
     if proxy is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "proxy not generated yet")
     return media.serve_file(proxy, request)
-
-
-@router.get("/media/filmstrip/{sequence_id}")
-def get_filmstrip(sequence_id: int, request: Request, session: Session = Depends(get_session)) -> Response:
-    seq = _get_sequence(session, sequence_id)
-    filmstrip = to_absolute(seq.filmstrip_path)
-    if filmstrip is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "filmstrip not generated yet")
-    return media.serve_file(filmstrip, request)
 
 
 @router.get("/media/poster/{sequence_id}")

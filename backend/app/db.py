@@ -209,6 +209,13 @@ DEAD_COLUMNS = (
     # The clip's measurement moved onto `render` on 2026-08-25: it describes the clip
     # and not the look, and a clip now holds several grades.
     ("grade", "analysis"),
+    # The derush timeline stopped drawing a filmstrip when the gyro curve took the
+    # room, and on 2026-08-26 the whole thing went: an ffmpeg pass and 190 to 290 kB
+    # per proxy for a picture no page asked for.
+    ("sequence", "filmstrip_path"),
+    # Per-render deviations from a profile. Wired end to end and never populated: two
+    # variants of a look are two profiles, which is what makes a render reproducible.
+    ("render", "overrides"),
 )
 
 

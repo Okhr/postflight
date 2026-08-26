@@ -323,7 +323,6 @@ def _prepare_render(session: Session, job: Job) -> dict[str, Any]:
         "trim_ranges_ms": trim,
         "out_filename": f"{sequence.key}__{template.id}__{suffix}.mp4",
         "project_filename": f"{sequence.key}__{template.id}__{suffix}.gyroflow.json",
-        "overrides": render.overrides or {},
     }
 
 
@@ -661,7 +660,6 @@ def _apply_proxy(session: Session, job: Job, result: dict[str, Any]) -> None:
     sequence.proxy_path = result["proxy_path"]
     sequence.proxy_width = result["proxy_width"]
     sequence.proxy_height = result["proxy_height"]
-    sequence.filmstrip_path = result.get("filmstrip_path")
     sequence.state = SequenceState.READY
     sequence.updated_at = utcnow()
     session.add(sequence)

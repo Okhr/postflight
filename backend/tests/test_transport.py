@@ -81,7 +81,7 @@ def test_an_input_held_at_the_wrong_size_is_fetched_again(volume):
 
 def test_everything_the_job_wrote_is_sent_back(volume):
     """Not just what the result names: the proxy step also writes a poster, a
-    filmstrip and a gyro chart that no result field mentions, and the interface reads
+    poster and a gyro chart that no result field mentions, and the interface reads
     every one of them."""
     workspace = Workspace(FakeClient())
     before = workspace.pull([], _noop)

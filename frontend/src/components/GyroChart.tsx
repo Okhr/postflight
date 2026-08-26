@@ -74,7 +74,7 @@ interface GyroData {
 /** On-screen height of the plot, in pixels. Exported because the derush timeline
  * draws its trim bar and its cut bands over the plot, and has to stop short of
  * the axis legend below. Taller than it used to be: the curves are the timeline
- * now, there is no filmstrip sharing the room. */
+ * nothing else shares the room. */
 export const PLOT_HEIGHT = 128;
 
 const HEIGHT = 100;

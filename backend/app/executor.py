@@ -87,15 +87,13 @@ def _run_proxy(spec: dict[str, Any], progress: ProgressCallback) -> dict[str, An
         progress_cb=progress,
     )
 
-    filmstrip = settings.proxies_dir / f"{stem}.filmstrip.jpg"
     poster = settings.proxies_dir / f"{stem}.poster.jpg"
     duration_ms = spec.get("duration_ms") or 0.0
     try:
-        proxy_service.build_filmstrip(result.path, filmstrip, duration_ms)
         proxy_service.build_poster(result.path, poster, duration_ms)
     except (ProcessError, RuntimeError) as exc:
-        # A missing filmstrip does not prevent derushing.
-        warnings.append(f"filmstrip/poster not generated: {exc}")
+        # A missing poster does not prevent derushing.
+        warnings.append(f"poster not generated: {exc}")
 
     # Read from the merged master, not the proxy: the proxy has no gyro track.
     # A few seconds, against a proxy measured in minutes.
@@ -111,7 +109,6 @@ def _run_proxy(spec: dict[str, Any], progress: ProgressCallback) -> dict[str, An
         "proxy_path": to_relative(result.path),
         "proxy_width": result.width,
         "proxy_height": result.height,
-        "filmstrip_path": to_relative(filmstrip) if filmstrip.exists() else None,
         "warnings": warnings,
     }
 
@@ -136,7 +133,6 @@ def _run_render(spec: dict[str, Any], progress: ProgressCallback) -> dict[str, A
         out_dir=settings.out_dir,
         out_filename=spec["out_filename"],
         project_path=settings.projects_dir / spec["project_filename"],
-        overrides=spec.get("overrides") or {},
         progress_cb=progress,
     )
     return {

@@ -1259,7 +1259,7 @@ local, avec son propre volume de travail :
 | rendu | 1470 images en 59,3 s, OpenCL sur le 3090 |
 | sorties renvoyées | 114,4 Mo + le `.gyroflow.json` |
 | deuxième rendu du même master | **aucun transfert d'entrée**, seuls 88,8 Mo repartent |
-| proxy distant | **quatre** fichiers renvoyés : proxy, filmstrip, poster, graphe gyro |
+| proxy distant | **trois** fichiers renvoyés : proxy, poster, graphe gyro |
 | fusion distante | part récupérée, hardlink, master renvoyé |
 | ce que les vrais jobs ont appris | rendu 24,9 img/s contre 28,0 au benchmark |
 
@@ -1274,7 +1274,7 @@ séquence, un étalonnage le hash de son look, un rendu son template et son cut)
 le cache du worker vérifie un chemin et une taille, et il a raison.
 
 **Ce qui remonte, c'est tout ce que le job a écrit, pas ce que le résultat nomme.** La
-seule étape proxy écrit un poster, un filmstrip et un graphe gyro qu'aucun champ du
+seule étape proxy écrit un poster et un graphe gyro qu'aucun champ du
 résultat ne mentionne, et l'interface les lit tous. La détection se fait par
 **instantané avant/après**, pas par comparaison d'horodatage : la granularité du mtime
 appartient au système de fichiers, et les deux façons de se tromper sont mauvaises
@@ -1573,6 +1573,18 @@ en `text-sm`. Deux lignes par entrée avec des tailles mélangées ont été ess
 différence de l'arbre à gauche où elles sortent au survol : une liste de trois lignes
 n'a pas de place à gagner, et une icône qui n'apparaît qu'au survol est une icône dont
 personne ne sait qu'elle est là.
+
+### La pellicule est partie avec la place qu'elle n'avait plus
+
+Retirée le 2026-08-26. Le derush a eu une pellicule sous la timeline, et elle a cessé
+d'être dessinée quand `GyroChart` a pris toute la bande : la courbe gyro est ce sur quoi
+on scrube, une pellicule à côté aurait pris de la place à l'image. Ce qui restait était
+une mécanique complète que rien n'affichait, mesurée : **une passe ffmpeg et 190 à 290 Ko
+écrits par proxy**, plus une colonne `sequence.filmstrip_path`, une route
+`GET /media/filmstrip/{id}`, un champ `has_filmstrip`, un helper d'URL côté front et deux
+réglages. Le tout est parti, la colonne par `DEAD_COLUMNS`.
+
+Le poster reste : il sert de vignette et il est produit par la même passe.
 
 ### Un cut garde son id, sinon deux choses cassent
 
@@ -1953,9 +1965,12 @@ montre une partie complètement différente de la source. D'où le pas de 0,05 s
 slider. Les bornes dures de l'API sont -1 à 1 ; Gyroflow écrête de lui-même au bord du
 recadrage possible.
 
-**Ni surcharge par rendu, ni par sequence** : un rendu prend le template tel quel, et le
-champ `overrides` de l'API reste inutilisé. Deux variantes d'un look se font en
-dupliquant un template, ce qui a l'avantage qu'un rendu se reproduit à l'identique.
+**Ni surcharge par rendu, ni par sequence** : un rendu prend le template tel quel. Deux
+variantes d'un look se font en dupliquant un template, ce qui a l'avantage qu'un rendu se
+reproduit à l'identique. Le champ `overrides` existait pour ça et n'a jamais été rempli :
+**retiré le 2026-08-26** de bout en bout (colonne, schéma, spec du job, paramètre de
+`build_preset`, et `_deep_merge` qui n'existait que pour lui). Le renforcement plutôt que
+la perte : il n'y a plus **aucun** endroit où un rendu puisse dévier de son profil.
 
 Deux détails de l'API : `output_width` / `output_height` doivent être **pairs** (le 4:2:0
 sous-échantillonne la chroma par deux, x264 refuse une hauteur impaire), et il n'existe
@@ -2045,9 +2060,10 @@ Vérifié de bout en bout sur la stack : snapshot, renommage d'un dossier, resto
 sécurité contenant l'état remplacé, et les 4 clips / 2 rushes / 4 rendus / 2 grades
 intacts.
 
-**Ce qui n'est pas garanti et qui est assumé** : `restore` ne refuse pas de s'exécuter
-pendant qu'un job tourne. Les jobs en vol sont perdus, les workers s'en aperçoivent au
-battement suivant et s'arrêtent proprement.
+**`restore` refuse pendant qu'un job tourne** (409, avec le type du job). Une
+restauration supprime toutes les lignes `job` : une ligne `queued` qui disparaît se
+rattrape, un encodage en cours est des minutes de machine. Les lignes `queued` partent
+quand même sans que ça bloque, c'est assumé.
 
 ## Conventions
 

@@ -139,7 +139,6 @@ class SequenceOut(BaseSchema):
     size_bytes: int
     recorded_at: datetime | None
     has_proxy: bool
-    has_filmstrip: bool
     proxy_width: int
     proxy_height: int
     cut_count: int
@@ -183,7 +182,6 @@ class RenderRequest(BaseSchema):
     # None or empty = every cut of the sequence; "full" = the whole sequence.
     cut_ids: list[int] | None = None
     whole_sequence: bool = False
-    overrides: dict[str, Any] = Field(default_factory=dict)
 
 
 class FolderOut(BaseSchema):

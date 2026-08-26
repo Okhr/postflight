@@ -122,7 +122,6 @@ export interface Sequence {
   size_bytes: number;
   recorded_at: string | null;
   has_proxy: boolean;
-  has_filmstrip: boolean;
   proxy_width: number;
   proxy_height: number;
   cut_count: number;
@@ -519,7 +518,7 @@ export const api = {
 
   createRenders: (
     sequenceId: number,
-    payload: { template: string; cut_ids?: number[]; whole_sequence?: boolean; overrides?: Record<string, unknown> },
+    payload: { template: string; cut_ids?: number[]; whole_sequence?: boolean },
   ) =>
     request<Render[]>(`/sequences/${sequenceId}/renders`, {
       method: "POST",
@@ -572,7 +571,6 @@ export const api = {
 
 export const mediaUrl = {
   proxy: (sequenceId: number) => `/api/media/proxy/${sequenceId}`,
-  filmstrip: (sequenceId: number) => `/api/media/filmstrip/${sequenceId}`,
   poster: (sequenceId: number) => `/api/media/poster/${sequenceId}`,
   render: (renderId: number) => `/api/media/render/${renderId}`,
   download: (renderId: number) => `/api/media/render/${renderId}/download`,

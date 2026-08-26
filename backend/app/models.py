@@ -131,7 +131,6 @@ class Sequence(SQLModel, table=True):
 
     merged_path: Optional[str] = None
     proxy_path: Optional[str] = None
-    filmstrip_path: Optional[str] = None
     proxy_width: int = 0
     proxy_height: int = 0
 
@@ -216,7 +215,6 @@ class Render(SQLModel, table=True):
     end_frame: int = 0
     out_path: Optional[str] = None
     project_path: Optional[str] = None
-    overrides: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
     # What signalstats measured on the stabilized file: percentiles, clipping, and the
     # timestamps worth previewing. It lives here and not on the grade because it

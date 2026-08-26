@@ -34,8 +34,6 @@ class Settings(BaseSettings):
     proxy_height: int = 960
     proxy_crf: int = 26
     proxy_x264_preset: str = "veryfast"
-    filmstrip_columns: int = 120
-    filmstrip_thumb_height: int = 90
 
     # --- Colour grading ------------------------------------------------------
     # H.264 on purpose: measured 0.71x realtime against 0.26x for HEVC 10-bit on

@@ -5,6 +5,9 @@ fixtures/
 tools/
 node_modules/
 dist/
+# TypeScript's incremental build cache: rewritten by every `tsc`, useful to nobody
+# reading the repository.
+*.tsbuildinfo
 __pycache__/
 *.pyc
 *.sqlite3

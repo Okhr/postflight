@@ -183,3 +183,26 @@ def test_the_schedule_is_measured_against_the_newest_snapshot(live, monkeypatch)
 
 def test_a_zero_interval_turns_the_schedule_off(live):
     assert backup.due(0) is False
+
+
+def test_a_restore_is_refused_while_a_job_is_running(live, monkeypatch):
+    """The one thing a restore actually destroys is work in flight: the job rows all
+    go, so a running encode loses the minutes it is in the middle of."""
+    from fastapi import HTTPException
+
+    from app.api import routes
+    from app.models import Job, JobKind, JobState
+
+    class FakeSession:
+        def exec(self, _statement):
+            return self
+
+        def all(self):
+            return [Job(kind=JobKind.RENDER, state=JobState.RUNNING, sequence_id=1)]
+
+    import asyncio
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes.restore_backup("whatever.sqlite3", FakeSession()))  # type: ignore[arg-type]
+    assert caught.value.status_code == 409
+    assert "render" in caught.value.detail

@@ -474,11 +474,9 @@ def adopt_existing_artifacts(session: Session, sequence: Sequence) -> bool:
         except (ProbeError, OSError):
             proxy_info = None
         if proxy_info is not None:
-            filmstrip = settings.proxies_dir / f"{sequence.artifact_stem}.filmstrip.jpg"
             sequence.proxy_path = to_relative(proxy)
             sequence.proxy_width = proxy_info.width
             sequence.proxy_height = proxy_info.height
-            sequence.filmstrip_path = to_relative(filmstrip) if filmstrip.exists() else None
             sequence.state = SequenceState.READY
             reused = "merge + proxy"
 

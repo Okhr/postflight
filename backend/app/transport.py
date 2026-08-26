@@ -126,7 +126,7 @@ class Workspace:
         count an input as an output and a 4 GB master goes back where it came from.
 
         Whatever the job created gets sent, not just the paths the result mentions. The
-        proxy step alone writes a poster, a filmstrip and a gyro chart that no result
+        proxy step alone writes a poster and a gyro chart that no result
         field names, and every one of them is something the interface later reads.
         """
         produced = sorted(rel for rel, fact in _walk().items() if before.get(rel) != fact)

@@ -335,24 +335,15 @@ def delete_template(template_id: str) -> str:
     return "deleted"
 
 
-def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-    out = copy.deepcopy(base)
-    for key, value in (patch or {}).items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = _deep_merge(out[key], value)
-        else:
-            out[key] = copy.deepcopy(value)
-    return out
-
-
 def build_preset(
     template: Template,
     trim_ranges_ms: list[list[float]],
     out_dir: Path,
     out_filename: str,
-    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    preset = _deep_merge(template.data, overrides or {})
+    # A copy, because everything below mutates it and a Template is shared: the
+    # dispatcher hands the same one to every render that names it.
+    preset = copy.deepcopy(template.data)
     preset["version"] = preset.get("version", 2)
     preset["trim_ranges_ms"] = trim_ranges_ms
     output = dict(preset.get("output") or {})
@@ -425,7 +416,6 @@ def render(
     out_dir: Path,
     out_filename: str,
     project_path: Path,
-    overrides: dict[str, Any] | None = None,
     progress_cb: ProgressCallback | None = None,
 ) -> RenderResult:
     if not source.exists():
@@ -436,7 +426,7 @@ def render(
     out_dir.mkdir(parents=True, exist_ok=True)
     project_path.parent.mkdir(parents=True, exist_ok=True)
 
-    preset = build_preset(template, trim_ranges_ms, out_dir, out_filename, overrides)
+    preset = build_preset(template, trim_ranges_ms, out_dir, out_filename)
     project_path.write_text(json.dumps(preset, indent=2))
 
     device = "CPU"
