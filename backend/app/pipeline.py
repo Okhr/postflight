@@ -27,7 +27,8 @@ _DUPLICATES_DIRNAME = ".duplicates"
 _STABILIZED_DIRNAME = ".stabilized"
 # Files set aside rather than deleted, so nothing is ever lost silently. Scanning
 # must skip them, or every pass would pick them straight back up.
-_SIDELINED_DIRNAMES = (_DUPLICATES_DIRNAME, _STABILIZED_DIRNAME)
+_UPLOADS_DIRNAME = ".uploads"
+_SIDELINED_DIRNAMES = (_DUPLICATES_DIRNAME, _STABILIZED_DIRNAME, _UPLOADS_DIRNAME)
 
 # Gyroflow names its output after the source plus `_stabilized`, with the aspect
 # sometimes appended: `_stabilized`, `_stabilized_16x9`, `_joined_stabilized`. A
@@ -196,6 +197,119 @@ def unique_destination(directory: Path, filename: str) -> Path:
         if not candidate.exists():
             return candidate
     raise RuntimeError(f"cannot find a free name for {filename} in {directory}")
+
+
+# A chunk has to stay under what Cloudflare accepts, measured on the real chain at
+# exactly 100 MiB inclusive: one byte more is refused at the edge on the
+# Content-Length, before the origin sees anything. The client sends smaller ones.
+CHUNK_MAX = 100 * 1024 * 1024
+
+
+def _markers_dir(partial: Path) -> Path:
+    return settings.inbox_dir / _UPLOADS_DIRNAME / partial.name
+
+
+def start_upload(filename: str, size: int) -> Path:
+    """Reserve a name and preallocate the file the chunks will land in.
+
+    The destination is resolved **once**, here, and the `.partial` carries it: a
+    per-request `unique_destination` would give the second chunk of a colliding name a
+    file of its own. Nothing else is remembered, so there is no registry to leak and
+    nothing to clean up after a client that vanishes.
+
+    Two things this cannot borrow from `unique_destination`. It has to step over a
+    `.partial` as well as a destination, since a file being received does not exist
+    under its real name yet, and two uploads of one name would otherwise be handed
+    the same file. And the partial is created with an **exclusive** open rather than
+    checked then created: check-then-create is a race both callers pass.
+    """
+    settings.inbox_dir.mkdir(parents=True, exist_ok=True)
+    stem, suffix = Path(filename).stem, Path(filename).suffix
+    for n in range(1000):
+        destination = settings.inbox_dir / (filename if n == 0 else f"{stem}__{n}{suffix}")
+        if destination.exists():
+            continue
+        partial = destination.with_name(destination.name + ".partial")
+        try:
+            handle = partial.open("xb")
+        except FileExistsError:
+            continue
+        with handle:
+            handle.truncate(size)  # sparse: chunks seek into it, in any order
+        _markers_dir(partial).mkdir(parents=True, exist_ok=True)
+        return partial
+    raise RuntimeError(f"cannot find a free name for {filename} in {settings.inbox_dir}")
+
+
+def partial_path(name: str) -> Path:
+    """Resolve a partial by name, refusing anything this module did not write.
+
+    The name arrives from a URL, so it is checked against the shape rather than
+    sanitised, like snapshot names: same discipline, and it covers traversal without
+    having to reason about separators.
+    """
+    if name != Path(name).name or not name.endswith(".partial") or name.startswith("."):
+        raise ValueError(f"not an upload in progress: {name!r}")
+    path = settings.inbox_dir / name
+    if not path.is_file():
+        raise FileNotFoundError(name)
+    return path
+
+
+def record_chunk(partial: Path, offset: int, length: int) -> None:
+    """Note that this range arrived.
+
+    One empty file per chunk rather than lines appended to a shared one: chunks are
+    written concurrently, and O_APPEND atomicity is not guaranteed on NFS, which is
+    where the inbox is headed. Separate names cannot interleave, and a retry of the
+    same chunk writes the same name, so it stays idempotent.
+    """
+    markers = _markers_dir(partial)
+    markers.mkdir(parents=True, exist_ok=True)
+    (markers / f"{offset}-{length}").touch()
+
+
+def missing_ranges(partial: Path) -> list[tuple[int, int]]:
+    """The holes left in a partial, as (start, length). Empty means complete.
+
+    Completion is decided here and not by the client, because the client is the one
+    thing that cannot be trusted about it: a chunk lost to a dropped tunnel would
+    otherwise rename a 4 GB rush with a hole in it, and the failure would surface
+    much later, in a merge or a stabilization.
+    """
+    size = partial.stat().st_size
+    markers = _markers_dir(partial)
+    arrived: list[tuple[int, int]] = []
+    if markers.is_dir():
+        for marker in markers.iterdir():
+            start, _, length = marker.name.partition("-")
+            try:
+                arrived.append((int(start), int(length)))
+            except ValueError:
+                continue
+    holes: list[tuple[int, int]] = []
+    covered = 0
+    for start, length in sorted(arrived):
+        if start > covered:
+            holes.append((covered, start - covered))
+        covered = max(covered, start + length)
+    if covered < size:
+        holes.append((covered, size - covered))
+    return holes
+
+
+def finish_upload(partial: Path) -> Path:
+    """Give the file its real name, which is what makes the scanner see it."""
+    destination = partial.with_name(partial.name[: -len(".partial")])
+    partial.rename(destination)
+    shutil.rmtree(_markers_dir(partial), ignore_errors=True)
+    mark_upload_complete(destination)
+    return destination
+
+
+def abort_upload(partial: Path) -> None:
+    partial.unlink(missing_ok=True)
+    shutil.rmtree(_markers_dir(partial), ignore_errors=True)
 
 
 def _move(source: Path, dest: Path) -> None:

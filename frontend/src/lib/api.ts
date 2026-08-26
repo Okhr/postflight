@@ -373,6 +373,17 @@ export interface UploadCheck {
   sequence_id: number | null;
 }
 
+/** Where the pieces of one file go, and the name it will land under. */
+export interface UploadBegin {
+  partial: string;
+  filename: string;
+}
+
+export interface UploadDone {
+  filename: string;
+  size_bytes: number;
+}
+
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
@@ -421,6 +432,24 @@ export const api = {
       body: probeBytes(file),
       headers: { "Content-Type": "application/octet-stream" },
     }),
+
+  /**
+   * Reserve a destination for a file sent in pieces.
+   *
+   * A rush goes out in chunks rather than one request because the public chain
+   * refuses a body over 100 MiB: measured, and refused at the edge, so a 4 GB PUT
+   * cannot work from outside the LAN however long we wait for it.
+   */
+  uploadBegin: (file: File) =>
+    request<UploadBegin>(
+      `/upload/begin?filename=${encodeURIComponent(file.name)}&size=${file.size}`,
+      { method: "POST" },
+    ),
+  /** Name the file for real. The server refuses if any piece is missing. */
+  uploadFinish: (partial: string) =>
+    request<UploadDone>(`/upload/${encodeURIComponent(partial)}/finish`, { method: "POST" }),
+  uploadAbort: (partial: string) =>
+    request<{ aborted: string }>(`/upload/${encodeURIComponent(partial)}`, { method: "DELETE" }),
   templates: () => request<Template[]>("/templates"),
   templateDefaults: () => request<TemplateDefaults>("/templates/defaults"),
   createTemplate: (label: string, copyOf?: string) =>

@@ -65,28 +65,44 @@ export function useUpload(): Upload {
 }
 
 /**
- * Raw PUT rather than FormData: XMLHttpRequest is the only way to get upload
- * progress (fetch does not expose it), and a raw body spares the server from
- * copying 4 GB into a temporary file.
+ * What one request may carry.
+ *
+ * The public chain refuses a body over 100 MiB, measured on the real Cloudflare path:
+ * 104 857 600 bytes pass, one more comes back 413 from the edge without the origin
+ * seeing anything. So a 4 GB rush cannot go out in a single PUT from outside the LAN,
+ * however patient we are. 64 MiB keeps margin under the ceiling and keeps a retry
+ * cheap.
  */
-function putFile(file: File, onProgress: (ratio: number) => void, signal: AbortSignal) {
-  return new Promise<string>((resolve, reject) => {
+const CHUNK = 64 * 1024 * 1024;
+
+/**
+ * Pieces in flight at once, which is the other half of what cutting a file up buys.
+ * At the ~20 ms of RTT of the box VPN a single TCP flow is bounded by the window and
+ * collapses on any loss, which is why the observed remote upload sat at 9 MB/s on a
+ * link worth ten times that. Three, not more: the point is to fill one link, not to
+ * scatter writes across the destination disk.
+ */
+const CONCURRENCY = 3;
+
+/**
+ * One piece, by XMLHttpRequest rather than fetch: it is the only way to get upload
+ * progress, and a raw body spares the server from copying it into a temporary file.
+ */
+function putChunk(
+  partial: string,
+  blob: Blob,
+  offset: number,
+  onLoaded: (bytes: number) => void,
+  signal: AbortSignal,
+) {
+  return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("PUT", `/api/upload/${encodeURIComponent(file.name)}`);
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) onProgress(event.loaded / event.total);
-    };
+    xhr.open("PUT", `/api/upload/${encodeURIComponent(partial)}/chunk?offset=${offset}`);
+    xhr.upload.onprogress = (event) => onLoaded(event.loaded);
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        // The server may have renamed on collision: its name is the one that
-        // will show up in the library, so it is the one worth keeping.
-        let landedAs = file.name;
-        try {
-          landedAs = JSON.parse(xhr.responseText).filename ?? file.name;
-        } catch {
-          /* non-JSON response */
-        }
-        resolve(landedAs);
+        onLoaded(blob.size); // the last progress event can lag the response
+        resolve();
         return;
       }
       let detail = `HTTP ${xhr.status}`;
@@ -100,8 +116,68 @@ function putFile(file: File, onProgress: (ratio: number) => void, signal: AbortS
     xhr.onerror = () => reject(new Error("connection lost"));
     xhr.onabort = () => reject(new Error("aborted"));
     signal.addEventListener("abort", () => xhr.abort(), { once: true });
-    xhr.send(file);
+    xhr.send(blob);
   });
+}
+
+/**
+ * Send one file in pieces and give back the name it landed under.
+ *
+ * The server decides completeness, not this: it counts the ranges it received and
+ * refuses to rename a file with a hole in it. So a piece lost on a flaky link fails
+ * here, loudly, instead of producing a 4 GB rush that only breaks later in a merge.
+ */
+async function putFile(file: File, onProgress: (ratio: number) => void, signal: AbortSignal) {
+  const { partial } = await api.uploadBegin(file);
+
+  const offsets: number[] = [];
+  for (let at = 0; at < file.size; at += CHUNK) offsets.push(at);
+  const loaded = new Array<number>(offsets.length).fill(0);
+  const report = () => onProgress(loaded.reduce((sum, n) => sum + n, 0) / file.size);
+
+  // Chained to the batch signal, so a piece that fails cancels this file's other
+  // pieces without touching the files queued behind it. Aborting the batch
+  // controller here would stop the whole drop.
+  const local = new AbortController();
+  const relay = () => local.abort();
+  signal.addEventListener("abort", relay, { once: true });
+
+  let next = 0;
+  const worker = async () => {
+    for (let index = next++; index < offsets.length; index = next++) {
+      const offset = offsets[index];
+      const blob = file.slice(offset, Math.min(offset + CHUNK, file.size));
+      const track = (bytes: number) => {
+        loaded[index] = bytes;
+        report();
+      };
+      try {
+        await putChunk(partial, blob, offset, track, local.signal);
+      } catch (error) {
+        // One retry. On a tunnel that drops, losing a 64 MiB piece must not cost
+        // the whole file, and the server takes the same range twice as one write.
+        if (local.signal.aborted) throw error;
+        loaded[index] = 0;
+        await putChunk(partial, blob, offset, track, local.signal);
+      }
+    }
+  };
+
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, offsets.length) }, () => worker()),
+    );
+    const done = await api.uploadFinish(partial);
+    return done.filename;
+  } catch (error) {
+    local.abort();
+    // Leave nothing behind: a partial nobody points at would sit in inbox/ forever,
+    // invisible to the scanner and to us.
+    void api.uploadAbort(partial).catch(() => {});
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", relay);
+  }
 }
 
 export function accepted(file: File) {
@@ -143,8 +219,10 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       void (async () => {
         let sent = 0;
         let skipped = 0;
-        // Sequential: sending four 4 GB rushes in parallel only saturates the link
-        // and scatters writes across the destination disk.
+        // One file at a time. The concurrency lives *inside* a file instead (see
+        // CONCURRENCY): several pieces of one rush fill the link just as well, and
+        // they land in one preallocated file rather than scattering writes across
+        // four of them.
         for (const item of queued) {
           if (controller.signal.aborted) {
             patch(item.key, { status: "error", error: "aborted" });

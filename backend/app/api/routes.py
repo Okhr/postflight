@@ -39,14 +39,19 @@ from ..models import (
 )
 from ..paths import exists as path_exists, to_absolute
 from ..pipeline import (
+    CHUNK_MAX,
     PRIORITY_MANUAL,
+    abort_upload,
     enqueue_merge,
     enqueue_proxy,
+    finish_upload,
     ingest_and_group,
-    mark_upload_complete,
+    missing_ranges,
+    partial_path,
+    record_chunk,
+    start_upload,
     upload_finished,
     upload_started,
-    unique_destination,
 )
 from ..services import backup
 from ..services import grading as grading_service
@@ -595,16 +600,7 @@ async def upload_check(
     )
 
 
-@router.put("/upload/{filename}", response_model=schemas.UploadOut)
-async def upload(filename: str, request: Request) -> schemas.UploadOut:
-    """Stream a file into `inbox/`.
-
-    Deliberately not multipart: FastAPI parses the whole body before calling the
-    view, so a 4 GB rush would first be written in full to a temporary file and
-    then copied over. Here we write straight to the destination, under a
-    `.partial` suffix the scanner ignores, and rename at the end, so the file only
-    looks complete once it is.
-    """
+def _open_upload(filename: str, size: int) -> Path:
     safe_name = Path(filename).name
     if not safe_name or safe_name.startswith("."):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid file name")
@@ -613,39 +609,117 @@ async def upload(filename: str, request: Request) -> schemas.UploadOut:
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             f"unsupported extension; expected {', '.join(settings.extensions)}",
         )
+    return start_upload(safe_name, size)
 
-    settings.inbox_dir.mkdir(parents=True, exist_ok=True)
-    destination = unique_destination(settings.inbox_dir, safe_name)
-    partial = destination.with_name(destination.name + ".partial")
 
-    # Announced before the first byte and cleared whatever happens: while this is
-    # counted, the scheduled scan holds off, so the parts of one flight are ingested
-    # together instead of the first one being merged alone.
+def _partial_or_404(partial: str) -> Path:
+    try:
+        return partial_path(partial)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no such upload: {partial}") from exc
+
+
+@router.post("/upload/begin", response_model=schemas.UploadBeginOut)
+def upload_begin(
+    filename: str = Query(..., description="Name of the file about to be sent"),
+    size: int = Query(..., ge=1, description="Its total size in bytes"),
+) -> schemas.UploadBeginOut:
+    """Reserve a destination for a file that arrives in pieces.
+
+    A rush is 4 GB and goes out in one request today, which cannot work from outside:
+    the public chain caps a request at 100 MiB, measured, and refuses it at the edge.
+    So the file is cut client-side and reassembled here. The same change buys the
+    throughput back on a remote link, where a single TCP flow is window-bound at
+    20 ms of RTT and several chunks in flight are not.
+    """
+    partial = _open_upload(filename, size)
+    return schemas.UploadBeginOut(
+        partial=partial.name,
+        filename=partial.name[: -len(".partial")],
+    )
+
+
+@router.put("/upload/{partial}/chunk", response_model=schemas.UploadChunkOut)
+async def upload_chunk(
+    partial: str,
+    request: Request,
+    offset: int = Query(..., ge=0, description="Where this piece starts in the file"),
+) -> schemas.UploadChunkOut:
+    """Write one piece at its offset.
+
+    Chunks may arrive in any order and more than once: the destination is
+    preallocated, so this seeks and writes, and a retry of the same range is a
+    rewrite of the same bytes.
+    """
+    target = _partial_or_404(partial)
+    size = target.stat().st_size
+    if offset >= size:
+        raise HTTPException(
+            status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+            f"offset {offset} is past the announced size {size}",
+        )
+
+    # Counted for as long as this piece is on the wire, exactly like a whole-file
+    # upload used to be. The gaps between pieces are covered by UPLOAD_SETTLE_S,
+    # which is orders of magnitude longer, so a scheduled scan still cannot land in
+    # the middle of a batch and merge one part of a flight on its own.
     upload_started()
     written = 0
     try:
-        handle = await run_in_threadpool(partial.open, "wb")
+        handle = await run_in_threadpool(target.open, "r+b")
         try:
+            await run_in_threadpool(handle.seek, offset)
             async for chunk in request.stream():
-                if chunk:
-                    await run_in_threadpool(handle.write, chunk)
-                    written += len(chunk)
+                if not chunk:
+                    continue
+                if offset + written + len(chunk) > size:
+                    raise HTTPException(
+                        status.HTTP_400_BAD_REQUEST,
+                        f"chunk at {offset} runs past the announced size {size}",
+                    )
+                await run_in_threadpool(handle.write, chunk)
+                written += len(chunk)
         finally:
             await run_in_threadpool(handle.close)
-    except Exception:
-        partial.unlink(missing_ok=True)
-        raise
     finally:
         upload_finished()
 
     if written == 0:
-        partial.unlink(missing_ok=True)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty request body")
+    await run_in_threadpool(record_chunk, target, offset, written)
+    return schemas.UploadChunkOut(offset=offset, received=written, chunk_max=CHUNK_MAX)
 
-    partial.rename(destination)
-    mark_upload_complete(destination)
-    log.info("Received %s (%.1f MB)", destination.name, written / (1 << 20))
-    return schemas.UploadOut(filename=destination.name, size_bytes=written)
+
+@router.post("/upload/{partial}/finish", response_model=schemas.UploadOut)
+def upload_finish(partial: str) -> schemas.UploadOut:
+    """Name the file for real, once every byte is accounted for.
+
+    The holes are counted here rather than trusted from the client, because a chunk
+    lost to a dropped connection is exactly what the client would not know about. A
+    4 GB rush renamed with a hole in it would only fail much later, in a merge or a
+    stabilization, far from the cause.
+    """
+    target = _partial_or_404(partial)
+    holes = missing_ranges(target)
+    if holes:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"incomplete upload, {len(holes)} hole(s), first at {holes[0][0]} "
+            f"({holes[0][1]} bytes)",
+        )
+    size = target.stat().st_size
+    destination = finish_upload(target)
+    log.info("Received %s (%.1f MB)", destination.name, size / (1 << 20))
+    return schemas.UploadOut(filename=destination.name, size_bytes=size)
+
+
+@router.delete("/upload/{partial}")
+def upload_abort(partial: str) -> dict[str, str]:
+    """Give up on a file being sent, and leave nothing behind."""
+    abort_upload(_partial_or_404(partial))
+    return {"aborted": partial}
 
 
 @router.get("/templates", response_model=list[schemas.TemplateOut])

@@ -1524,6 +1524,67 @@ remplissent le tunnel. Le code est volontairement séquentiel, et son commentair
 pourquoi (« saturer le lien et éparpiller les écritures ») : c'est juste sur un LAN et
 faux sur un tunnel distant.
 
+### L'upload part en morceaux, parce qu'une requête est plafonnée à 100 Mio
+
+Un rush partait en **une** requête, et ça ne peut pas marcher depuis l'extérieur.
+**Mesuré le 2026-08-26** sur la vraie chaîne publique (Cloudflare, la box, le NPM de vm2),
+en postant des corps croissants : **104 857 600 octets passent, un octet de plus revient en
+413 depuis le bord**, sur le `Content-Length`, en 70 ms, sans que l'origine voie quoi que ce
+soit. Donc 100 Mio pile, borne incluse, et non « 100 Mo » comme le disait la doc d'infra.
+
+Deux détails qui ont failli fausser la mesure. **Il y a deux plafonds** : celui du NPM vaut
+1 Mo par défaut, et c'est lui qui a refusé mes 99 Mo. Ce qui les rend distinguables est la
+**signature du 413**, qui dit `cloudflare` ou `nginx/<version>` : sans elle on croit mesurer
+l'un en mesurant l'autre. Et **aucun plan ni aucun transport ne règle ça** (Business 200 Mo,
+Enterprise 500 Mo, un tunnel Cloudflare garde le plafond du plan) : il faut découper.
+
+La forme retenue, quatre routes : `POST /upload/begin` réserve la destination et préalloue
+le fichier, `PUT /upload/{partial}/chunk?offset=` écrit un morceau, `POST .../finish` le
+nomme pour de vrai, `DELETE /upload/{partial}` abandonne. **64 Mio par morceau, trois en
+vol.**
+
+- **La concurrence est passée à l'intérieur d'un fichier**, alors que la boucle reste
+  séquentielle d'un fichier à l'autre. C'est le second bénéfice du découpage, et il vise le
+  vrai problème mesuré plus haut : à ~20 ms de RTT un flux TCP unique est borné par la
+  fenêtre, d'où les 9 Mo/s observés sur un lien qui vaut dix fois ça. Trois morceaux d'un
+  même rush remplissent le lien aussi bien que quatre rushes, et ils atterrissent dans **un**
+  fichier préalloué au lieu d'éparpiller les écritures.
+- **C'est le serveur qui décide de la complétude, pas le client**, parce qu'un morceau perdu
+  sur un tunnel qui tombe est précisément ce que le client ne sait pas. Chaque morceau dépose
+  un **fichier marqueur vide** `inbox/.uploads/<partial>/<offset>-<longueur>`, et `finish`
+  refuse en 409 en nommant le premier trou. Un rush de 4 Go renommé avec un trou dedans
+  n'échouerait qu'à la fusion ou à la stabilisation, loin de la cause.
+- **Un marqueur par fichier et non des lignes ajoutées à un seul** : les morceaux sont écrits
+  en parallèle, et l'atomicité de `O_APPEND` n'est pas garantie sur NFS, or c'est là que
+  l'inbox va (voir le plan de déploiement). Des noms distincts ne peuvent pas s'entrelacer,
+  et un morceau renvoyé réécrit le même nom, donc c'est idempotent.
+- 🔴 **`start_upload` ne peut pas réutiliser `unique_destination`**, et c'est un test qui l'a
+  trouvé : celui-ci regarde si la **destination** existe, or un fichier en cours de réception
+  n'existe pas encore sous son vrai nom. Deux `begin` du même nom renvoyaient donc le **même**
+  partiel, et deux uploads de 4 Go auraient écrit le même fichier. Il enjambe maintenant le
+  `.partial` aussi, et il crée le fichier en ouverture **exclusive** (`"xb"`) plutôt que de
+  vérifier puis créer, ce qui est une course que les deux appelants passent.
+- **Le garde-fou du scan reste par morceau**, comme il était par fichier. Un compteur tenu de
+  `begin` à `finish` fuirait si le client disparaissait, et **un compteur qui fuit fait taire
+  le scan planifié pour la vie du processus** ; les creux entre morceaux sont couverts par
+  `UPLOAD_SETTLE_S` (10 s), sans commune mesure avec eux. C'est le bug du 2026-08-20 avec une
+  fenêtre plus étroite, pas un bug neuf.
+- **Un seul réessai par morceau.** Sur un tunnel qui tombe, perdre 64 Mio ne doit pas coûter
+  le fichier entier, et le serveur prend deux fois la même plage comme une seule écriture.
+
+Vérifié de bout en bout : un vrai rush de **3,7 Go en 57 morceaux envoyés à l'envers, trois
+en parallèle**, réassemblé **identique octet pour octet** (397 Mo/s en local) ; puis dans le
+**vrai navigateur**, trois morceaux, un `finish`, fichier identique et ingéré. Plus le cas
+qui compte : morceau du milieu jamais envoyé, `finish` refusé en nommant l'offset, morceau
+envoyé, `finish` accepté.
+
+**Deux sondes fausses avant d'être justes**, pour mémoire. Mon attente côté navigateur
+cherchait le mot « uploaded » dans la page, or la barre de progression affiche « 0/1
+uploaded » : elle concluait au succès avant le premier morceau. Et mon `dd` de découpe
+utilisait `count=$((len/1048576+1))` avec `iflag=count_bytes`, donc **65 octets par
+morceau** au lieu de 64 Mio. Les deux fois, c'est le serveur qui a dit la vérité en refusant
+le `finish`.
+
 ### La barre latérale se tire, et les noms coupés se lisent
 
 320 px par défaut au lieu de 256, et une poignée de 4 px sur le bord droit, bridée entre

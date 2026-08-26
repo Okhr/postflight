@@ -375,6 +375,22 @@ class UploadOut(BaseSchema):
     size_bytes: int
 
 
+class UploadBeginOut(BaseSchema):
+    """Where the pieces of one file are to be sent."""
+
+    # The name to address the chunks to, and the name the file will land under. Both,
+    # because a collision is resolved once, at the start: the client cannot guess it.
+    partial: str
+    filename: str
+
+
+class UploadChunkOut(BaseSchema):
+    offset: int
+    received: int
+    # What one request may carry, so the client never has to hardcode the ceiling.
+    chunk_max: int
+
+
 class UploadCheckOut(BaseSchema):
     """Verdict of the pre-flight: is this file already known?"""
 
