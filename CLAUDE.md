@@ -1983,6 +1983,72 @@ démarrer) et une chaîne partirait sans guillemets. Et un défaut **appelable**
 (`created_at`) ne peut pas s'écrire en DDL : la colonne reste nulle sur les lignes
 antérieures, et c'est assumé.
 
+## Sauvegardes de la base : `VACUUM INTO`, et un restore qui attend
+
+Ajouté le 2026-08-26, demandé par florian : de quoi sauvegarder la base, la restaurer, et
+le faire tout seul toutes les X heures vers le partage réseau. Réglages seulement, pas
+d'écran (`PF_BACKUP_DIR`, vide = `<data>/backups`, donc le volume des vidéos ;
+`PF_BACKUP_INTERVAL_H`, 24, 0 coupe ; `PF_BACKUP_KEEP`, 7). Quatre routes,
+`GET`/`POST /backups`, `POST /backups/{nom}/restore`, `DELETE /backups/{nom}`.
+
+**Ce n'est pas une copie de fichier, et c'est tout le sujet.** Le `-wal` porte des
+transactions commitées que le fichier principal n'a pas encore : un `cp` d'une base
+vivante rend une base amputée de ses dernières écritures, **en silence**. `VACUUM INTO`
+écrit une copie cohérente depuis une transaction de lecture, et sort **un seul fichier
+sans annexes**, ce qui est précisément ce qu'on peut poser sur un partage sans en perdre
+la moitié. Trois choses mesurées avant de s'engager :
+
+- **le paramètre lié marche** (`VACUUM INTO ?`), donc aucun échappement de chemin à rater ;
+- un snapshot pris **pendant qu'une autre connexion tient une transaction d'écriture
+  ouverte** réussit et **exclut la ligne non commitée**. Il n'a donc jamais à attendre que
+  la chaîne soit au repos ;
+- ça passe par `engine.connect()` sans souci de transaction implicite, vérifié contre la
+  variante `AUTOCOMMIT` : les deux marchent, donc on garde la simple.
+
+Chaque snapshot passe un `integrity_check` **avant d'être nommé**, et s'écrit en
+`.partial` puis se renomme, comme tout le reste du dépôt : une sauvegarde non vérifiée
+est une rumeur.
+
+**Un restore est posé, pas appliqué.** Remplacer le fichier sous un moteur ouvert
+entrerait en course avec la requête en cours de transaction. Le snapshot choisi est donc
+copié en `db/restore.pending` et échangé par `db._apply_pending_restore` au démarrage
+suivant, dans la **même fenêtre** que `_adopt_legacy_db` : avant que quoi que ce soit
+n'ait ouvert quoi que ce soit.
+
+**Le seul endroit où un restore peut corrompre au lieu de restaurer** est le `-wal`
+sortant laissé derrière : SQLite le rejouerait dans un fichier dont il n'a jamais fait
+partie. Les trois fichiers de l'ancienne base partent donc ensemble, et un test ne passe
+que si c'est le cas. Rien n'est mis de côté à la main, parce que `stage_restore` a déjà
+pris un snapshot complet de l'état remplacé : un demi-fichier sans son WAL serait un
+filet de sécurité **pire que rien**, puisqu'il en aurait l'air.
+
+**Deux ordres qui ne sont pas décoratifs.** La copie du snapshot choisi se fait **avant**
+le snapshot de sécurité, parce que celui-ci déclenche une passe de rétention qui, sur un
+répertoire plein, peut supprimer le fichier depuis lequel on restaure. Et la planification
+se juge sur **le snapshot le plus récent du disque**, pas sur le démarrage du processus :
+un conteneur qui redémarre deux fois par heure déroulerait sinon une semaine de rétention
+en une après-midi. La boucle tique au plus toutes les heures et `_backup_once` décide.
+
+**Un bug que seul un test a attrapé** : `make()` renvoyait `listing()[0]` au lieu du
+fichier qu'il venait d'écrire, et le tri par nom place un snapshot taggé **avant** un non
+taggé de la même seconde (`-` vaut 0x2D, `.` vaut 0x2E). Donc un restore nommait le
+mauvais fichier de sécurité. Le tri porte maintenant sur l'horodatage, le nom ne servant
+que d'égalité.
+
+La rétention ne regarde que les noms que ce module écrit (`NAME`), ce qui est aussi ce qui
+protège du traversal : un nom venu d'une URL est **refusé s'il ne ressemble pas à un
+snapshot**, plutôt qu'assaini. Et un snapshot d'un schéma plus ancien se restaure très
+bien, l'auto-migration le rattrape à la remontée.
+
+Vérifié de bout en bout sur la stack : snapshot, renommage d'un dossier, restore,
+`restart api`, `Database restored from a staged snapshot`, nom revenu, snapshot de
+sécurité contenant l'état remplacé, et les 4 clips / 2 rushes / 4 rendus / 2 grades
+intacts.
+
+**Ce qui n'est pas garanti et qui est assumé** : `restore` ne refuse pas de s'exécuter
+pendant qu'un job tourne. Les jobs en vol sont perdus, les workers s'en aperçoivent au
+battement suivant et s'arrêtent proprement.
+
 ## Conventions
 
 - Les marks de derush sont stockés en **numéros de frame**, jamais en ms : à
