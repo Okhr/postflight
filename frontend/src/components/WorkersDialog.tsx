@@ -151,8 +151,12 @@ function WorkerCard({ worker, jobs }: { worker: WorkerInfo; jobs: Job[] }) {
           {refused.map(([name, why]) => `${name} (${why.split("\n")[0].slice(0, 70)})`).join("; ")}
         </p>
       )}
+      {/* Plain text, not amber: a machine with no GPU is a fact about that machine,
+          not something wrong with it, and this dialog is where one comes to read what
+          each machine has. The warning-styled card that used to repeat this on the
+          import page is gone for the same reason. */}
       {[...(caps.notes ?? []), ...(worker.rates?.notes ?? [])].map((note) => (
-        <p key={note} className="mt-2 text-amber-400">
+        <p key={note} className="mt-2 text-muted-foreground">
           {note}
         </p>
       ))}
