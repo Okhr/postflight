@@ -2195,9 +2195,9 @@ motif entre crochets.
 
 ## Où vont les idées pas encore faites
 
-`IDEES.md` à la racine, en français comme ce fichier, la plus récente en haut. Une idée
-qui se fait en sort et vient ici : ce fichier porte des faits mesurés, l'autre des
-intentions. Créé le 2026-08-26.
+`ROADMAP.md` à la racine, **en anglais** comme le reste de ce qui se lit depuis le dépôt
+public, la plus récente en haut. Une idée qui se fait en sort et vient ici : ce fichier
+porte des faits mesurés, l'autre des intentions. Créé le 2026-08-26.
 
 ## Conventions
 
