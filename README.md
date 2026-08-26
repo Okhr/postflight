@@ -217,6 +217,45 @@ An NFS `hard` mount blocks indefinitely when the server goes away, so a NAS rebo
 freezes the dispatcher rather than erroring out of it. And under a hypervisor the VM's own
 disk usually sits on that same storage already, so local costs nothing and skips a layer.
 
+### Snapshots of the database
+
+The dispatcher snapshots its own database on a schedule, and can put one back. Nothing
+else needs backing up: the footage in `raw/` is only ever read, and everything under
+`merged/`, `proxies/`, `out/` and `graded/` is reproducible from it plus the database.
+
+```bash
+curl localhost:8080/api/backups                        # what exists, and the settings
+curl -X POST localhost:8080/api/backups                # take one now
+curl -X POST localhost:8080/api/backups/NAME/restore   # stage it
+docker compose restart api                             # and apply it
+curl -X DELETE localhost:8080/api/backups/NAME
+```
+
+Snapshots land in `PF_BACKUP_DIR`, which defaults to `<data>/backups`: point
+`PF_DATA_PATH` at a NAS share and they are covered by whatever already protects the
+footage. `PF_BACKUP_INTERVAL_H` (24 by default, 0 to turn the schedule off) and
+`PF_BACKUP_KEEP` (7) do the rest.
+
+Three things about it that are not obvious:
+
+**It is not a file copy.** SQLite's `-wal` holds committed transactions the main file
+does not have yet, so a `cp` of a live database can hand you one that is missing its
+most recent writes without saying so. A snapshot is `VACUUM INTO`, which writes a
+consistent copy from inside a read transaction, and comes out as one self-contained file
+with no sidecars. It also runs while the pipeline is busy: measured, a snapshot taken
+during an open write transaction succeeds and excludes the uncommitted row. Each one is
+checked with `integrity_check` before it is named, because an unverified backup is a
+rumour.
+
+**A restore waits for a restart, and says so.** Replacing the file under a running
+engine would race with whatever request is mid-transaction, so the chosen snapshot is
+staged next to the database and swapped in at the next start, before anything opens it.
+Jobs in flight are dropped, and workers notice within a heartbeat.
+
+**A restore snapshots what it replaces, first.** The response names that snapshot, so
+restoring the wrong thing is one more restore away from being undone. A snapshot from an
+older schema is fine too: the auto-migration runs over it on the way up.
+
 ## Configuration
 
 Everything is an environment variable with a `PF_` prefix, and `.env.example` documents
@@ -231,6 +270,9 @@ each one where it is defined. The ones that matter on day one:
 | `PF_WORKER_NAME` | `local` | a worker's identity, and it has to be stable |
 | `PF_WORKER_TOKEN` | empty | shared secret on the worker endpoints. Empty leaves them open, which is fine on a LAN and only there |
 | `PF_PURGE_PARTS_AFTER_MERGE` | `false` | delete the parts once they are joined. The join is lossless, the deletion is not undoable |
+| `PF_BACKUP_DIR` | `<data>/backups` | where database snapshots go |
+| `PF_BACKUP_INTERVAL_H` | `24` | hours between snapshots, 0 to turn the schedule off |
+| `PF_BACKUP_KEEP` | `7` | how many to keep |
 
 ## Render profiles
 

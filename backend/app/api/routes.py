@@ -48,6 +48,7 @@ from ..pipeline import (
     upload_started,
     unique_destination,
 )
+from ..services import backup
 from ..services import grading as grading_service
 from ..services import gyro as gyro_service
 from ..services import gyroflow as gyroflow_service
@@ -465,8 +466,72 @@ def get_status(session: Session = Depends(get_session)) -> schemas.StatusOut:
             "split_gap_tolerance_s": settings.split_gap_tolerance_s,
             "proxy_height": settings.proxy_height,
             "purge_parts_after_merge": settings.purge_parts_after_merge,
+            "backup_interval_h": settings.backup_interval_h,
         },
     )
+
+
+# --- Backups -----------------------------------------------------------------
+#
+# No screen for these, by design: they are settings and two verbs. What they cannot be
+# is a plain file copy, and `services/backup.py` says why.
+
+
+def _snapshot_out(snapshot: backup.Snapshot) -> schemas.SnapshotOut:
+    return schemas.SnapshotOut(
+        name=snapshot.name, size_bytes=snapshot.size_bytes, made_at=snapshot.made_at
+    )
+
+
+@router.get("/backups", response_model=schemas.BackupsOut)
+def list_backups() -> schemas.BackupsOut:
+    return schemas.BackupsOut(
+        dir=str(settings.backups_dir),
+        interval_h=settings.backup_interval_h,
+        keep=settings.backup_keep,
+        due=backup.due(settings.backup_interval_h),
+        snapshots=[_snapshot_out(s) for s in backup.listing()],
+    )
+
+
+@router.post("/backups", response_model=schemas.SnapshotOut, status_code=status.HTTP_201_CREATED)
+async def create_backup() -> schemas.SnapshotOut:
+    """Take one now. Does not wait for the pipeline to be idle: measured, a snapshot
+    taken while a write transaction is open succeeds and excludes the uncommitted row."""
+    try:
+        snapshot = await run_in_threadpool(backup.make)
+    except Exception as exc:  # a full disk, a read-only share, a failed integrity check
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+    return _snapshot_out(snapshot)
+
+
+@router.post("/backups/{name}/restore", response_model=schemas.RestoreOut)
+async def restore_backup(name: str) -> schemas.RestoreOut:
+    try:
+        safety = await run_in_threadpool(backup.stage_restore, name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no such snapshot: {name}") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return schemas.RestoreOut(
+        staged=name,
+        safety=_snapshot_out(safety),
+        detail=(
+            "Staged. Restart the API to apply it, and note that jobs in flight will be "
+            f"dropped. The database being replaced was snapshotted first, as {safety.name}."
+        ),
+    )
+
+
+@router.delete("/backups/{name}")
+def delete_backup(name: str) -> dict[str, str]:
+    try:
+        backup.resolve(name).unlink()
+    except FileNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no such snapshot: {name}") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return {"deleted": name}
 
 
 @router.post("/scan", response_model=schemas.ScanOut)

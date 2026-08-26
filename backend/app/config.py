@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     # dark, median and bright moments without decoding everything.
     grade_analysis_fps: float = 2.0
 
+    # --- Backups -------------------------------------------------------------
+    # Where snapshots of the database go. Empty means `data_dir / "backups"`, which
+    # puts them on the same volume as the footage: point that at a NAS share and the
+    # snapshots are covered by whatever already protects the footage.
+    backup_dir: str = ""
+    # Hours between automatic snapshots. 0 turns the schedule off; a snapshot can
+    # still be taken on demand. Measured against the newest snapshot on disk rather
+    # than against process start, so restarting does not churn the retention.
+    backup_interval_h: float = 24.0
+    # How many to keep. The oldest beyond this are deleted, and only files matching
+    # the snapshot naming are ever considered.
+    backup_keep: int = 7
+
     # --- Tools ---------------------------------------------------------------
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"
@@ -135,6 +148,10 @@ class Settings(BaseSettings):
         return self.data_dir / "db" / "postflight.sqlite3"
 
     @property
+    def backups_dir(self) -> Path:
+        return Path(self.backup_dir) if self.backup_dir else self.data_dir / "backups"
+
+    @property
     def extensions(self) -> tuple[str, ...]:
         return tuple(
             e.strip().lower() if e.strip().startswith(".") else "." + e.strip().lower()
@@ -154,6 +171,7 @@ class Settings(BaseSettings):
             self.templates_dir,
             self.tmp_dir,
             self.db_path.parent,
+            self.backups_dir,
         ]
 
     def ensure_dirs(self) -> None:

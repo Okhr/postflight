@@ -18,6 +18,7 @@ from .config import settings
 from .db import init_db, session_scope
 from .paths import ensure_volume_id
 from .pipeline import ingest_and_group
+from .services import backup
 from .services import gyroflow as gyroflow_service
 
 log = logging.getLogger(__name__)
@@ -31,6 +32,18 @@ def _scan_once() -> None:
 def _reap_once() -> None:
     with session_scope() as session:
         dispatch.reap_expired(session)
+
+
+def _backup_once() -> None:
+    """Snapshot the database if the schedule owes one.
+
+    The loop ticks more often than the interval and this decides, so the schedule is
+    measured against the newest snapshot on disk rather than against process start: a
+    container restarted twice an hour must not take a snapshot each time and roll a
+    week of retention over in an afternoon.
+    """
+    if backup.due(settings.backup_interval_h):
+        backup.make()
 
 
 async def _every(interval_s: float, work, label: str) -> None:
@@ -71,6 +84,11 @@ async def lifespan(_app: FastAPI):
         asyncio.create_task(_every(settings.scan_interval_s, _scan_once, "inbox scan")),
         asyncio.create_task(_every(dispatch.REAP_INTERVAL_S, _reap_once, "lease reaping")),
     ]
+    if settings.backup_interval_h > 0:
+        # Ticks hourly at most, so the interval is honoured within the hour whatever the
+        # uptime; `_backup_once` is what decides whether one is actually owed.
+        tick = min(settings.backup_interval_h, 1.0) * 3600
+        tasks.append(asyncio.create_task(_every(tick, _backup_once, "database snapshot")))
     log.info(
         "API ready, data_dir=%s (volume %s, scanning every %.0fs)",
         settings.data_dir, volume[:8] or "unmarked", settings.scan_interval_s,

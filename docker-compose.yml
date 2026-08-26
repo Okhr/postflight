@@ -46,6 +46,11 @@ services:
       PF_PURGE_PARTS_AFTER_MERGE: ${PF_PURGE_PARTS_AFTER_MERGE:-false}
       PF_PROXY_HEIGHT: ${PF_PROXY_HEIGHT:-960}
       PF_PROXY_CRF: ${PF_PROXY_CRF:-26}
+      # Snapshots of the database, taken by the process that owns it. Empty directory
+      # means <data>/backups, which rides along with whatever protects the footage.
+      PF_BACKUP_DIR: ${PF_BACKUP_DIR:-}
+      PF_BACKUP_INTERVAL_H: ${PF_BACKUP_INTERVAL_H:-24}
+      PF_BACKUP_KEEP: ${PF_BACKUP_KEEP:-7}
       # Shared secret on the worker endpoints. Empty leaves them open, which is fine
       # while nothing outside this network can reach the API.
       PF_WORKER_TOKEN: ${PF_WORKER_TOKEN:-}

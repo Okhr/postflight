@@ -408,6 +408,36 @@ class WorkerOut(BaseSchema):
     running: int
 
 
+class SnapshotOut(BaseSchema):
+    name: str
+    size_bytes: int
+    made_at: datetime
+
+
+class BackupsOut(BaseSchema):
+    """The snapshots on disk and the settings that govern them.
+
+    The settings ride along because there is no screen for any of this: "is the
+    schedule on, and where do these land" has to be answerable in one request.
+    """
+
+    dir: str
+    interval_h: float
+    keep: int
+    due: bool
+    snapshots: list[SnapshotOut]
+
+
+class RestoreOut(BaseSchema):
+    """A restore is staged, not applied. Replacing the file under a running engine
+    would race with whatever request is mid-transaction, so it waits for a restart,
+    and `detail` is what says so."""
+
+    staged: str
+    safety: SnapshotOut
+    detail: str
+
+
 class StatusOut(BaseSchema):
     # No `capabilities` block: the API does not decode, warp or merge anything, so its
     # own hardware says nothing useful. What matters is each worker's, measured on the

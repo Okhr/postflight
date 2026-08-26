@@ -10,6 +10,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine
 
 from .config import settings
+from .services import backup
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ def get_engine() -> Engine:
     if _engine is None:
         settings.ensure_dirs()
         _adopt_legacy_db()
+        _apply_pending_restore()
         _engine = create_engine(
             f"sqlite:///{settings.db_path}",
             connect_args={"timeout": 30.0, "check_same_thread": False},
@@ -51,6 +53,29 @@ def get_engine() -> Engine:
             cur.close()
 
     return _engine
+
+
+def _apply_pending_restore() -> None:
+    """Put a staged snapshot in place of the database, before anything opens it.
+
+    The `-wal` and `-shm` of the outgoing database have to go, and that is the whole
+    reason this is not a two-line copy: SQLite would replay a stale WAL into the
+    restored file, which is corruption rather than a restore. They belong to the file
+    being replaced and mean nothing next to its successor.
+
+    Nothing is kept aside here. `backup.stage_restore` takes a snapshot of the current
+    state before staging, so the copy that matters already exists, whole, in the
+    backups directory. A half file with no WAL beside it would be a worse safety net
+    than none, because it would look like one.
+    """
+    pending = backup.pending_path()
+    if not pending.is_file():
+        return
+    db = settings.db_path
+    for suffix in ("", "-wal", "-shm"):
+        db.with_name(db.name + suffix).unlink(missing_ok=True)
+    pending.rename(db)
+    log.warning("Database restored from a staged snapshot")
 
 
 def _adopt_legacy_db() -> None:
