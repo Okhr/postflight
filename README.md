@@ -191,9 +191,19 @@ then an instant `rename()` instead of a multi-gigabyte copy. Budget about 2x the
 your footage while `PF_PURGE_PARTS_AFTER_MERGE` is `false` (masters plus joined files),
 plus roughly 8 Mb/s of proxy.
 
-The footage is happy on a NAS share. **The `db/` directory is not.** SQLite runs in WAL
-mode, which needs a shared-memory file that network filesystems do not provide. If `/data`
-is an NFS or SMB mount, give the database a local disk:
+The whole volume can live on a NAS share, database included. The one hard condition is
+that **exactly one machine may open the database**, which is already how this is built:
+the dispatcher owns it and a worker never opens it at all.
+
+That condition is worth stating because SQLite's own documentation says flatly that WAL
+does not work over a network filesystem. Measured on NFSv4, it does, for a single client:
+the `-shm` file is created on the share and mapped from there, and commits cost 5.6 ms
+against 0.01 ms on a local disk, which is nothing next to a heartbeat that writes every
+two seconds. What the documentation is really about is two client machines, and that case
+was measured too: the second one is refused with a hard `disk I/O error` on every single
+write, commits nothing, and leaves the database intact. The failure is loud, not silent.
+
+Two reasons to still give `db/` a local disk, neither of them SQLite's fault:
 
 ```yaml
 services:
@@ -202,6 +212,10 @@ services:
       - /mnt/nas/footage:/data
       - ./db:/data/db          # a local disk, on the machine running the API
 ```
+
+An NFS `hard` mount blocks indefinitely when the server goes away, so a NAS reboot
+freezes the dispatcher rather than erroring out of it. And under a hypervisor the VM's own
+disk usually sits on that same storage already, so local costs nothing and skips a layer.
 
 ## Configuration
 

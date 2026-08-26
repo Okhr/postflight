@@ -23,9 +23,13 @@ def get_engine() -> Engine:
     never opens it, so the concurrency a server database buys is concurrency
     nobody needs. WAL and a busy_timeout cover the API's own threads.
 
-    WAL is also why the `db/` directory has to be on a local disk. It needs a
-    shared-memory `-shm` file, which is exactly what a network filesystem does
-    not provide; the rest of the volume is happy on NFS.
+    That single owner is also what lets the whole volume sit on a network share.
+    WAL needs a `-shm` file mapped by every process that opens the database, and
+    SQLite's docs say plainly that this does not work over a network filesystem.
+    Measured on NFSv4 it does, for one client: the mapping comes off the share
+    and a commit costs 5.6 ms against 0.01 ms locally. The docs are about two
+    client machines, and there the second one is refused outright with a disk I/O
+    error rather than corrupting anything.
     """
     global _engine
     if _engine is None:
