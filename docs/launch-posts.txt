@@ -1,0 +1,162 @@
+PostFlight launch posts
+Drafted 2026-08-26. Five subreddits, one post each, written for that sub's audience.
+
+The two communities barely overlap, so each post explains the other half in one plain
+sentence and speaks fluently only in its own. Do not cross-post the same body.
+
+Before posting anywhere:
+  - check the sub's required flair (usually "Release" or "Software" on r/selfhosted);
+    a missing flair is the first cause of removal
+  - one sub per day, not all in one hour
+  - 13:00-16:00 UTC on a weekday is when the tech subs are busiest
+  - attach docs/screenshots/color.png on the FPV-side posts
+  - stay in the comments for the first hour
+  - say up front that you built it
+  - have this ready, because you will be asked: the split detection and the gyro chart
+    are DJI-specific. The rest would work on anything Gyroflow can read, but nobody
+    has tested that.
+
+
+================================================================================
+r/fpv
+================================================================================
+
+TITLE
+Every flight ends the same way for me: 8 GB on the card and an hour of faffing before
+anything is watchable. So I made that part go away.
+
+BODY
+Pack for a session, fly four packs, get home with a card full of files split in half by
+the goggles, none of which you can tell apart. Then you're joining them, hunting for the
+twenty seconds that were actually good, running Gyroflow, opening an editor just to lift
+the shadows.
+
+I built a thing that does all of it in one place. You drop the files in, it works out
+which ones are the same flight and joins them back together, and gives you a scrubbable
+preview with the gyro trace drawn under the timeline, so the calm passes and the sketchy
+moments are visible before you watch anything. Mark the bits you want, pick your Gyroflow
+profile, and only those bits get rendered. Then grade them, right there.
+
+Your originals are never touched or re-encoded, and the gyro data survives everything,
+which is the whole reason it exists: most of the obvious ways of joining or trimming a DJI
+file quietly destroy it and you only find out when Gyroflow says there's nothing to
+stabilize.
+
+It's free and open source, it runs on your own machine, and nothing gets uploaded
+anywhere.
+
+https://github.com/Okhr/postflight
+
+
+================================================================================
+r/dji
+================================================================================
+
+TITLE
+Free tool for O3/O4 goggle footage: joins the split recordings, finds the good bits,
+stabilizes and grades them
+
+BODY
+The goggles cut a long flight into several files and there's no easy way to put them back
+together without losing the gyro data Gyroflow needs. That's the thing this fixes.
+
+Drop your recordings in, it recognises which ones belong to the same flight and joins them
+properly. You get a preview you can scrub frame by frame to mark the parts worth keeping,
+those get stabilized, and then there's a colour step so you don't have to open an editor
+for a single clip. Old DJI_0327.MP4 naming works too, not just the timestamped kind.
+
+Originals stay untouched. Free, open source, runs on your own computer, no account and no
+upload.
+
+https://github.com/Okhr/postflight
+
+
+================================================================================
+r/fpvcinematic
+================================================================================
+
+TITLE
+Put a grading step directly after Gyroflow so I stop opening Resolve for one-shot clips
+
+BODY
+Gyroflow does nothing in colour, so every stabilized clip meant a round trip through an
+editor just to lift the shadows and warm it up. Built that step into the pipeline instead.
+
+After the render: six sliders plus black and white points, a preview that moves with the
+slider rather than after it, RGB histogram, waveform, and a clipping overlay that shows you
+which pixels are blown and where in the frame. Save a look, paint it onto the rest of the
+session, render the batch.
+
+The rest of it is the unglamorous part of a session: joining the split recordings,
+scrubbing with the gyro trace to find what's actually usable, marking those, sending only
+them to Gyroflow.
+
+Free, open source, runs locally.
+
+https://github.com/Okhr/postflight
+
+
+================================================================================
+r/selfhosted
+================================================================================
+
+TITLE
+PostFlight: self-hosted pipeline for drone footage, from card dump to finished clip
+
+BODY
+Context for anyone who doesn't fly: FPV drone footage comes off the goggles as several 4 GB
+chunks of one flight, and it needs a stabilization pass (Gyroflow) before it's watchable.
+Doing that by hand is an hour per session. This turns it into a web app.
+
+Two images out of one Dockerfile. The dispatcher serves the UI, owns the database and hands
+work out, so it carries no GPU stack at all: 656 MB, happy on a small VM. Workers carry the
+heavy tooling and dial out to the dispatcher with one env var, so there's no inbound port on
+a worker and no discovery mechanism. Add a machine, it registers itself and starts pulling
+jobs; turn it off mid-job and the lease expires and the job requeues.
+
+SQLite, one bind mount, no account system, no telemetry, nothing phones home. Apache 2.0.
+Runs fine with no GPU at all; AMD, Intel and NVIDIA each get a compose override, and the app
+probes what actually works at startup instead of trusting the driver being installed.
+
+https://github.com/Okhr/postflight
+
+
+================================================================================
+r/homelab
+================================================================================
+
+TITLE
+My RTX 3090 renders video at exactly the same speed as a laptop iGPU. Here's what I did
+about it.
+
+BODY
+I wrote a small distributed pipeline to process drone footage (big files in, GPU-assisted
+stabilization pass, smaller files out), and the scheduling ended up more interesting than
+the video.
+
+Rather than let me pick where jobs run, every worker benchmarks its four real pipeline steps
+at startup on half a second of footage baked into the image, 4.4 s total, and every finished
+job then corrects those numbers. The dispatcher routes on `magnitude / rate + transfer /
+link`, so a 4 GB merge stays on the box that can see the volume while a render goes wherever
+the file already is. Whether a worker shares the dispatcher's storage isn't configured
+either: the API stamps its data dir with a uuid, the worker sends back the one it can read,
+and equality is the whole test. That one matters because the failure mode of getting it
+wrong is silent.
+
+Which is how I found out the render is CPU bound, not GPU bound. The warp really does run on
+OpenCL on the 3090, and the container still sits at 676% of 800% CPU while the GPU idles at
+13%. Same throughput as a Radeon 890M iGPU, and the difference between the two machines is
+the CPU next to it. "Send the heavy jobs to the box with the big GPU" was exactly the wrong
+instinct, and nothing short of measuring real throughput would have told me.
+
+Docker, SQLite, no account system, Apache 2.0.
+
+https://github.com/Okhr/postflight
+
+
+================================================================================
+Not Reddit, and probably worth more than half of that list
+================================================================================
+
+The Gyroflow Discord and the Gyroflow GitHub Discussions. Those are the people who have
+exactly this workflow, and this is built on their tool.
