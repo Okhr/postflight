@@ -19,6 +19,7 @@ from sqlmodel import Session, select
 from app import pipeline
 from app.config import settings
 from app.models import Clip, Cut, Render, RenderState, Sequence, SequenceState
+from app.framing import duration_to_frames
 from app.services.naming import parse_filename
 from app.services.probe import ProbeResult
 
@@ -92,9 +93,9 @@ def test_the_rebuilt_rush_is_queued_to_merge_again(session: Session, monkeypatch
     assert sequences(session)[0].state == SequenceState.NEW
 
 
-def test_a_rush_carrying_cuts_is_left_alone(session: Session, monkeypatch):
-    """The frame numbers of a cut only mean something against the merged file, so
-    rebuilding would move them under it."""
+def test_a_rush_carrying_cuts_takes_the_late_part_too(session: Session, monkeypatch):
+    """The guard used to be "leave it alone", which meant a derushed rush could never
+    be repaired. Now the marks are adapted instead."""
     _ingest(session, monkeypatch, FIRST)
     first = sequences(session)[0]
     _merge_it(session, first)
@@ -104,20 +105,47 @@ def test_a_rush_carrying_cuts_is_left_alone(session: Session, monkeypatch):
     _ingest(session, monkeypatch, SECOND)
 
     rushes = sequences(session)
-    assert len(rushes) == 2, "the late part must form its own rush instead"
-    assert rushes[0].part_count == 1
+    assert len(rushes) == 1 and rushes[0].part_count == 2
+    cuts = session.exec(select(Cut).where(Cut.sequence_id == rushes[0].id)).all()
+    assert len(cuts) == 1, "the cut followed its rush instead of dying with the row"
+    # Appended at the end, so the frames already there keep their numbers.
+    assert (cuts[0].start_frame, cuts[0].end_frame) == (100, 200)
 
 
-def test_a_rush_carrying_a_render_is_left_alone(session: Session, monkeypatch):
+def test_a_part_landing_in_front_shifts_the_marks(session: Session, monkeypatch):
+    """The case that makes the rule worth having: everything already there moves back
+    by the length of what was inserted, and a mark is a frame number."""
+    _ingest(session, monkeypatch, SECOND)
+    second = sequences(session)[0]
+    _merge_it(session, second)
+    session.add(Cut(sequence_id=second.id, label="dive", start_frame=100, end_frame=200))
+    session.commit()
+
+    _ingest(session, monkeypatch, FIRST)  # the part that comes before it
+
+    rushes = sequences(session)
+    assert len(rushes) == 1 and rushes[0].part_count == 2
+    frames_ahead = duration_to_frames(DURATION_MS, 60000, 1001)
+    cuts = session.exec(select(Cut).where(Cut.sequence_id == rushes[0].id)).all()
+    assert (cuts[0].start_frame, cuts[0].end_frame) == (100 + frames_ahead, 200 + frames_ahead)
+
+
+def test_a_rush_keeps_its_id_when_it_is_reopened(session: Session, monkeypatch):
+    """What everything hanging off it depends on: a cut, a render, a URL somebody
+    left open."""
     _ingest(session, monkeypatch, FIRST)
     first = sequences(session)[0]
+    before = first.id
     _merge_it(session, first)
     session.add(Render(sequence_id=first.id, template="h_1080", state=RenderState.DONE))
     session.commit()
 
     _ingest(session, monkeypatch, SECOND)
 
-    assert len(sequences(session)) == 2
+    rushes = sequences(session)
+    assert [s.id for s in rushes] == [before]
+    renders = session.exec(select(Render).where(Render.sequence_id == before)).all()
+    assert len(renders) == 1, "the render survived, and still points at the same footage"
 
 
 def test_an_unrelated_rush_is_not_reopened(session: Session, monkeypatch):

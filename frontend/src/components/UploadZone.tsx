@@ -1,18 +1,38 @@
 import { useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, CircleAlert, Loader2, SkipForward, Upload, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { api } from "@/lib/api";
+import { usePersistentState } from "@/lib/persist";
 import { formatBytes } from "@/lib/format";
 import { ACCEPTED, useUpload } from "@/lib/upload";
 import { cn } from "@/lib/utils";
 
 /** The drop target and the list of what is moving. The work is in `lib/upload`. */
+const GLOBAL = "global";
+
 export function UploadZone() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const { items, busy, moved, total, send, cancel, clear } = useUpload();
+  const { data: folders } = useQuery({ queryKey: ["folders"], queryFn: api.folders });
+  // Remembered, because a session of dropping rushes files them all in the same
+  // place: asking again for the second batch would be asking twice.
+  // "global" rather than "": Radix refuses an empty string as an item value, and an
+  // empty value renders as a blank trigger, which is what it did.
+  const [destination, setDestination] = usePersistentState<string>("import.folder", GLOBAL);
+  const folderId = destination === GLOBAL ? null : Number(destination);
+  const drop = (files: File[]) => send(files, folderId);
 
   const moving = items.filter((it) => it.status !== "skipped");
   const skippedCount = items.length - moving.length;
@@ -22,6 +42,25 @@ export function UploadZone() {
         <CardTitle className="text-base">Drop rushes</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">File into</span>
+          <Select value={destination} onValueChange={setDestination}>
+            <SelectTrigger className="h-8 w-56">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {/* Global is not a row in the database, it is folder_id = null, so
+                  "nowhere" is a real answer and it stays the default. */}
+              <SelectItem value={GLOBAL}>Global</SelectItem>
+              {(folders ?? []).map((folder) => (
+                <SelectItem key={folder.id} value={String(folder.id)}>
+                  {folder.parent_id != null ? "\u00a0\u00a0" : ""}
+                  {folder.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
         <div
           role="button"
           tabIndex={0}
@@ -37,7 +76,7 @@ export function UploadZone() {
           onDrop={(event) => {
             event.preventDefault();
             setDragging(false);
-            send(Array.from(event.dataTransfer.files));
+            drop(Array.from(event.dataTransfer.files));
           }}
           className={cn(
             "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-6 py-10 text-center transition-colors",
@@ -58,7 +97,7 @@ export function UploadZone() {
             accept={ACCEPTED.join(",")}
             className="hidden"
             onChange={(event) => {
-              send(Array.from(event.target.files ?? []));
+              drop(Array.from(event.target.files ?? []));
               event.target.value = "";
             }}
           />

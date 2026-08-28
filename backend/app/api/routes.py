@@ -50,6 +50,7 @@ from ..pipeline import (
     partial_for,
     partial_path,
     record_chunk,
+    remember_folder,
     start_upload,
     upload_finished,
     upload_started,
@@ -633,6 +634,7 @@ def _partial_or_404(partial: str) -> Path:
 def upload_begin(
     filename: str = Query(..., description="Name of the file about to be sent"),
     size: int = Query(..., ge=1, description="Its total size in bytes"),
+    folder_id: int | None = Query(None, description="Drawer the rush should land in"),
 ) -> schemas.UploadBeginOut:
     """Reserve a destination for a file that arrives in pieces.
 
@@ -643,6 +645,9 @@ def upload_begin(
     20 ms of RTT and several chunks in flight are not.
     """
     partial = _open_upload(filename, size)
+    # Keyed by the name the file will actually land under, which `_open_upload` has
+    # just resolved: a collision would otherwise file the wrong rush.
+    remember_folder(partial.name[: -len(".partial")], folder_id)
     return schemas.UploadBeginOut(
         partial=partial.name,
         filename=partial.name[: -len(".partial")],

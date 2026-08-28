@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Pencil, Play, RotateCcw, Scissors, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+
+import { usePersistentState } from "@/lib/persist";
 
 import { RenameDialog } from "@/components/RenameDialog";
 import { UploadZone } from "@/components/UploadZone";
@@ -26,7 +28,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api, type Job, type Sequence } from "@/lib/api";
-import { etaLabel, formatBytes, formatDateTime, formatDuration } from "@/lib/format";
+import {
+  etaLabel,
+  formatBytes,
+  formatDateTime,
+  formatDuration,
+} from "@/lib/format";
 import { useLiveJobs } from "@/lib/live";
 import { cn } from "@/lib/utils";
 
@@ -59,14 +66,59 @@ function StepCell({
             {Math.round(job.progress * 100)}%
           </span>
         </div>
-        {eta && <p className="text-center text-xs text-muted-foreground">{eta}</p>}
+        {eta && (
+          <p className="text-center text-xs text-muted-foreground">{eta}</p>
+        )}
       </div>
     );
   }
   if (done) return <Check className="mx-auto h-4 w-4 text-emerald-400" />;
   if (failed) return <span className="text-sm text-red-400">failed</span>;
-  if (job?.state === "queued") return <span className="text-sm text-muted-foreground">queued</span>;
+  if (job?.state === "queued")
+    return <span className="text-sm text-muted-foreground">queued</span>;
   return <span className="text-sm text-muted-foreground">-</span>;
+}
+type SortKey = "filmed" | "added" | "length" | "size";
+
+const SORTS: { key: SortKey; label: string }[] = [
+  { key: "filmed", label: "Filmed" },
+  { key: "added", label: "Added" },
+  { key: "length", label: "Length" },
+  { key: "size", label: "Size" },
+];
+
+/** Newest, longest and biggest first: what one looks for is what stands out. */
+function sortRushes(list: Sequence[], by: SortKey): Sequence[] {
+  const time = (value: string | null | undefined) =>
+    value ? Date.parse(value) : 0;
+  const of: Record<SortKey, (s: Sequence) => number> = {
+    filmed: (s) => time(s.recorded_at),
+    added: (s) => time(s.created_at),
+    length: (s) => s.duration_ms,
+    size: (s) => s.size_bytes,
+  };
+  return [...list].sort(
+    (a, b) => of[by](b) - of[by](a) || a.label.localeCompare(b.label),
+  );
+}
+
+/** The day a rush belongs to, or null when this sort has no days in it. */
+function dayOf(sequence: Sequence, by: SortKey): string | null {
+  const value =
+    by === "filmed"
+      ? sequence.recorded_at
+      : by === "added"
+        ? sequence.created_at
+        : null;
+  if (!value) return null;
+  // fr-FR like `format.ts`, not the viewer's locale: the rest of the app already
+  // renders its dates that way, and one page speaking two conventions reads as a bug.
+  return new Date(value).toLocaleDateString("fr-FR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
 }
 
 export function Import() {
@@ -87,7 +139,14 @@ export function Import() {
   // which is all a row needs to show: progress, queued, or nothing.
   const jobs = useLiveJobs();
 
-  const rows = sequences ?? [];
+  const [sortBy, setSortBy] = usePersistentState<SortKey>(
+    "import.sort",
+    "filmed",
+  );
+  const rows = useMemo(
+    () => sortRushes(sequences ?? [], sortBy),
+    [sequences, sortBy],
+  );
   const pending = rows.filter(isPending);
 
   const steps = new Map<number, { merge?: Job; proxy?: Job }>();
@@ -109,7 +168,8 @@ export function Import() {
       (job) => job?.state === "queued" || job?.state === "running",
     );
   });
-  const isStuck = (sequence: Sequence) => stuck.some((s) => s.id === sequence.id);
+  const isStuck = (sequence: Sequence) =>
+    stuck.some((s) => s.id === sequence.id);
 
   const merge = useMutation({
     mutationFn: api.retrySequence,
@@ -150,13 +210,32 @@ export function Import() {
               <CardTitle className="text-base">Rushes</CardTitle>
             </div>
             <div className="flex items-center gap-2">
+              <div className="flex items-center rounded-md border border-input">
+                {SORTS.map(({ key, label }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setSortBy(key)}
+                    className={cn(
+                      "px-2.5 py-1 text-sm first:rounded-l-md last:rounded-r-md",
+                      sortBy === key
+                        ? "bg-secondary text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
               {stuck.length > 0 && (
                 <Button
                   size="sm"
                   variant="outline"
                   title="Start the missing step on every unfinished rush"
                   disabled={merge.isPending}
-                  onClick={() => stuck.forEach((sequence) => merge.mutate(sequence.id))}
+                  onClick={() =>
+                    stuck.forEach((sequence) => merge.mutate(sequence.id))
+                  }
                 >
                   <Play className="h-4 w-4" />
                   Resume {stuck.length} stalled
@@ -170,8 +249,8 @@ export function Import() {
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : rows.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Nothing imported yet. Drop files above, or copy them into <code>inbox/</code> and
-              hit Scan.
+              Nothing imported yet. Drop files above, or copy them into{" "}
+              <code>inbox/</code> and hit Scan.
             </p>
           ) : (
             <Table>
@@ -187,125 +266,161 @@ export function Import() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.map((sequence) => {
+                {rows.map((sequence, index) => {
                   const step = steps.get(sequence.id) ?? {};
+                  // A separator whenever the day changes, and only for the sorts that
+                  // have days in them: by length or by size, a date heading would be
+                  // a heading over nothing.
+                  const day = dayOf(sequence, sortBy);
+                  const newDay =
+                    day !== null &&
+                    (index === 0 || day !== dayOf(rows[index - 1], sortBy));
                   const merged = sequence.merged_name !== null;
                   const failed = sequence.state === "failed";
                   const ready = sequence.state === "ready";
                   return (
-                    <TableRow
-                      key={sequence.id}
-                      // A ready rush is there to be derushed, so the row carries it.
-                      onClick={ready ? () => navigate(`/derush/${sequence.id}`) : undefined}
-                      title={ready ? "Open in derush" : undefined}
-                      className={cn(ready && "cursor-pointer")}
-                    >
-                      {/* The name first, the files it was made of under it. A rush is
+                    <Fragment key={sequence.id}>
+                      {newDay && (
+                        <TableRow className="border-0 hover:bg-transparent">
+                          <TableCell
+                            colSpan={7}
+                            className="pb-1 pt-5 text-sm font-medium text-muted-foreground"
+                          >
+                            {day}
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      <TableRow
+                        // A ready rush is there to be derushed, so the row carries it.
+                        onClick={
+                          ready
+                            ? () => navigate(`/derush/${sequence.id}`)
+                            : undefined
+                        }
+                        title={ready ? "Open in derush" : undefined}
+                        className={cn(ready && "cursor-pointer")}
+                      >
+                        {/* The name first, the files it was made of under it. A rush is
                           one thing whatever it was cut into, and until someone renames
                           it, its name is the first part's. */}
-                      <TableCell className="max-w-[24rem]">
-                        <p className="truncate text-sm font-medium" title={sequence.label}>
-                          {sequence.label}
-                        </p>
-                        <ul className="space-y-0.5">
-                          {sequence.part_names.map((name) => (
-                            <li
-                              key={name}
-                              className="truncate font-mono text-xs text-muted-foreground"
-                              title={name}
-                            >
-                              {name}
-                            </li>
-                          ))}
-                        </ul>
-                        <p className="mt-0.5 text-sm text-muted-foreground">
-                          {sequence.width}×{sequence.height} · {sequence.fps.toFixed(2)} fps
-                          {!sequence.has_gyro && (
-                            <span className="text-red-400"> · no gyro data</span>
-                          )}
-                        </p>
-                        {sequence.error && (
-                          <p className="mt-1 line-clamp-2 text-sm text-red-400">{sequence.error}</p>
-                        )}
-                      </TableCell>
-
-                      <TableCell className="tnum whitespace-nowrap text-center text-sm">
-                        {formatDateTime(sequence.recorded_at)}
-                      </TableCell>
-                      <TableCell className="tnum text-center text-sm">
-                        {formatDuration(sequence.duration_ms)}
-                      </TableCell>
-                      <TableCell className="tnum text-center text-sm">
-                        {formatBytes(sequence.size_bytes)}
-                      </TableCell>
-
-                      <TableCell className="text-center">
-                        <StepCell done={merged} job={step.merge} failed={failed && !merged} />
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <StepCell
-                          done={sequence.has_proxy}
-                          job={step.proxy}
-                          failed={failed && merged}
-                        />
-                      </TableCell>
-
-                      <TableCell onClick={(event) => event.stopPropagation()}>
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            title="Rename this rush"
-                            onClick={() => setRenaming(sequence)}
+                        <TableCell className="max-w-[24rem]">
+                          <p
+                            className="truncate text-sm font-medium"
+                            title={sequence.label}
                           >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          {ready && (
+                            {sequence.label}
+                          </p>
+                          <ul className="space-y-0.5">
+                            {sequence.part_names.map((name) => (
+                              <li
+                                key={name}
+                                className="truncate font-mono text-xs text-muted-foreground"
+                                title={name}
+                              >
+                                {name}
+                              </li>
+                            ))}
+                          </ul>
+                          <p className="mt-0.5 text-sm text-muted-foreground">
+                            {sequence.width}×{sequence.height} ·{" "}
+                            {sequence.fps.toFixed(2)} fps
+                            {!sequence.has_gyro && (
+                              <span className="text-red-400">
+                                {" "}
+                                · no gyro data
+                              </span>
+                            )}
+                          </p>
+                          {sequence.error && (
+                            <p className="mt-1 line-clamp-2 text-sm text-red-400">
+                              {sequence.error}
+                            </p>
+                          )}
+                        </TableCell>
+
+                        <TableCell className="tnum whitespace-nowrap text-center text-sm">
+                          {formatDateTime(sequence.recorded_at)}
+                        </TableCell>
+                        <TableCell className="tnum text-center text-sm">
+                          {formatDuration(sequence.duration_ms)}
+                        </TableCell>
+                        <TableCell className="tnum text-center text-sm">
+                          {formatBytes(sequence.size_bytes)}
+                        </TableCell>
+
+                        <TableCell className="text-center">
+                          <StepCell
+                            done={merged}
+                            job={step.merge}
+                            failed={failed && !merged}
+                          />
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <StepCell
+                            done={sequence.has_proxy}
+                            job={step.proxy}
+                            failed={failed && merged}
+                          />
+                        </TableCell>
+
+                        <TableCell onClick={(event) => event.stopPropagation()}>
+                          <div className="flex justify-end gap-1">
                             <Button
                               size="icon"
-                              variant="outline"
-                              title="Open in derush"
-                              onClick={() => navigate(`/derush/${sequence.id}`)}
+                              variant="ghost"
+                              title="Rename this rush"
+                              onClick={() => setRenaming(sequence)}
                             >
-                              <Scissors className="h-4 w-4" />
+                              <Pencil className="h-4 w-4" />
                             </Button>
-                          )}
-                          {isStuck(sequence) && (
+                            {ready && (
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                title="Open in derush"
+                                onClick={() =>
+                                  navigate(`/derush/${sequence.id}`)
+                                }
+                              >
+                                <Scissors className="h-4 w-4" />
+                              </Button>
+                            )}
+                            {isStuck(sequence) && (
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                title={
+                                  failed
+                                    ? "Retry the step that failed"
+                                    : "Start the missing step"
+                                }
+                                disabled={merge.isPending}
+                                onClick={() => merge.mutate(sequence.id)}
+                              >
+                                {failed ? (
+                                  <RotateCcw className="h-4 w-4" />
+                                ) : (
+                                  <Play className="h-4 w-4" />
+                                )}
+                              </Button>
+                            )}
                             <Button
                               size="icon"
-                              variant="outline"
-                              title={
-                                failed
-                                  ? "Retry the step that failed"
-                                  : "Start the missing step"
-                              }
-                              disabled={merge.isPending}
-                              onClick={() => merge.mutate(sequence.id)}
+                              variant="ghost"
+                              title="Remove, or delete for good"
+                              onClick={() => setToDelete(sequence)}
                             >
-                              {failed ? (
-                                <RotateCcw className="h-4 w-4" />
-                              ) : (
-                                <Play className="h-4 w-4" />
-                              )}
+                              <Trash2 className="h-4 w-4" />
                             </Button>
-                          )}
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            title="Remove, or delete for good"
-                            onClick={() => setToDelete(sequence)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    </Fragment>
                   );
                 })}
               </TableBody>
             </Table>
           )}
-
         </CardContent>
       </Card>
 
@@ -313,14 +428,18 @@ export function Import() {
         sequence={toDelete}
         pending={remove.isPending}
         onCancel={() => setToDelete(null)}
-        onConfirm={(purge) => toDelete && remove.mutate({ id: toDelete.id, purge })}
+        onConfirm={(purge) =>
+          toDelete && remove.mutate({ id: toDelete.id, purge })
+        }
       />
 
       <RenameDialog
         title="Rename rush"
         value={renaming?.label ?? null}
         onClose={() => setRenaming(null)}
-        onRename={(label) => renaming && rename.mutate({ id: renaming.id, label })}
+        onRename={(label) =>
+          renaming && rename.mutate({ id: renaming.id, label })
+        }
       />
     </div>
   );
@@ -347,7 +466,10 @@ function DeleteDialog({
   onConfirm: (purge: boolean) => void;
 }) {
   return (
-    <Dialog open={sequence !== null} onOpenChange={(open) => !open && onCancel()}>
+    <Dialog
+      open={sequence !== null}
+      onOpenChange={(open) => !open && onCancel()}
+    >
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{sequence?.label}</DialogTitle>
@@ -356,23 +478,32 @@ function DeleteDialog({
               ? "1 source file"
               : `${sequence?.part_count} source files`}{" "}
             · {formatBytes(sequence?.size_bytes)}
-            {sequence?.cut_count ? ` · ${sequence.cut_count} marked sequence(s)` : ""}
-            {sequence?.render_count ? ` · ${sequence.render_count} stabilized clip(s)` : ""}
+            {sequence?.cut_count
+              ? ` · ${sequence.cut_count} marked sequence(s)`
+              : ""}
+            {sequence?.render_count
+              ? ` · ${sequence.render_count} stabilized clip(s)`
+              : ""}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3 text-sm">
           <p className="text-muted-foreground">
-            <span className="font-medium text-foreground">Reset grouping</span> keeps the files.
-            The next scan brings this rush back, already merged.
+            <span className="font-medium text-foreground">Reset grouping</span>{" "}
+            keeps the files. The next scan brings this rush back, already
+            merged.
           </p>
           <p className="text-muted-foreground">
-            <span className="font-medium text-foreground">Delete the files</span> frees{" "}
-            {formatBytes(sequence?.size_bytes)}. Re-importing re-encodes everything.
+            <span className="font-medium text-foreground">
+              Delete the files
+            </span>{" "}
+            frees {formatBytes(sequence?.size_bytes)}. Re-importing re-encodes
+            everything.
           </p>
           {(sequence?.render_count ?? 0) > 0 && (
             <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-300">
-              Either way, {sequence?.render_count} stabilized clip(s) are erased.
+              Either way, {sequence?.render_count} stabilized clip(s) are
+              erased.
             </p>
           )}
         </div>
@@ -381,7 +512,11 @@ function DeleteDialog({
           <Button variant="ghost" onClick={onCancel} disabled={pending}>
             Cancel
           </Button>
-          <Button variant="outline" onClick={() => onConfirm(false)} disabled={pending}>
+          <Button
+            variant="outline"
+            onClick={() => onConfirm(false)}
+            disabled={pending}
+          >
             <RotateCcw className="h-4 w-4" />
             Reset grouping
           </Button>

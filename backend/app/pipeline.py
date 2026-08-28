@@ -16,6 +16,7 @@ from .models import (
     Clip,
     ClipState,
     Cut,
+    Folder,
     Job,
     JobKind,
     JobState,
@@ -311,6 +312,42 @@ def start_upload(filename: str, size: int) -> Path:
     raise RuntimeError(f"cannot find a free name for {filename} in {settings.inbox_dir}")
 
 
+_FOLDER_MARK = "folder"
+
+
+def _intent_dir() -> Path:
+    return settings.inbox_dir / _UPLOADS_DIRNAME / ".folders"
+
+
+def remember_folder(filename: str, folder_id: int | None) -> None:
+    """Note which drawer a file being received is meant for.
+
+    Uploading and ingesting are decoupled: the upload drops bytes in `inbox/` and
+    stops, and the scan makes the sequence minutes later, knowing nothing of who
+    sent what. So the intent is written next to the markers, keyed by the name the
+    file will land under, and read when the sequence is made.
+
+    Server side rather than "the page files it afterwards", because the page is not
+    always still there: a rush takes minutes, and a closed tab would lose it.
+    """
+    if folder_id is None:
+        return
+    d = _intent_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / Path(filename).name).write_text(str(folder_id))
+
+
+def take_folder(filename: str) -> int | None:
+    """Read that intent once, and forget it."""
+    mark = _intent_dir() / Path(filename).name
+    try:
+        folder_id = int(mark.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    mark.unlink(missing_ok=True)
+    return folder_id
+
+
 def partial_path(name: str) -> Path:
     """Resolve a partial by name, refusing anything this module did not write.
 
@@ -552,20 +589,53 @@ def _rebuildable_neighbours(
         )
         if not touching:
             continue
-        cuts = session.exec(select(Cut).where(Cut.sequence_id == seq.id)).all()
-        renders = session.exec(select(Render).where(Render.sequence_id == seq.id)).all()
-        if cuts or renders:
-            # Said out loud: this is the one case where the grouping knowingly
-            # leaves two halves of a flight apart, and nothing else would show it.
-            log.warning(
-                "Sequence %s would take a late part but carries %d cut(s) and %d "
-                "render(s): left as is",
-                seq.key, len(cuts), len(renders),
-            )
-            continue
         log.info("Sequence %s reopened: a free clip continues it", seq.key)
         out.append(seq)
     return out
+
+
+def _shift_cuts(
+    session: Session, seq: Sequence, group: list[Clip], old_first_id: int | None
+) -> None:
+    """Move the marks of a rush that just grew a part in front of it.
+
+    A part appended at the end changes nothing: the frames already there keep their
+    numbers, so this is a no-op, and that is the common case by far. A part that
+    lands **before** the old content pushes every existing frame back by its own
+    length, and a cut is a pair of frame numbers in the merged file, so leaving them
+    alone would silently move every mark somebody made.
+
+    Renders are deliberately left alone. Shifting a cut by exactly what the content
+    shifted means it still designates the same footage, so a file already produced
+    from it is still that footage.
+
+    The offset is derived from the durations of the prepended parts, not measured on
+    a merged file that does not exist yet. Marks are kept in frames precisely because
+    milliseconds drift, so this is the one place a frame or two of error can enter;
+    it only ever applies to a prepend, and it is logged.
+    """
+    if old_first_id is None:
+        return
+    ahead = []
+    for clip in group:
+        if clip.id == old_first_id:
+            break
+        ahead.append(clip)
+    if not ahead:
+        return  # appended at the end: every existing frame keeps its number
+    offset = sum(
+        duration_to_frames(c.duration_ms, c.fps_num, c.fps_den) for c in ahead
+    )
+    cuts = session.exec(select(Cut).where(Cut.sequence_id == seq.id)).all()
+    for cut in cuts:
+        cut.start_frame += offset
+        cut.end_frame += offset
+        session.add(cut)
+    if cuts:
+        log.warning(
+            "Sequence %s: %d part(s) inserted before it, %d cut(s) shifted by %d frames",
+            seq.key, len(ahead), len(cuts), offset,
+        )
 
 
 def group_clips_into_sequences(session: Session) -> list[Sequence]:
@@ -611,18 +681,31 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
     ]
     new_sequences.extend(_rebuildable_neighbours(session, unassigned, busy))
     candidates = list(unassigned)
+    # A reopened sequence keeps its row rather than being deleted and rebuilt: its
+    # cuts and its renders hang off that id, and they are the whole point of
+    # adapting instead of starting over.
+    reopened: dict[int, Sequence] = {}
+    was_first: dict[int, int] = {}
     for seq in new_sequences:
         # The sequence is about to be rebuilt: its queued merge would be orphaned.
         for job in session.exec(
             select(Job).where(Job.sequence_id == seq.id, Job.state == JobState.QUEUED)
         ).all():
             session.delete(job)
-        clips = session.exec(select(Clip).where(Clip.sequence_id == seq.id)).all()
+        clips = session.exec(
+            select(Clip).where(Clip.sequence_id == seq.id).order_by(Clip.part_index)  # type: ignore[arg-type]
+        ).all()
         candidates.extend(clips)
+        keep = seq.state != SequenceState.NEW and clips
         for clip in clips:
+            if keep:
+                reopened[clip.id] = seq
             clip.sequence_id = None
             session.add(clip)
-        session.delete(seq)
+        if keep:
+            was_first[seq.id] = clips[0].id
+        else:
+            session.delete(seq)
     if new_sequences:
         session.commit()
 
@@ -640,25 +723,39 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
         if not clips:
             continue
         first = clips[0]
-        key = sequence_key(first.filename)
 
-        if session.exec(select(Sequence).where(Sequence.key == key)).first() is not None:
-            key = f"{key}__{first.id}"
+        # Does this group contain the clips of a sequence we reopened? Then that row
+        # is updated in place, keeping its id, so its cuts and renders stay attached.
+        held = next((reopened[c.id] for c in clips if c.id in reopened), None)
+        if held is not None:
+            _shift_cuts(session, held, clips, was_first.get(held.id))
+            seq = held
+            seq.state = SequenceState.NEW
+            seq.merged_path = None
+            seq.proxy_path = None
+        else:
+            key = sequence_key(first.filename)
+            if session.exec(select(Sequence).where(Sequence.key == key)).first() is not None:
+                key = f"{key}__{first.id}"
+            seq = Sequence(key=key, label=key, state=SequenceState.NEW)
 
-        seq = Sequence(
-            key=key,
-            label=key,
-            content_hash=sequence_hash([c.fingerprint for c in clips]),
-            state=SequenceState.NEW,
-            part_count=len(clips),
-            width=first.width,
-            height=first.height,
-            fps_num=first.fps_num,
-            fps_den=first.fps_den,
-            duration_ms=sum(c.duration_ms for c in clips),
-            size_bytes=sum(c.size_bytes for c in clips),
-            recorded_at=first.recorded_at,
-        )
+        seq.content_hash = sequence_hash([c.fingerprint for c in clips])
+        seq.part_count = len(clips)
+        seq.width = first.width
+        seq.height = first.height
+        seq.fps_num = first.fps_num
+        seq.fps_den = first.fps_den
+        seq.duration_ms = sum(c.duration_ms for c in clips)
+        seq.size_bytes = sum(c.size_bytes for c in clips)
+        seq.recorded_at = first.recorded_at
+        if held is None:
+            # Only for a brand new rush: a reopened one already sits where it was put.
+            wanted = next(
+                (f for f in (take_folder(c.filename) for c in clips) if f is not None), None
+            )
+            if wanted is not None and session.get(Folder, wanted) is not None:
+                seq.folder_id = wanted
+
         session.add(seq)
         session.commit()
         session.refresh(seq)

@@ -247,3 +247,27 @@ def test_the_check_reports_an_upload_left_half_done(client, payload):
 def test_the_check_says_nothing_when_no_upload_is_pending(client):
     assert pipeline.partial_for(NAME) is None
     assert pipeline.partial_for("../../etc/passwd") is None
+
+
+def test_a_rush_lands_in_the_drawer_the_upload_asked_for(client, payload, session):
+    """Uploading and ingesting are decoupled, so the intent has to survive the gap:
+    the page that asked is often gone by the time the scan runs."""
+    from app.models import Folder
+
+    folder = Folder(name="Quissac", color="amber")
+    session.add(folder)
+    session.commit()
+    session.refresh(folder)
+
+    pipeline.remember_folder(NAME, folder.id)
+
+    assert pipeline.take_folder(NAME) == folder.id
+    assert pipeline.take_folder(NAME) is None, "read once, then forgotten"
+
+
+def test_no_drawer_asked_for_means_no_drawer(client, payload):
+    """Global is not a row, it is folder_id = null, so "nowhere" stays a real answer
+    and stays the default."""
+    pipeline.remember_folder(NAME, None)
+
+    assert pipeline.take_folder(NAME) is None

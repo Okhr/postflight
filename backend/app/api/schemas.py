@@ -138,6 +138,9 @@ class SequenceOut(BaseSchema):
     frame_count: int
     size_bytes: int
     recorded_at: datetime | None
+    # When the row was made, which is when the files finished arriving. The import
+    # page sorts on it, and it is the only date that answers "what did I just add".
+    created_at: datetime | None = None
     has_proxy: bool
     proxy_width: int
     proxy_height: int

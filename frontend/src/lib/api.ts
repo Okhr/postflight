@@ -121,6 +121,8 @@ export interface Sequence {
   frame_count: number;
   size_bytes: number;
   recorded_at: string | null;
+  /** When the rush was created, which is when its files finished arriving. */
+  created_at: string | null;
   has_proxy: boolean;
   proxy_width: number;
   proxy_height: number;
@@ -449,9 +451,10 @@ export const api = {
    * refuses a body over 100 MiB: measured, and refused at the edge, so a 4 GB PUT
    * cannot work from outside the LAN however long we wait for it.
    */
-  uploadBegin: (file: File) =>
+  uploadBegin: (file: File, folderId?: number | null) =>
     request<UploadBegin>(
-      `/upload/begin?filename=${encodeURIComponent(file.name)}&size=${file.size}`,
+      `/upload/begin?filename=${encodeURIComponent(file.name)}&size=${file.size}` +
+        (folderId != null ? `&folder_id=${folderId}` : ""),
       { method: "POST" },
     ),
   /** Name the file for real. The server refuses if any piece is missing. */

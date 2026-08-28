@@ -53,7 +53,7 @@ interface Upload {
   /** Bytes moved and bytes to move, skipped files excluded since they never travel. */
   moved: number;
   total: number;
-  send: (files: File[]) => void;
+  send: (files: File[], folderId?: number | null) => void;
   cancel: () => void;
   clear: () => void;
 }
@@ -129,8 +129,13 @@ function putChunk(
  * refuses to rename a file with a hole in it. So a piece lost on a flaky link fails
  * here, loudly, instead of producing a 4 GB rush that only breaks later in a merge.
  */
-async function putFile(file: File, onProgress: (ratio: number) => void, signal: AbortSignal) {
-  const { partial } = await api.uploadBegin(file);
+async function putFile(
+  file: File,
+  folderId: number | null,
+  onProgress: (ratio: number) => void,
+  signal: AbortSignal,
+) {
+  const { partial } = await api.uploadBegin(file, folderId);
 
   const offsets: number[] = [];
   for (let at = 0; at < file.size; at += CHUNK) offsets.push(at);
@@ -198,7 +203,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const send = useCallback(
-    (files: File[]) => {
+    (files: File[], folderId?: number | null) => {
       const usable = files.filter(accepted);
       const rejected = files.length - usable.length;
       if (rejected > 0) {
@@ -268,6 +273,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           try {
             const landedAs = await putFile(
               item.file,
+              folderId ?? null,
               (ratio) => patch(item.key, { progress: ratio }),
               controller.signal,
             );
