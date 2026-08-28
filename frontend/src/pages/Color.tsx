@@ -75,6 +75,7 @@ import {
 import { usePersistentState } from "@/lib/persist";
 import { levelsOf } from "@/lib/grade-shader";
 import { formatBytes, formatDuration } from "@/lib/format";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 const CONTROLS = [
@@ -1241,7 +1242,7 @@ function CopyDialog({
         <DialogHeader>
           <DialogTitle>Copy "{label}" to</DialogTitle>
         </DialogHeader>
-        <div className="max-h-80 overflow-y-auto pr-1">
+        <ScrollArea className="max-h-80">
           {build(folders, clips).map((node) => (
             <FolderRow
               key={node.folder?.id ?? "global"}
@@ -1257,7 +1258,7 @@ function CopyDialog({
               flip={flip}
             />
           ))}
-        </div>
+        </ScrollArea>
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel

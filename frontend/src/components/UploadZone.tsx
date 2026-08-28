@@ -119,6 +119,12 @@ export function UploadZone() {
                         {item.known && item.known !== item.file.name && ` as ${item.known}`}
                       </span>
                     )}
+                    {item.discarded != null && item.status !== "skipped" && (
+                      <span className="text-sm text-muted-foreground">
+                        an interrupted upload of {formatBytes(item.discarded)} was
+                        discarded, sending again
+                      </span>
+                    )}
                     {item.error && <span className="text-sm text-red-400">{item.error}</span>}
                   </span>
                   <span className="tnum shrink-0 text-sm text-muted-foreground">

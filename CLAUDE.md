@@ -1585,6 +1585,70 @@ utilisait `count=$((len/1048576+1))` avec `iflag=count_bytes`, donc **65 octets 
 morceau** au lieu de 64 Mio. Les deux fois, c'est le serveur qui a dit la vérité en refusant
 le `finish`.
 
+### Un upload interrompu empoisonnait le nom du rush
+
+Trouvé le 2026-08-28 en cherchant d'où venait un `__1` dans la vraie collection. La
+chaîne complète, et tout part de l'upload découpé :
+
+```
+1. upload de DJI_20260711191722_0025_D.MP4  ->  interrompu a 94,5 %
+   (53 morceaux sur 57, un seul trou : les 206 derniers Mo)
+2. l'abandon n'est jamais parti  ->  un .partial de 3,4 Go reste dans inbox/
+3. le fichier est renvoye  ->  start_upload enjambe le .partial (a raison)
+                               et alloue DJI_..._0025_D__1.MP4
+4. parse_filename('..._0025_D__1.MP4')  ->  kind='unknown', ni date ni index
+5. sans index ni date, le groupage ne peut pas le chaîner a 0026
+```
+
+Le `__1` n'est donc pas cosmétique : **il casse le groupage**. Deux moitiés d'un même
+vol sont restées deux rushes, et j'avais d'abord accusé la tolérance de 1 s, à tort.
+
+Trois correctifs, et ils se répondent :
+
+- **Un `.partial` que personne n'écrit plus est balayé** (`UPLOAD_ABANDON_S`, 1 h,
+  jugé sur le **mtime du fichier**, qu'une écriture de morceau rafraîchit ; un upload
+  vivant a donc un mtime de quelques secondes). Rien ne les nettoyait, et le fichier
+  est prélloué à sa taille finale.
+- **`upload/check` prend aussi le nom** et signale un partiel. L'empreinte ne peut pas
+  le voir : un `.partial` n'est jamais devenu un clip, donc la page appelait « neuf »
+  un rush déjà à 94 % sur le serveur.
+- **Le client jette le partiel avant de renvoyer**, et **avant la branche doublon**,
+  pas après : un fichier déjà importé peut avoir laissé un partiel, et sortir par le
+  `continue` du doublon le laisserait sur le volume pour toujours.
+
+Vérifié de bout en bout : upload coupé après un morceau sur trois, même fichier
+redéposé depuis le navigateur, **il retrouve son nom propre et zéro `__1`**.
+
+### Une part en retard rejoint le rush qu'elle continue
+
+Le corollaire, et la vraie raison pour laquelle le merge manuel n'a pas à revenir.
+`group_clips_into_sequences` ne démontait que les sequences en `NEW` ; la docstring
+disait qu'une sequence déjà fusionnée garderait sa part tardive « to be joined by hand
+if needed », or **joindre à la main a été retiré le 2026-08-20**. Il n'y avait donc
+aucun recours.
+
+Elle rouvre maintenant une sequence déjà fusionnée quand un clip libre la continue ou
+la précède, et **c'est bon marché** : `adopt_existing_artifacts` retrouve le fichier
+fusionné et le proxy par le hash de contenu, donc un regroupement qui ne change rien
+ne refait rien.
+
+Le garde-fou est l'autre moitié de la règle : **une sequence qui porte des cuts ou des
+rendus est laissée telle quelle**, parce qu'un cut est une paire de numéros d'image
+dans le fichier fusionné et que reconstruire les déplace sous lui. Ce cas est
+journalisé en `warning`, c'est le seul endroit où le groupage laisse sciemment deux
+moitiés de vol séparées. Contre-épreuve : sans le correctif, les deux tests du nouveau
+comportement tombent (`ready` au lieu de `new`, donc jamais réouverte) et les trois
+garde-fous passent des deux côtés, ce qui est leur rôle.
+
+### Les zones de défilement sont des ScrollArea
+
+`components/ui/scroll-area.tsx` (shadcn, `@radix-ui/react-scroll-area`), sur l'arbre de
+la barre latérale, le dialogue des workers et la liste de la page Color. Deux détails
+qui ne se voient qu'à l'usage : le composant force **`type="auto"`** au lieu du défaut
+`hover` de Radix, parce qu'une barre qui n'apparaît que sous le pointeur cache le fait
+qu'un panneau défile ; et les classes qui espaçaient les enfants (`space-y-2`) doivent
+descendre **sur le contenu**, les enfants n'étant plus directs mais dans le Viewport.
+
 ### La barre latérale se tire, et les noms coupés se lisent
 
 320 px par défaut au lieu de 256, et une poignée de 4 px sur le bord droit, bridée entre

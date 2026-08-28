@@ -25,6 +25,7 @@ import { Separator } from "@/components/ui/separator";
 import { type Job, type WorkerInfo } from "@/lib/api";
 import { jobKindLabel } from "@/lib/format";
 import { useLiveJobs } from "@/lib/live";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 function decodeLabel(worker: WorkerInfo): string {
@@ -188,7 +189,8 @@ export function WorkersDialog({ workers }: { workers: WorkerInfo[] }) {
         <DialogHeader>
           <DialogTitle>Workers</DialogTitle>
         </DialogHeader>
-        <div className="max-h-[70vh] space-y-2 overflow-y-auto">
+        <ScrollArea className="max-h-[70vh]">
+        <div className="space-y-2 pr-2">
           {workers.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               None has registered. Check PF_API_URL on the worker.
@@ -199,6 +201,7 @@ export function WorkersDialog({ workers }: { workers: WorkerInfo[] }) {
             ))
           )}
         </div>
+      </ScrollArea>
       </DialogContent>
     </Dialog>
   );

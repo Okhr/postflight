@@ -33,6 +33,7 @@ import { FOLDER_COLORS, folderColor } from "@/lib/colors";
 import { formatDuration } from "@/lib/format";
 import { usePersistentSet } from "@/lib/persist";
 import { rushHref, selectedRushId } from "@/lib/routing";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 /**
@@ -770,7 +771,7 @@ export function RushTree() {
   };
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <ScrollArea className="min-h-0 flex-1">
       <div className="mb-1 flex items-center justify-between pl-2 pr-1">
         <span className="text-sm font-medium text-muted-foreground">Rushes</span>
         <button
@@ -901,6 +902,6 @@ export function RushTree() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </ScrollArea>
   );
 }

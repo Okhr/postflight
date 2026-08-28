@@ -12,8 +12,19 @@ from sqlmodel import Session, select
 
 from .config import settings
 from .framing import duration_to_frames
-from .models import Clip, ClipState, Job, JobKind, JobState, Sequence, SequenceState, utcnow
-from .services.grouping import ClipInfo, chain_clips, describe_group, sequence_hash
+from .models import (
+    Clip,
+    ClipState,
+    Cut,
+    Job,
+    JobKind,
+    JobState,
+    Render,
+    Sequence,
+    SequenceState,
+    utcnow,
+)
+from .services.grouping import ClipInfo, chain_clips, contiguous, describe_group, sequence_hash
 from .services.naming import parse_filename, sequence_key
 from .paths import to_relative
 from .services.probe import ProbeError, fingerprint, probe
@@ -204,9 +215,68 @@ def unique_destination(directory: Path, filename: str) -> Path:
 # Content-Length, before the origin sees anything. The client sends smaller ones.
 CHUNK_MAX = 100 * 1024 * 1024
 
+# When a `.partial` counts as abandoned. Nothing ever cleaned these up, and the file
+# is preallocated to its final size, so one interrupted 4 GB rush held 3.4 GB of the
+# share for two days and poisoned its own name on top: every retry landed as
+# `name__1`, which `parse_filename` reads as no name at all, so the rush lost its
+# timestamp and its camera index and could not be grouped with its other half.
+# Measured on the real volume, 2026-08-28.
+#
+# An hour is generous on purpose. A live upload rewrites its `.partial` on every
+# chunk, so its mtime is seconds old; only a dead one gets this far.
+UPLOAD_ABANDON_S = 3600.0
+
 
 def _markers_dir(partial: Path) -> Path:
     return settings.inbox_dir / _UPLOADS_DIRNAME / partial.name
+
+
+def abandoned_uploads(max_age_s: float | None = None) -> list[Path]:
+    """The `.partial` files nobody is writing to any more."""
+    cutoff = time.time() - (UPLOAD_ABANDON_S if max_age_s is None else max_age_s)
+    if not settings.inbox_dir.is_dir():
+        return []
+    out = []
+    for path in settings.inbox_dir.glob("*.partial"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                out.append(path)
+        except OSError:
+            continue
+    return sorted(out)
+
+
+def sweep_abandoned_uploads(max_age_s: float | None = None) -> list[str]:
+    """Delete them, with their markers. Called from the scan.
+
+    Deleting rather than keeping them for a resume is a deliberate choice: the
+    server knows exactly which ranges are missing and could hand them back, but a
+    half-received rush that nothing points at is worth less than the disk it holds,
+    and leaving it in place is what breaks the next upload of the same file.
+    """
+    gone = []
+    for path in abandoned_uploads(max_age_s):
+        size = path.stat().st_size if path.exists() else 0
+        abort_upload(path)
+        gone.append(path.name)
+        log.warning("Abandoned upload dropped: %s (%.1f MB reclaimed)", path.name, size / (1 << 20))
+    return gone
+
+
+def partial_for(filename: str) -> tuple[Path, int] | None:
+    """An upload of this name already on the server, and how much of it arrived.
+
+    What makes it worth reporting rather than just sweeping: the person is looking
+    at the import page wondering why the rush they sent is not there, and the answer
+    is on the server.
+    """
+    safe = Path(filename).name
+    path = settings.inbox_dir / (safe + ".partial")
+    if not path.is_file():
+        return None
+    total = path.stat().st_size
+    holes = missing_ranges(path)
+    return path, total - sum(length for _, length in holes)
 
 
 def start_upload(filename: str, size: int) -> Path:
@@ -449,13 +519,73 @@ def _clip_info(clip: Clip) -> ClipInfo:
     )
 
 
+def _rebuildable_neighbours(
+    session: Session, free: list[Clip], busy: set[int]
+) -> list[Sequence]:
+    """Merged sequences that a free clip would extend, and that may be rebuilt.
+
+    Only the ones a free clip actually touches: pulling in every sequence would
+    renumber and re-merge the whole library on each scan. And only the ones with
+    nothing derived from a decision, since a cut is a pair of frame numbers in the
+    merged file and rebuilding moves them.
+    """
+    free_infos = [_clip_info(c) for c in free if c.recorded_at is not None]
+    if not free_infos:
+        return []
+    tolerance = settings.split_gap_tolerance_s
+    out: list[Sequence] = []
+    merged = session.exec(
+        select(Sequence).where(Sequence.state != SequenceState.NEW)
+    ).all()
+    for seq in merged:
+        if seq.id in busy:
+            continue
+        clips = session.exec(
+            select(Clip).where(Clip.sequence_id == seq.id).order_by(Clip.part_index)  # type: ignore[arg-type]
+        ).all()
+        infos = [_clip_info(c) for c in clips if c.recorded_at is not None]
+        if not infos:
+            continue
+        touching = any(
+            contiguous(infos[-1], f, tolerance) or contiguous(f, infos[0], tolerance)
+            for f in free_infos
+        )
+        if not touching:
+            continue
+        cuts = session.exec(select(Cut).where(Cut.sequence_id == seq.id)).all()
+        renders = session.exec(select(Render).where(Render.sequence_id == seq.id)).all()
+        if cuts or renders:
+            # Said out loud: this is the one case where the grouping knowingly
+            # leaves two halves of a flight apart, and nothing else would show it.
+            log.warning(
+                "Sequence %s would take a late part but carries %d cut(s) and %d "
+                "render(s): left as is",
+                seq.key, len(cuts), len(renders),
+            )
+            continue
+        log.info("Sequence %s reopened: a free clip continues it", seq.key)
+        out.append(seq)
+    return out
+
+
 def group_clips_into_sequences(session: Session) -> list[Sequence]:
     """Build sequences out of the free clips.
 
     Sequences still in `NEW` are torn down and rebuilt: nothing has been produced
-    from them yet, and a late-arriving part must be able to join its group. A
-    sequence already merged is never touched automatically: the late part will
-    form its own sequence, to be joined by hand if needed.
+    from them yet, and a late-arriving part must be able to join its group.
+
+    **An already merged sequence is rebuilt too**, when a free clip turns out to be
+    the part that follows or precedes it and nothing a person chose hangs off it.
+    Before this, such a part formed a sequence of its own and the docstring here
+    said it was "to be joined by hand" -- except joining by hand was removed on
+    2026-08-20, so there was no recourse at all: two halves of one flight stayed
+    two rushes, and the seam came back at edit time. Measured on the real
+    collection: one pair 0.39 s apart, sitting in two sequences.
+
+    Rebuilding is cheap when it changes nothing, because `adopt_existing_artifacts`
+    finds the merged file and the proxy again by content hash. What it must never
+    do is throw away work: a sequence carrying cuts or renders is left alone, and
+    says so in the log, because its frame numbers are what those cuts mean.
     """
     unassigned = session.exec(
         select(Clip).where(Clip.sequence_id.is_(None), Clip.state == ClipState.INGESTED)  # type: ignore[union-attr]
@@ -479,6 +609,7 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
         for seq in session.exec(select(Sequence).where(Sequence.state == SequenceState.NEW)).all()
         if seq.id not in busy
     ]
+    new_sequences.extend(_rebuildable_neighbours(session, unassigned, busy))
     candidates = list(unassigned)
     for seq in new_sequences:
         # The sequence is about to be rebuilt: its queued merge would be orphaned.
@@ -663,6 +794,7 @@ def enqueue_proxy(session: Session, sequence: Sequence, priority: int = PRIORITY
 
 
 def ingest_and_group(session: Session, immediate: bool = False) -> ScanResult:
+    sweep_abandoned_uploads()
     result = scan_inbox(session, immediate=immediate)
     result.sequences = group_clips_into_sequences(session)
     for seq in result.sequences:

@@ -398,6 +398,11 @@ class UploadCheckOut(BaseSchema):
     known: bool
     filename: str | None = None
     sequence_id: int | None = None
+    # Set when an upload of this name is already on the server, half done. It is not
+    # a duplicate (nothing became a clip) and not new either, and the page has to be
+    # able to tell the difference.
+    partial_bytes: int | None = None
+    partial_total: int | None = None
 
 
 class WorkerOut(BaseSchema):

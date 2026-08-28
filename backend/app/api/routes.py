@@ -47,6 +47,7 @@ from ..pipeline import (
     finish_upload,
     ingest_and_group,
     missing_ranges,
+    partial_for,
     partial_path,
     record_chunk,
     start_upload,
@@ -573,6 +574,7 @@ async def trigger_scan(session: Session = Depends(get_session)) -> schemas.ScanO
 async def upload_check(
     request: Request,
     size: int = Query(..., ge=1, description="Size of the whole file, in bytes"),
+    filename: str = Query("", description="Its name, to spot an upload left half done"),
     session: Session = Depends(get_session),
 ) -> schemas.UploadCheckOut:
     """Tell whether a file is already imported, without sending it.
@@ -592,11 +594,17 @@ async def upload_check(
 
     fp = fingerprint_parts(size, body[:head_len], body[head_len:])
     clip = session.exec(select(Clip).where(Clip.fingerprint == fp)).first()
+    # An upload of this name that stopped part way is invisible otherwise: the
+    # fingerprint matches nothing, because a `.partial` never became a clip, so the
+    # page would say "new" about a rush that is already 94% on the server.
+    started = partial_for(filename) if filename else None
     return schemas.UploadCheckOut(
         fingerprint=fp,
         known=clip is not None,
         filename=clip.filename if clip else None,
         sequence_id=clip.sequence_id if clip else None,
+        partial_bytes=started[1] if started else None,
+        partial_total=started[0].stat().st_size if started else None,
     )
 
 

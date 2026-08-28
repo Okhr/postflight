@@ -43,6 +43,8 @@ export interface Item {
   known?: string;
   /** Name the server stored it under, which is what to look for in the rush list. */
   landedAs?: string;
+  /** Bytes of an interrupted upload of this same name, thrown away before resending. */
+  discarded?: number;
 }
 
 interface Upload {
@@ -234,6 +236,20 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           patch(item.key, { status: "checking", progress: 0 });
           try {
             const verdict = await api.uploadCheck(item.file);
+            // Before the duplicate branch, not after: a file that is already
+            // imported can still have left a `.partial` behind, and skipping out of
+            // here would leave it on the volume forever, preallocated to its full
+            // size and holding the name hostage.
+            if (verdict.partial_bytes != null) {
+              // Throw it away rather than resume it, and above all before sending
+              // again: the server steps over an existing `.partial` when it reserves
+              // a name, so leaving it there is what turns the retry into
+              // `name__1.MP4`, a name `parse_filename` reads as having no timestamp
+              // and no camera index. That is how one flight ended up as two rushes
+              // that could not be grouped.
+              await api.uploadAbort(`${item.file.name}.partial`).catch(() => {});
+              patch(item.key, { discarded: verdict.partial_bytes });
+            }
             if (verdict.known) {
               patch(item.key, {
                 status: "skipped",

@@ -64,6 +64,16 @@ def _contiguous(a: ClipInfo, b: ClipInfo, tolerance_s: float) -> bool:
     return gap_s <= tolerance_s
 
 
+def contiguous(a: ClipInfo, b: ClipInfo, tolerance_s: float) -> bool:
+    """Whether b is the part that directly follows a.
+
+    Public because the pipeline needs to ask the question of a clip against an
+    **already merged** sequence, one pair at a time, before deciding to tear that
+    sequence down and rebuild it. Chaining a whole list is a different question.
+    """
+    return _contiguous(a, b, tolerance_s)
+
+
 def chain_clips(clips: list[ClipInfo], tolerance_s: float) -> list[list[ClipInfo]]:
     """Split the list into groups of contiguous parts, in chronological order."""
     ordered = sorted(

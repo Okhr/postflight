@@ -371,6 +371,9 @@ export interface UploadCheck {
   known: boolean;
   filename: string | null;
   sequence_id: number | null;
+  /** Bytes of this same name already on the server from an upload that stopped. */
+  partial_bytes: number | null;
+  partial_total: number | null;
 }
 
 /** Where the pieces of one file go, and the name it will land under. */
@@ -427,11 +430,17 @@ export const api = {
 
   /** Is this file already imported? Reads 2 MiB of it, sends no more. */
   uploadCheck: (file: File) =>
-    request<UploadCheck>(`/upload/check?size=${file.size}`, {
-      method: "POST",
-      body: probeBytes(file),
-      headers: { "Content-Type": "application/octet-stream" },
-    }),
+    request<UploadCheck>(
+      // The name too, not just the size: an upload of this name left half done
+      // matches no fingerprint, so without it the page calls a rush new when it is
+      // already most of the way onto the server.
+      `/upload/check?size=${file.size}&filename=${encodeURIComponent(file.name)}`,
+      {
+        method: "POST",
+        body: probeBytes(file),
+        headers: { "Content-Type": "application/octet-stream" },
+      },
+    ),
 
   /**
    * Reserve a destination for a file sent in pieces.

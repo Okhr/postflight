@@ -11,6 +11,8 @@ much later, in a merge or a stabilization, far from the cause.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -198,3 +200,50 @@ def test_a_partial_is_invisible_to_the_scanner_until_it_is_finished(client, payl
     # Flagged as complete by construction, so the scan fired right after does not
     # have to wait two seconds to watch a size that will never change again.
     assert str(landed) in pipeline._completed_uploads
+
+
+def test_an_abandoned_upload_is_swept_with_its_markers(client, payload):
+    """Nothing used to clean these up, and the file is preallocated to its final
+    size: one interrupted 4 GB rush held 3.4 GB of the volume for two days."""
+    import os
+    partial = begin(client, len(payload))
+    send_piece(client, partial, payload, 0, 100_000)
+    path = settings.inbox_dir / partial
+    old = time.time() - 7200
+    os.utime(path, (old, old))
+
+    gone = pipeline.sweep_abandoned_uploads()
+
+    assert gone == [partial]
+    assert not path.exists()
+    assert list((settings.inbox_dir / ".uploads").iterdir()) == []
+
+
+def test_an_upload_still_being_written_is_not_swept(client, payload):
+    """A live upload rewrites its .partial on every chunk, so its mtime is seconds
+    old. This is the whole reason the test is on mtime and not on coverage."""
+    partial = begin(client, len(payload))
+    send_piece(client, partial, payload, 0, 100_000)
+
+    assert pipeline.sweep_abandoned_uploads() == []
+    assert (settings.inbox_dir / partial).exists()
+
+
+def test_the_check_reports_an_upload_left_half_done(client, payload):
+    """Otherwise the page says "new" about a rush already most of the way there: the
+    fingerprint matches nothing, because a .partial never became a clip."""
+    partial = begin(client, len(payload))
+    send_piece(client, partial, payload, 0, 100_000)
+
+    found = pipeline.partial_for(NAME)
+
+    assert found is not None
+    path, received = found
+    assert path.name == partial
+    assert received == 100_000
+    assert path.stat().st_size == len(payload)
+
+
+def test_the_check_says_nothing_when_no_upload_is_pending(client):
+    assert pipeline.partial_for(NAME) is None
+    assert pipeline.partial_for("../../etc/passwd") is None
