@@ -1632,13 +1632,24 @@ la précède, et **c'est bon marché** : `adopt_existing_artifacts` retrouve le 
 fusionné et le proxy par le hash de contenu, donc un regroupement qui ne change rien
 ne refait rien.
 
-Le garde-fou est l'autre moitié de la règle : **une sequence qui porte des cuts ou des
-rendus est laissée telle quelle**, parce qu'un cut est une paire de numéros d'image
-dans le fichier fusionné et que reconstruire les déplace sous lui. Ce cas est
-journalisé en `warning`, c'est le seul endroit où le groupage laisse sciemment deux
-moitiés de vol séparées. Contre-épreuve : sans le correctif, les deux tests du nouveau
-comportement tombent (`ready` au lieu de `new`, donc jamais réouverte) et les trois
-garde-fous passent des deux côtés, ce qui est leur rôle.
+**Les marks suivent, elles ne meurent pas** (florian, le 2026-08-28). Le premier jet
+laissait tel quel un rush portant des cuts ou des rendus, ce qui condamnait tout rush
+déjà dérushé à rester cassé. Maintenant :
+
+- **la ligne du rush n'est plus détruite puis recréée**, elle est mise à jour en place,
+  parce que ses cuts et ses rendus pendent de son id ;
+- **une part ajoutée à la fin ne décale rien** : les images déjà là gardent leur numéro,
+  et c'est de très loin le cas courant ;
+- **une part insérée devant décale tout**, donc les cuts sont décalés du même nombre
+  d'images. Et comme on décale de *exactement* ce dont le contenu a bougé, un cut
+  désigne toujours les mêmes images : **les rendus déjà produits restent justes**, il
+  n'y a rien à purger.
+
+Le seul endroit où une erreur peut entrer est l'offset d'un prepend, dérivé des durées
+des parts ajoutées et non mesuré sur un fichier fusionné qui n'existe pas encore. Les
+marks sont en frames précisément parce que les millisecondes dérivent, donc c'est
+journalisé en `warning`. Contre-épreuve : sans le correctif, les deux tests du nouveau
+comportement tombent (`ready` au lieu de `new`, donc jamais réouverte).
 
 ### Les zones de défilement sont des ScrollArea
 
@@ -1648,6 +1659,38 @@ qui ne se voient qu'à l'usage : le composant force **`type="auto"`** au lieu du
 `hover` de Radix, parce qu'une barre qui n'apparaît que sous le pointeur cache le fait
 qu'un panneau défile ; et les classes qui espaçaient les enfants (`space-y-2`) doivent
 descendre **sur le contenu**, les enfants n'étant plus directs mais dans le Viewport.
+
+### Trier les rushes, et les ranger en arrivant
+
+Demandé le 2026-08-28. Quatre tris sur la page import, mémorisés en `localStorage` :
+**date de film** (le défaut), date d'ajout, durée, taille, tous du plus récent ou du
+plus grand au plus petit, parce que ce qu'on cherche est ce qui ressort.
+
+**Les séparateurs de jour n'existent que pour les deux tris qui ont des jours dedans.**
+Par taille ou par durée, un intertitre de date serait un titre au-dessus de rien.
+
+`SequenceOut` a gagné `created_at`, le moment où la ligne a été faite, donc où les
+fichiers ont fini d'arriver. Aucune reprise n'a été nécessaire, la colonne existait déjà
+sur le modèle. Et les dates sont en `fr-FR` comme `format.ts`, pas dans la locale du
+navigateur : une page qui parle deux conventions se lit comme un bug.
+
+**Le dossier de destination se choisit avant de déposer**, et l'intention est portée
+**côté serveur**, par `POST /upload/begin?folder_id=`. Le point délicat est que déposer
+et ingérer sont découplés : l'upload met des octets dans `inbox/` et s'arrête, le scan
+fabrique la sequence des minutes plus tard sans savoir qui a envoyé quoi. Un fichier
+marqueur à côté des autres (`inbox/.uploads/.folders/<nom final>`) porte donc
+l'intention, lue une fois puis oubliée à la création de la sequence. La version « la page
+range après coup » a été écartée pour une raison mesurée : un rush met des minutes, et un
+onglet fermé perdrait le rangement.
+
+Trois détails qui ont demandé une correction après coup :
+
+- **la clé est le nom final**, celui que `_open_upload` vient de résoudre, pas celui
+  demandé : une collision rangerait sinon le mauvais rush ;
+- **un rush rouvert ne se range pas**, il est déjà là où on l'a mis ;
+- **Radix refuse la chaîne vide comme valeur d'item**, donc « Global » porte un jeton
+  (`"global"`) et non `""`. Avec `""` le déclencheur s'affichait **vide**, ce qu'une
+  capture d'écran a montré et que le typage ne pouvait pas dire.
 
 ### La barre latérale se tire, et les noms coupés se lisent
 
