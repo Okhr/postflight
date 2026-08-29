@@ -185,6 +185,7 @@ def _sequence_out(session: Session, seq: Sequence) -> schemas.SequenceOut:
         frame_count=seq.frame_count,
         size_bytes=seq.size_bytes,
         recorded_at=seq.recorded_at,
+        created_at=seq.created_at,
         has_proxy=path_exists(seq.proxy_path),
         proxy_width=seq.proxy_width,
         proxy_height=seq.proxy_height,

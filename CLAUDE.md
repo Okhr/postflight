@@ -1684,6 +1684,12 @@ fichiers ont fini d'arriver. Aucune reprise n'a été nécessaire, la colonne ex
 sur le modèle. Et les dates sont en `fr-FR` comme `format.ts`, pas dans la locale du
 navigateur : une page qui parle deux conventions se lit comme un bug.
 
+**Un champ ajouté à un schéma de réponse n'est pas un champ rempli.** `_sequence_out`
+construit `SequenceOut` argument par argument, donc `created_at` valait `None` pour tout
+le monde : le tri par ajout marchait (tout le monde à égalité), et aucun séparateur ne
+pouvait sortir. Rien ne s'en est plaint, le défaut étant valide. Trouvé par florian en
+regardant la page, pas par les 349 tests.
+
 **Le dossier de destination se choisit avant de déposer**, et l'intention est portée
 **côté serveur**, par `POST /upload/begin?folder_id=`. Le point délicat est que déposer
 et ingérer sont découplés : l'upload met des octets dans `inbox/` et s'arrête, le scan

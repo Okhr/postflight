@@ -8,6 +8,7 @@ import { usePersistentState } from "@/lib/persist";
 
 import { RenameDialog } from "@/components/RenameDialog";
 import { UploadZone } from "@/components/UploadZone";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -256,15 +257,17 @@ export function Import() {
             </p>
           ) : (
             <Table>
-              <TableHeader>
+              {/* No rule under the head: the day badges are what break this table up,
+                  and a line there competed with them. */}
+              <TableHeader className="[&_tr]:border-b-0">
                 <TableRow>
-                  <TableHead>Rush</TableHead>
+                  <TableHead className="text-center">Rush</TableHead>
                   <TableHead className="text-center">Filmed</TableHead>
                   <TableHead className="text-center">Length</TableHead>
                   <TableHead className="text-center">Size</TableHead>
                   <TableHead className="w-32 text-center">Merged</TableHead>
                   <TableHead className="w-32 text-center">Proxy</TableHead>
-                  <TableHead className="text-right" />
+                  <TableHead className="text-center" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -277,6 +280,9 @@ export function Import() {
                   const newDay =
                     day !== null &&
                     (index === 0 || day !== dayOf(rows[index - 1], sortBy));
+                  const lastOfDay =
+                    day !== null &&
+                    (index === rows.length - 1 || dayOf(rows[index + 1], sortBy) !== day);
                   const merged = sequence.merged_name !== null;
                   const failed = sequence.state === "failed";
                   const ready = sequence.state === "ready";
@@ -286,16 +292,14 @@ export function Import() {
                         <TableRow className="border-0 hover:bg-transparent">
                           <TableCell
                             colSpan={7}
-                            // Air above and a rule under the words: a day heading has
-                            // to read as the start of a block, not as one more row
-                            // among the rushes. The first takes less, having nothing
-                            // above it to separate from.
-                            className={cn(
-                              "pb-2 text-sm font-medium uppercase tracking-wide text-foreground",
-                              index === 0 ? "pt-1" : "pt-10",
-                            )}
+                            // Air above, and the day in a badge so it reads as a label
+                            // on the block rather than as one more row. The first takes
+                            // less air, having nothing above it to separate from.
+                            className={cn("pb-3", index === 0 ? "pt-1" : "pt-9")}
                           >
-                            <span className="border-b border-border pb-2">{day}</span>
+                            <Badge variant="secondary" className="text-sm font-medium">
+                              {day}
+                            </Badge>
                           </TableCell>
                         </TableRow>
                       )}
@@ -307,7 +311,13 @@ export function Import() {
                             : undefined
                         }
                         title={ready ? "Open in derush" : undefined}
-                        className={cn(ready && "cursor-pointer")}
+                        className={cn(
+                          ready && "cursor-pointer",
+                          // No rule under the last rush of a day: the next badge is
+                          // already the break, and a line there closes a block that
+                          // has nothing after it.
+                          lastOfDay && "border-0",
+                        )}
                       >
                         {/* The name first, the files it was made of under it. A rush is
                           one thing whatever it was cut into, and until someone renames
