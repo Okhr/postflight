@@ -749,6 +749,16 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
             # Kept as a string: the row is updated in place, so reading the stem off
             # it afterwards would give the new hash.
             stale = seq.artifact_stem
+            # The name follows the first part, because it is what every produced file
+            # is named after. Seen in production: a part landing in front left the row
+            # named after what used to be its first part. Only onto a free key, and the
+            # label only while it still is the key: that one is theirs to type.
+            wanted = sequence_key(first.filename)
+            free = session.exec(select(Sequence).where(Sequence.key == wanted)).first()
+            if wanted != seq.key and free is None:
+                if seq.label == seq.key:
+                    seq.label = wanted
+                seq.key = wanted
             seq.state = SequenceState.NEW
             seq.merged_path = None
             seq.proxy_path = None

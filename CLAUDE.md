@@ -1661,6 +1661,14 @@ marks sont en frames précisément parce que les millisecondes dérivent, donc c
 journalisé en `warning`. Contre-épreuve : sans le correctif, les deux tests du nouveau
 comportement tombent (`ready` au lieu de `new`, donc jamais réouverte).
 
+**Le nom suit la première part**, et c'est la mise à jour en place qui l'avait cassé.
+Vu en prod le 2026-08-29 : le rush réparé s'appelait encore `..._0026_D` alors que sa
+première part était le 0025, donc sa fusion et son proxy portaient ce nom-là. Le `key`
+est ce dont **tous** les fichiers produits sont nommés, il suit donc, mais seulement
+vers un key libre. Le `label`, lui, ne suit que tant qu'il vaut le key : un nom tapé à
+la main est à florian, pas à nous. Ne se voit que sur un prepend, le cas courant
+(une part qui arrive après) gardant la même première part.
+
 ### Les zones de défilement sont des ScrollArea
 
 `components/ui/scroll-area.tsx` (shadcn, `@radix-ui/react-scroll-area`), sur l'arbre de

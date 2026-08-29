@@ -216,3 +216,33 @@ def test_files_stay_when_the_regrouping_changes_nothing(session: Session, monkey
     pipeline.group_clips_into_sequences(session)  # nothing new to place
 
     assert kept.exists()
+
+
+def test_a_part_landing_in_front_renames_the_rush(session: Session, monkeypatch):
+    """Seen in production on 2026-08-29: the row is updated in place, so it kept the
+    name of what used to be its first part. Every produced file is named after that
+    key, so a rush made of 0025 and 0026 was writing files called 0026."""
+    _ingest(session, monkeypatch, SECOND)
+    second = sequences(session)[0]
+    _merge_it(session, second)
+    assert second.key == "DJI_20260711192105_0026_D"
+
+    _ingest(session, monkeypatch, FIRST)
+
+    rush = sequences(session)[0]
+    assert rush.key == "DJI_20260711191722_0025_D"
+    assert rush.label == "DJI_20260711191722_0025_D"
+
+
+def test_a_name_somebody_typed_survives_the_rebuild(session: Session, monkeypatch):
+    """The key is ours, the label is theirs."""
+    _ingest(session, monkeypatch, SECOND)
+    second = sequences(session)[0]
+    second.label = "Sunset dive"
+    _merge_it(session, second)
+
+    _ingest(session, monkeypatch, FIRST)
+
+    rush = sequences(session)[0]
+    assert rush.key == "DJI_20260711191722_0025_D"
+    assert rush.label == "Sunset dive"
