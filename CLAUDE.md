@@ -1645,6 +1645,16 @@ déjà dérushé à rester cassé. Maintenant :
   désigne toujours les mêmes images : **les rendus déjà produits restent justes**, il
   n'y a rien à purger.
 
+**Les fichiers de l'ancien contenu partent.** Un rush reconstruit est nommé d'après son
+nouveau hash, donc l'ancien fichier fusionné, l'ancien proxy, son poster et son graphe
+gyro ne sont plus nommés par personne : un proxy de quatre minutes pèse ~90 Mo et une
+fusion multi-parts des gigaoctets. `_drop_artifacts` les supprime par **glob sur le
+stem**, et non par liste de suffixes, parce que l'étape proxy écrit des fichiers
+qu'aucun champ du résultat ne nomme. Uniquement quand le hash a changé : un hash
+identique est précisément ce qui permet à `adopt_existing_artifacts` de reprendre le
+travail déjà fait. Trouvé en répondant à une question de florian, et prouvé par un test
+qui échouait avant.
+
 Le seul endroit où une erreur peut entrer est l'offset d'un prepend, dérivé des durées
 des parts ajoutées et non mesuré sur un fichier fusionné qui n'existe pas encore. Les
 marks sont en frames précisément parce que les millisecondes dérivent, donc c'est

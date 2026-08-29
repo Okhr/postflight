@@ -594,6 +594,21 @@ def _rebuildable_neighbours(
     return out
 
 
+def _drop_artifacts(stem: str) -> None:
+    """Delete everything a previous content hash produced.
+
+    A glob rather than a list of suffixes: the proxy step writes a poster and a gyro
+    chart that no field of the result names, and an older version wrote a filmstrip
+    too. What defines these files is the stem, so that is what is asked for.
+
+    The merged file of a single-part rush is a hardlink to the master, so this never
+    touches footage: it drops one name, and `raw/` keeps the other.
+    """
+    for directory in (settings.merged_dir, settings.proxies_dir):
+        for path in directory.glob(f"{stem}.*"):
+            path.unlink(missing_ok=True)
+
+
 def _shift_cuts(
     session: Session, seq: Sequence, group: list[Clip], old_first_id: int | None
 ) -> None:
@@ -727,9 +742,13 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
         # Does this group contain the clips of a sequence we reopened? Then that row
         # is updated in place, keeping its id, so its cuts and renders stay attached.
         held = next((reopened[c.id] for c in clips if c.id in reopened), None)
+        stale = ""
         if held is not None:
             _shift_cuts(session, held, clips, was_first.get(held.id))
             seq = held
+            # Kept as a string: the row is updated in place, so reading the stem off
+            # it afterwards would give the new hash.
+            stale = seq.artifact_stem
             seq.state = SequenceState.NEW
             seq.merged_path = None
             seq.proxy_path = None
@@ -759,6 +778,14 @@ def group_clips_into_sequences(session: Session) -> list[Sequence]:
         session.add(seq)
         session.commit()
         session.refresh(seq)
+
+        if stale and stale != seq.artifact_stem:
+            # The content changed, so the files of the old hash are addressed by
+            # nobody: a four minute proxy is ~90 MB and a multi-part merge is
+            # gigabytes. Only when it changed, because an unchanged hash is exactly
+            # what lets `adopt_existing_artifacts` pick the work back up.
+            _drop_artifacts(stale)
+            log.info("Sequence %s: artifacts of %s dropped", seq.key, stale)
 
         for index, clip in enumerate(clips):
             clip.sequence_id = seq.id

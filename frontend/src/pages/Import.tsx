@@ -20,6 +20,13 @@ import {
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -81,10 +88,10 @@ function StepCell({
 type SortKey = "filmed" | "added" | "length" | "size";
 
 const SORTS: { key: SortKey; label: string }[] = [
-  { key: "filmed", label: "Filmed" },
-  { key: "added", label: "Added" },
-  { key: "length", label: "Length" },
-  { key: "size", label: "Size" },
+  { key: "filmed", label: "Newest filmed" },
+  { key: "added", label: "Newest added" },
+  { key: "length", label: "Longest" },
+  { key: "size", label: "Biggest" },
 ];
 
 /** Newest, longest and biggest first: what one looks for is what stands out. */
@@ -210,23 +217,18 @@ export function Import() {
               <CardTitle className="text-base">Rushes</CardTitle>
             </div>
             <div className="flex items-center gap-2">
-              <div className="flex items-center rounded-md border border-input">
-                {SORTS.map(({ key, label }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setSortBy(key)}
-                    className={cn(
-                      "px-2.5 py-1 text-sm first:rounded-l-md last:rounded-r-md",
-                      sortBy === key
-                        ? "bg-secondary text-foreground"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <Select value={sortBy} onValueChange={(value) => setSortBy(value as SortKey)}>
+                <SelectTrigger className="h-8 w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SORTS.map(({ key, label }) => (
+                    <SelectItem key={key} value={key}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               {stuck.length > 0 && (
                 <Button
                   size="sm"
@@ -284,9 +286,16 @@ export function Import() {
                         <TableRow className="border-0 hover:bg-transparent">
                           <TableCell
                             colSpan={7}
-                            className="pb-1 pt-5 text-sm font-medium text-muted-foreground"
+                            // Air above and a rule under the words: a day heading has
+                            // to read as the start of a block, not as one more row
+                            // among the rushes. The first takes less, having nothing
+                            // above it to separate from.
+                            className={cn(
+                              "pb-2 text-sm font-medium uppercase tracking-wide text-foreground",
+                              index === 0 ? "pt-1" : "pt-10",
+                            )}
                           >
-                            {day}
+                            <span className="border-b border-border pb-2">{day}</span>
                           </TableCell>
                         </TableRow>
                       )}

@@ -165,3 +165,54 @@ def test_an_unrelated_rush_is_not_reopened(session: Session, monkeypatch):
     kept = session.get(Sequence, before[0])
     assert kept is not None and (kept.key, kept.part_count) == (before[1], before[2])
     assert kept.state == SequenceState.READY, "it was never torn down"
+
+
+def _artifacts(seq: Sequence) -> list:
+    """Every file derived from a rush, whatever the step that wrote it."""
+    stem = seq.artifact_stem
+    return sorted(
+        list(settings.merged_dir.glob(f"{stem}.*")) + list(settings.proxies_dir.glob(f"{stem}.*"))
+    )
+
+
+def test_the_old_merge_and_proxy_go_when_the_content_changes(session: Session, monkeypatch):
+    """A rebuilt rush is named after its new content hash, so the files of the old
+    one are addressed by nobody. Left behind they are pure loss: a four minute proxy
+    is ~90 MB, and the merged file of a multi-part rush is gigabytes."""
+    _ingest(session, monkeypatch, FIRST)
+    first = sequences(session)[0]
+    _merge_it(session, first)
+    # The string, not the object: the row is updated in place, so reading the stem
+    # off it afterwards gives the new hash and compares it to itself.
+    stem = first.artifact_stem
+    old = []
+    for path in (
+        settings.merged_dir / f"{stem}.mp4",
+        settings.proxies_dir / f"{stem}.mp4",
+        settings.proxies_dir / f"{stem}.poster.jpg",
+        settings.proxies_dir / f"{stem}.gyro.json",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"produced from one part")
+        old.append(path)
+
+    _ingest(session, monkeypatch, SECOND)
+
+    rebuilt = sequences(session)[0]
+    assert rebuilt.artifact_stem != stem, "the content changed, so the name does"
+    assert [p for p in old if p.exists()] == [], "the files of the old content are orphans"
+
+
+def test_files_stay_when_the_regrouping_changes_nothing(session: Session, monkeypatch):
+    """The other half: naming files after the hash is what lets a rush torn down and
+    rebuilt pick its own merge back up instead of redoing it."""
+    _ingest(session, monkeypatch, FIRST)
+    first = sequences(session)[0]
+    _merge_it(session, first)
+    kept = settings.proxies_dir / f"{first.artifact_stem}.mp4"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_bytes(b"still the same content")
+
+    pipeline.group_clips_into_sequences(session)  # nothing new to place
+
+    assert kept.exists()
