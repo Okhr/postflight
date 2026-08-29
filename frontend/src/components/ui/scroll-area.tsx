@@ -16,7 +16,11 @@ const ScrollArea = React.forwardRef<
     className={cn("relative overflow-hidden", className)}
     {...props}
   >
-    <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit]">
+    {/* The bar is an overlay, so it sits on top of whatever is flush right: measured
+        on the rush tree, it ate the last pixels of every duration. The gutter is its
+        own width, and it lives here rather than at each call site so nobody has to
+        remember it. */}
+    <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit] pr-2.5">
       {children}
     </ScrollAreaPrimitive.Viewport>
     <ScrollBar />

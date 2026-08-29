@@ -1672,10 +1672,15 @@ la main est à florian, pas à nous. Ne se voit que sur un prepend, le cas coura
 ### Les zones de défilement sont des ScrollArea
 
 `components/ui/scroll-area.tsx` (shadcn, `@radix-ui/react-scroll-area`), sur l'arbre de
-la barre latérale, le dialogue des workers et la liste de la page Color. Deux détails
+la barre latérale, le dialogue des workers et la liste de la page Color. Trois détails
 qui ne se voient qu'à l'usage : le composant force **`type="auto"`** au lieu du défaut
 `hover` de Radix, parce qu'une barre qui n'apparaît que sous le pointeur cache le fait
-qu'un panneau défile ; et les classes qui espaçaient les enfants (`space-y-2`) doivent
+qu'un panneau défile ; **la barre est un calque, donc elle a sa propre gouttière**
+(`pr-2.5` sur le Viewport, sa largeur exacte), sans quoi elle se pose sur tout ce qui
+est aligné à droite (rapporté par florian et mesuré : dans l'arbre elle mangeait les
+derniers pixels de chaque durée, `0:20` lu `0:2`). La gouttière vit dans le composant et
+non chez les appelants, pour que personne n'ait à y penser ; et les classes qui
+espaçaient les enfants (`space-y-2`) doivent
 descendre **sur le contenu**, les enfants n'étant plus directs mais dans le Viewport.
 
 ### Trier les rushes, et les ranger en arrivant

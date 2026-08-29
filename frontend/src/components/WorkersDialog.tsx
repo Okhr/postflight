@@ -190,7 +190,7 @@ export function WorkersDialog({ workers }: { workers: WorkerInfo[] }) {
           <DialogTitle>Workers</DialogTitle>
         </DialogHeader>
         <ScrollArea className="max-h-[70vh]">
-        <div className="space-y-2 pr-2">
+        <div className="space-y-2">
           {workers.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               None has registered. Check PF_API_URL on the worker.
