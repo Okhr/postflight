@@ -54,6 +54,7 @@ import {
 } from "@/components/ui/table";
 import { api, mediaUrl, type Cut, type SequenceDetail } from "@/lib/api";
 import { usePersistentState } from "@/lib/persist";
+import { useFixedPlaybackRate } from "@/lib/playback";
 import { formatDuration, formatTimecode, frameToSeconds, secondsToFrame } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -279,10 +280,10 @@ function Editor({ sequenceId }: { sequenceId: number }) {
     };
   }, [fpsNum, fpsDen, sequence?.id, place]);
 
-  useEffect(() => {
-    const video = videoRef.current;
-    if (video) video.playbackRate = speed;
-  }, [speed]);
+  // Held rather than just written: a video-speed extension pushes its own rate onto
+  // any video it finds, which would leave the picker saying one thing and the player
+  // doing another.
+  useFixedPlaybackRate(videoRef, speed);
 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;

@@ -18,6 +18,7 @@ import { Pause, Play } from "lucide-react";
 import { BINS, SAMPLE_H, SAMPLE_W, type ScopeSink, type Scopes } from "@/components/Scopes";
 import { Button } from "@/components/ui/button";
 import { createRenderer, type GradePlan, type Renderer } from "@/lib/grade-shader";
+import { useFixedPlaybackRate } from "@/lib/playback";
 import { cn } from "@/lib/utils";
 
 export interface Mark {
@@ -68,6 +69,8 @@ export function GradedVideo({
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // This player has no speed control, so its rate is one and stays one.
+  useFixedPlaybackRate(videoRef, 1);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scratch = useRef<HTMLCanvasElement | null>(null);
   const renderer = useRef<Renderer | null>(null);

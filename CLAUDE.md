@@ -1989,6 +1989,35 @@ décodeur retombe sur la précédente. Contre-épreuve que le compteur ne mentai
 numéro : capture du canvas après un saut à la frame 6645, PSNR de **45,9 dB** contre
 cette frame extraite par ffmpeg et **32,5 dB** contre chacune de ses deux voisines.
 
+### La vitesse de lecture appartient à la page, pas à une extension
+
+Rapporté le 2026-08-30 : un ×4 réglé dans le derush revenait sur l'aperçu de Color, qui
+n'a aucun contrôle de vitesse. Six chemins de navigation mesurés ici, tous à ×1, et le
+code ne l'explique pas : `playbackRate` n'est écrit qu'à un endroit du front.
+
+C'est **la console de florian qui a tranché**, comme pour le playhead : `playbackRate: 4`
+avec `defaultPlaybackRate: 1` et une seule vidéo sur la page, donc une écriture nue
+venue d'ailleurs. Une **extension de vitesse vidéo** retient la dernière vitesse qu'elle
+voit passer et la pose sur toute vidéo qui apparaît ensuite. Ce qui colle avec le reste :
+sa mémoire vit dans l'onglet, donc ça survit à la navigation et meurt au rechargement,
+là où notre préférence (`postflight:derush.speed`) survivrait au rechargement.
+
+Reproduit ici en écrivant **un faux de cette extension** (un `setInterval` qui applique
+sa dernière vitesse à toute vidéo neuve), sans quoi il n'y avait rien à corriger contre.
+
+`useFixedPlaybackRate` tient donc la vitesse que la page a décidée : `speed` dans le
+derush, **1** dans Color. Trois détails qui ont demandé une mesure :
+
+- **`ratechange` est le seul point d'accroche** : il est émis quel que soit l'auteur de
+  l'écriture. Remettre la valeur est elle-même une écriture, donc la garde `!==` est ce
+  qui empêche le ping-pong. Mesuré après correctif : **zéro `ratechange` en 3 s**.
+- **l'effet n'a pas de tableau de dépendances**, et c'est la version `[ref, rate]` qui
+  était fausse : dans le derush la vidéo n'apparaît qu'une fois le rush chargé, et un
+  `ref` qui se remplit ne relance pas un effet. Contre-épreuve : avec les deps, le
+  sélecteur disait ×1 pendant que la vidéo tournait à ×2.
+- **le derush garde la main sur sa propre vitesse** : une extension arrivée avec ×2 en
+  mémoire ne contredit plus le sélecteur, et un ×4 choisi reste ×4 au retour sur la page.
+
 ### « Dérushé » est une marque, jamais un compte
 
 Un rush porte un booléen `derushed` qu'on pose à la main, depuis la case à cocher de
